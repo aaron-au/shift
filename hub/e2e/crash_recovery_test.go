@@ -63,6 +63,7 @@ func TestCrashRecovery(t *testing.T) {
 
 	// Deploy the slow flow and enqueue one execution.
 	doJSON(t, hub.URL, "PUT", "/api/v1/flows/slow", slowFlow, nil)
+	doJSON(t, hub.URL, "POST", "/api/v1/flows/slow/versions/1/publish", "", nil)
 	var acc struct {
 		TaskID string `json:"task_id"`
 	}
@@ -176,6 +177,7 @@ type taskView struct {
 		ID      string          `json:"id"`
 		State   string          `json:"state"`
 		Attempt int             `json:"attempt"`
+		Error   string          `json:"error"`
 		Result  json.RawMessage `json:"result"`
 	} `json:"task"`
 	Attempts []struct {

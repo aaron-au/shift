@@ -14,10 +14,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/aaron-au/shift/hub/internal/api"
+	"github.com/aaron-au/shift/hub/internal/kek"
+	"github.com/aaron-au/shift/hub/internal/oidcauth"
+	"github.com/aaron-au/shift/hub/internal/scheduler"
+	"github.com/aaron-au/shift/hub/internal/secrets"
 	"github.com/aaron-au/shift/hub/internal/store"
 )
 
@@ -31,6 +36,14 @@ func main() {
 		leaseTTL = flag.Duration("lease-ttl", envDuration("SHIFT_HUB_LEASE_TTL", 30*time.Second), "task lease duration between heartbeats")
 		tlsCert  = flag.String("tls-cert", os.Getenv("SHIFT_HUB_TLS_CERT"), "TLS certificate file (serve HTTPS)")
 		tlsKey   = flag.String("tls-key", os.Getenv("SHIFT_HUB_TLS_KEY"), "TLS key file")
+
+		oidcIssuer   = flag.String("oidc-issuer", os.Getenv("SHIFT_HUB_OIDC_ISSUER"), "OIDC issuer URL (enables the OIDC admin realm)")
+		oidcClientID = flag.String("oidc-client-id", os.Getenv("SHIFT_HUB_OIDC_CLIENT_ID"), "OIDC client id")
+		oidcRedirect = flag.String("oidc-redirect-url", os.Getenv("SHIFT_HUB_OIDC_REDIRECT_URL"), "dashboard login callback URL, e.g. https://hub.example:8400/auth/callback (enables browser login)")
+		kekFile      = flag.String("kek-file", os.Getenv("SHIFT_HUB_KEK_FILE"), "active KEK file, 32 raw bytes (enables the secrets store)")
+		kekFilesOld  = flag.String("kek-files-old", os.Getenv("SHIFT_HUB_KEK_FILES_OLD"), "comma-separated retired KEK files still needed to unwrap")
+
+		schedInterval = flag.Duration("sched-interval", envDuration("SHIFT_HUB_SCHED_INTERVAL", 5*time.Second), "scheduler poll interval")
 	)
 	flag.Parse()
 
@@ -59,9 +72,42 @@ func main() {
 		log.Fatalf("hubd: migrate: %v", err)
 	}
 
-	h, err := api.Handler(st, api.Options{AdminToken: adminToken, LeaseTTL: *leaseTTL})
+	opts := api.Options{AdminToken: adminToken, LeaseTTL: *leaseTTL}
+
+	if *oidcIssuer != "" {
+		// Client secret is env-only, like the admin token.
+		clientSecret := os.Getenv("SHIFT_HUB_OIDC_CLIENT_SECRET")
+		opts.OIDC, opts.OIDCFlow = mustOIDC(*oidcIssuer, *oidcClientID, clientSecret, *oidcRedirect)
+		if adminToken != "" {
+			log.Print("hubd: WARNING: break-glass admin token is set alongside OIDC — unset SHIFT_HUB_ADMIN_TOKEN once OIDC login works")
+		}
+	}
+	if *kekFile != "" {
+		var old []string
+		if *kekFilesOld != "" {
+			old = strings.Split(*kekFilesOld, ",")
+		}
+		provider, err := kek.NewLocalFiles(*kekFile, old...)
+		if err != nil {
+			log.Fatalf("hubd: %v", err)
+		}
+		opts.Secrets = secrets.New(st, provider)
+	}
+
+	// Every replica runs the scheduler loop; the store's advisory lock
+	// elects one worker per pass (ADR-0012).
+	sched := scheduler.New(st, scheduler.Options{Interval: *schedInterval})
+	schedCtx, stopSched := context.WithCancel(context.Background())
+	schedDone := make(chan struct{})
+	go func() {
+		defer close(schedDone)
+		sched.Run(schedCtx)
+	}()
+	opts.SchedStatus = sched.Status
+
+	h, err := api.Handler(st, opts)
 	if err != nil {
-		log.Fatalf("hubd: %v (set SHIFT_HUB_ADMIN_TOKEN)", err)
+		log.Fatalf("hubd: %v (set SHIFT_HUB_ADMIN_TOKEN or configure OIDC)", err)
 	}
 
 	srv := &http.Server{
@@ -87,9 +133,43 @@ func main() {
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
 	<-stop
 	log.Print("hubd: shutting down")
+	stopSched()
+	<-schedDone
 	ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+}
+
+// mustOIDC discovers the issuer with retry — in compose the IdP may
+// start after hubd, and failing the whole hub for a slow IdP would be a
+// worse failure mode than a short boot delay.
+func mustOIDC(issuer, clientID, clientSecret, redirectURL string) (*oidcauth.Verifier, *oidcauth.Flow) {
+	const attempts = 30
+	for i := 1; ; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		verifier, err := oidcauth.New(ctx, oidcauth.Config{IssuerURL: issuer, ClientID: clientID})
+		if err == nil && redirectURL != "" {
+			var flow *oidcauth.Flow
+			flow, err = oidcauth.NewFlow(ctx, oidcauth.FlowConfig{
+				Config:       oidcauth.Config{IssuerURL: issuer, ClientID: clientID},
+				ClientSecret: clientSecret,
+				RedirectURL:  redirectURL,
+			})
+			if err == nil {
+				cancel()
+				return verifier, flow
+			}
+		} else if err == nil {
+			cancel()
+			return verifier, nil
+		}
+		cancel()
+		if i >= attempts {
+			log.Fatalf("hubd: OIDC discovery for %s failed after %d attempts: %v", issuer, attempts, err) //nolint:gosec // G706: operator-supplied issuer flag
+		}
+		log.Printf("hubd: OIDC discovery (%d/%d): %v — retrying", i, attempts, err)
+		time.Sleep(2 * time.Second)
+	}
 }
 
 func envOr(key, def string) string {

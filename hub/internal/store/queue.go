@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ErrLeaseLost means the caller no longer holds the task's lease (it
@@ -42,31 +43,46 @@ type TaskAttempt struct {
 	Error    string     `json:"error,omitempty"`
 }
 
-// Enqueue queues one execution of the named flow (version 0 = latest).
-// With an idempotency key, re-enqueueing returns the existing task id
-// instead of creating a duplicate.
+// Enqueue queues one execution of the named flow (version 0 = the
+// published version; explicit draft versions are allowed for
+// smoke-testing). With an idempotency key, re-enqueueing returns the
+// existing task id instead of creating a duplicate.
 func (s *Store) Enqueue(ctx context.Context, flowName string, version int, idempotencyKey string, maxAttempts int) (string, error) {
 	f, doc, err := s.GetFlow(ctx, flowName, version)
 	if err != nil {
 		return "", err
 	}
 	if version <= 0 {
-		version = f.LatestVersion
+		version = f.PublishedVersion
 	}
 	if maxAttempts <= 0 {
 		maxAttempts = 3
 	}
 
+	return enqueueTx(ctx, s.pool, accountID(ctx), f.ID, f.Name, version, doc, idempotencyKey, maxAttempts)
+}
+
+// queryExecer is the slice of pgx both *pgxpool.Pool and pgx.Tx satisfy,
+// so Enqueue (pool) and FireDue (tx) share one INSERT path.
+type queryExecer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// enqueueTx inserts one task under an explicit account (FireDue crosses
+// accounts; the context's account would be wrong there). With an
+// idempotency key, a replay returns the existing task's id.
+func enqueueTx(ctx context.Context, q queryExecer, account, flowID, flowName string, version int, doc json.RawMessage, idempotencyKey string, maxAttempts int) (string, error) {
 	id := newUUID()
 	var key *string
 	if idempotencyKey != "" {
 		key = &idempotencyKey
 	}
-	tag, err := s.pool.Exec(ctx,
+	tag, err := q.Exec(ctx,
 		`INSERT INTO tasks (id, account_id, flow_id, flow_name, flow_version, document, idempotency_key, max_attempts)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		 ON CONFLICT (account_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
-		id, DefaultAccountID, f.ID, f.Name, version, doc, key, maxAttempts)
+		id, account, flowID, flowName, version, doc, key, maxAttempts)
 	if err != nil {
 		return "", err
 	}
@@ -75,9 +91,9 @@ func (s *Store) Enqueue(ctx context.Context, flowName string, version int, idemp
 	}
 	// Idempotent replay: hand back the original task.
 	var existing string
-	err = s.pool.QueryRow(ctx,
+	err = q.QueryRow(ctx,
 		`SELECT id FROM tasks WHERE account_id = $1 AND idempotency_key = $2`,
-		DefaultAccountID, idempotencyKey).Scan(&existing)
+		account, idempotencyKey).Scan(&existing)
 	if err != nil {
 		return "", fmt.Errorf("store: idempotent enqueue lookup: %w", err)
 	}
@@ -89,7 +105,7 @@ func (s *Store) Enqueue(ctx context.Context, flowName string, version int, idemp
 // exhausted), then claims with FOR UPDATE SKIP LOCKED so concurrent hubs
 // and runners never double-dispatch. Returns nil when the queue is empty.
 func (s *Store) Claim(ctx context.Context, runnerID string, leaseTTL time.Duration) (*Task, error) {
-	if err := s.reapExpired(ctx); err != nil {
+	if err := s.ReapExpired(ctx); err != nil {
 		return nil, err
 	}
 
@@ -104,13 +120,13 @@ func (s *Store) Claim(ctx context.Context, runnerID string, leaseTTL time.Durati
 		`UPDATE tasks SET state = 'leased', leased_by = $1, attempt = attempt + 1,
 		        lease_expires_at = now() + make_interval(secs => $2), started_at = COALESCE(started_at, now())
 		 WHERE id = (
-		   SELECT id FROM tasks WHERE state = 'queued'
+		   SELECT id FROM tasks WHERE state = 'queued' AND account_id = $3
 		   ORDER BY enqueued_at
 		   FOR UPDATE SKIP LOCKED
 		   LIMIT 1)
 		 RETURNING id, flow_name, flow_version, document,
 		           COALESCE(idempotency_key, ''), attempt, max_attempts, enqueued_at`,
-		runnerID, leaseTTL.Seconds()).Scan(
+		runnerID, leaseTTL.Seconds(), accountID(ctx)).Scan(
 		&t.ID, &t.FlowName, &t.FlowVersion, &t.Document,
 		&t.IdempotencyKey, &t.Attempt, &t.MaxAttempts, &t.Enqueued)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -127,10 +143,11 @@ func (s *Store) Claim(ctx context.Context, runnerID string, leaseTTL time.Durati
 	return t, tx.Commit(ctx)
 }
 
-// reapExpired handles crashed runners: expired leases go back to the
+// ReapExpired handles crashed runners: expired leases go back to the
 // queue, or fail permanently once attempts are exhausted. Attempt history
-// records the expiry either way.
-func (s *Store) reapExpired(ctx context.Context) error {
+// records the expiry either way. It runs at every claim and periodically
+// from the scheduler loop (so expiries surface without claim traffic).
+func (s *Store) ReapExpired(ctx context.Context) error {
 	// Attempts exhausted → terminal failure.
 	rows, err := s.pool.Query(ctx,
 		`UPDATE tasks SET state = 'failed', finished_at = now(), leased_by = NULL, lease_expires_at = NULL,
@@ -288,7 +305,7 @@ func (s *Store) GetTask(ctx context.Context, id string) (Task, error) {
 	err := s.pool.QueryRow(ctx,
 		`SELECT id, flow_name, flow_version, COALESCE(idempotency_key,''), state, attempt, max_attempts,
 		        COALESCE(leased_by::text,''), enqueued_at, started_at, finished_at, COALESCE(error,''), result
-		 FROM tasks WHERE id = $1`, id).Scan(
+		 FROM tasks WHERE id = $1 AND account_id = $2`, id, accountID(ctx)).Scan(
 		&t.ID, &t.FlowName, &t.FlowVersion, &t.IdempotencyKey, &t.State, &t.Attempt, &t.MaxAttempts,
 		&t.LeasedBy, &t.Enqueued, &t.Started, &t.Finished, &t.Error, &t.Result)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -300,8 +317,9 @@ func (s *Store) GetTask(ctx context.Context, id string) (Task, error) {
 // TaskAttempts lists a task's lease history.
 func (s *Store) TaskAttempts(ctx context.Context, id string) ([]TaskAttempt, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT attempt, COALESCE(runner_id::text,''), started_at, finished_at, COALESCE(outcome,''), COALESCE(error,'')
-		 FROM task_attempts WHERE task_id = $1 ORDER BY attempt`, id)
+		`SELECT a.attempt, COALESCE(a.runner_id::text,''), a.started_at, a.finished_at, COALESCE(a.outcome,''), COALESCE(a.error,'')
+		 FROM task_attempts a JOIN tasks t ON t.id = a.task_id
+		 WHERE a.task_id = $1 AND t.account_id = $2 ORDER BY a.attempt`, id, accountID(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +343,7 @@ func (s *Store) Tasks(ctx context.Context, limit int) ([]Task, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, flow_name, flow_version, COALESCE(idempotency_key,''), state, attempt, max_attempts,
 		        COALESCE(leased_by::text,''), enqueued_at, started_at, finished_at, COALESCE(error,''), result
-		 FROM tasks ORDER BY enqueued_at DESC LIMIT $1`, limit)
+		 FROM tasks WHERE account_id = $2 ORDER BY enqueued_at DESC LIMIT $1`, limit, accountID(ctx))
 	if err != nil {
 		return nil, err
 	}

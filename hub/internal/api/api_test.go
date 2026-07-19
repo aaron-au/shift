@@ -91,6 +91,19 @@ func TestAuthRealms(t *testing.T) {
 	if code := call(t, "POST", srv.URL+"/api/v1/runners/register", "", `{"token":"srt_bogus","name":"r"}`, nil); code != 401 {
 		t.Fatalf("bogus reg token = %d", code)
 	}
+	// The dashboard's overview endpoint (real SQL against real Postgres).
+	var stats struct {
+		Stats struct {
+			Tasks map[string]int `json:"tasks"`
+		} `json:"stats"`
+		Scheduler map[string]any `json:"scheduler"`
+	}
+	if code := call(t, "GET", srv.URL+"/api/v1/stats", adminToken, "", &stats); code != 200 {
+		t.Fatalf("stats = %d", code)
+	}
+	if stats.Stats.Tasks == nil || stats.Scheduler == nil {
+		t.Fatalf("stats payload = %+v", stats)
+	}
 	// Health endpoints are open.
 	if code := call(t, "GET", srv.URL+"/healthz", "", "", nil); code != 200 {
 		t.Fatalf("healthz = %d", code)
@@ -158,8 +171,20 @@ func TestLeaseProtocol(t *testing.T) {
 		t.Fatalf("empty lease = %d", code)
 	}
 
-	// Deploy + execute, then lease it.
+	// Deploy + publish + execute, then lease it. Executing a draft-only
+	// flow by default is a 409.
 	call(t, "PUT", srv.URL+"/api/v1/flows/orders", adminToken, goodFlow, nil)
+	if code := call(t, "POST", srv.URL+"/api/v1/flows/orders/execute", adminToken, `{}`, nil); code != 409 {
+		t.Fatalf("execute unpublished = %d, want 409", code)
+	}
+	// Reserved scheduler namespace is rejected.
+	if code := call(t, "POST", srv.URL+"/api/v1/flows/orders/execute", adminToken,
+		`{"idempotency_key":"sched:x:y"}`, nil); code != 422 {
+		t.Fatalf("execute with sched: key = %d, want 422", code)
+	}
+	if code := call(t, "POST", srv.URL+"/api/v1/flows/orders/versions/1/publish", adminToken, "", nil); code != 200 {
+		t.Fatalf("publish = %d", code)
+	}
 	var acc struct {
 		TaskID string `json:"task_id"`
 	}

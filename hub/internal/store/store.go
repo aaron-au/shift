@@ -20,8 +20,28 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// DefaultAccountID is the seed account until OIDC multi-tenancy (M4b).
+// DefaultAccountID is the seed account. Requests authenticated by the
+// break-glass admin token (and anything else without an explicit
+// account) operate on it; OIDC users and runners carry their own
+// account via WithAccount.
 const DefaultAccountID = "00000000-0000-0000-0000-000000000001"
+
+type accountKey struct{}
+
+// WithAccount scopes ctx to an account. Every authenticated realm's
+// middleware sets it; store queries read it via accountID.
+func WithAccount(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, accountKey{}, id)
+}
+
+// accountID returns the account the context is scoped to, defaulting to
+// the seed account so unscoped callers (tests, bootstrap) keep working.
+func accountID(ctx context.Context) string {
+	if id, ok := ctx.Value(accountKey{}).(string); ok && id != "" {
+		return id
+	}
+	return DefaultAccountID
+}
 
 // Store wraps a pgx pool.
 type Store struct {
@@ -112,6 +132,16 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// CreateAccount provisions a tenant account.
+func (s *Store) CreateAccount(ctx context.Context, name string) (string, error) {
+	id := newUUID()
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO accounts (id, name) VALUES ($1,$2)`, id, name); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 // Audit appends an audit_log row. Failures are returned, not fatal —

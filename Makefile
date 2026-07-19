@@ -16,6 +16,8 @@ build:
 	cd hub && go build -ldflags="$(LDFLAGS)" -o ../bin/hubd ./cmd/hubd
 	cd connectors && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-connector-gen ./cmd/shift-connector-gen
 	cd connectors && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-connector-http ./cmd/shift-connector-http
+	cd connectors && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-consign ./cmd/shift-consign
+	cd hub && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-bootstrap ./cmd/shift-bootstrap
 
 ## proto: regenerate gRPC code from proto/ (requires protoc + Go plugins)
 proto:
@@ -67,6 +69,16 @@ check: fmt-check vet lint vuln leaks test
 
 tidy:
 	@for m in $(MODULES); do (cd $$m && go mod tidy); done
+
+## images: OCI images for the compose bundle (hubd, runnerd, tools)
+images:
+	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) --target hubd    -t shift/hubd:$(VERSION) .
+	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) --target runnerd -t shift/runnerd:$(VERSION) .
+	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) --target tools   -t shift/tools:$(VERSION) .
+
+## up: the "just runs" bundle (M4b exit criterion) — see deploy/README.md
+up: images
+	VERSION=$(VERSION) docker compose -f deploy/compose.yml up
 
 clean:
 	rm -rf bin

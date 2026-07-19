@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SHIFT Hub</title>
+<style>
+  :root{--bg:#0e1116;--panel:#161b23;--line:#232b37;--text:#dbe2ec;--dim:#8b98ab;
+        --accent:#4da3ff;--ok:#3ecf8e;--warn:#f5a623;--bad:#ef5f6b;font-size:15px}
+  *{box-sizing:border-box;margin:0}
+  body{background:var(--bg);color:var(--text);font:1rem/1.5 -apple-system,'Segoe UI',Roboto,sans-serif;padding:1.2rem}
+  h1{font-size:1.15rem;font-weight:600;display:flex;gap:.6rem;align-items:baseline}
+  h1 .v{color:var(--dim);font-size:.8rem;font-weight:400}
+  h1 .spacer{flex:1}
+  h2{font-size:.8rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:.6rem}
+  main{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));margin-top:1rem;max-width:1500px}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1rem}
+  section.wide{grid-column:1/-1}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:.8rem}
+  .stat b{display:block;font-size:1.35rem;font-weight:600}
+  .stat span{color:var(--dim);font-size:.75rem}
+  table{width:100%;border-collapse:collapse;font-size:.85rem}
+  th{color:var(--dim);text-align:left;font-weight:500;padding:.35rem .5rem;border-bottom:1px solid var(--line)}
+  td{padding:.4rem .5rem;border-bottom:1px solid var(--line);vertical-align:top}
+  tr.task{cursor:pointer} tr.task:hover{background:#1b2230}
+  .chip{padding:.1rem .55rem;border-radius:99px;font-size:.72rem;font-weight:600}
+  .chip.completed,.chip.published{background:#12352a;color:var(--ok)}
+  .chip.leased,.chip.running{background:#12283f;color:var(--accent)}
+  .chip.failed{background:#3a1a1f;color:var(--bad)}
+  .chip.queued,.chip.draft{background:#3a2d12;color:var(--warn)}
+  button{background:var(--accent);border:0;color:#04101f;font-weight:600;padding:.35rem .7rem;border-radius:8px;cursor:pointer;font-size:.78rem}
+  button.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+  .hint{color:var(--dim);font-size:.78rem;margin-top:.6rem}
+  .err{color:var(--bad);font-size:.78rem}
+  .mono{font-family:ui-monospace,Menlo,monospace;font-size:.78rem;color:var(--dim)}
+  .ops{background:#10141b;border-radius:8px;margin:.3rem 0 .6rem;padding:.5rem .7rem;font-size:.78rem}
+  .ops td{border:0;padding:.15rem .5rem;color:var(--dim)} .ops td:first-child{color:var(--text)}
+  #login{max-width:420px;margin:4rem auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1.5rem;display:none}
+  #login input{width:100%;background:#10141b;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:.5rem .7rem;margin:.6rem 0}
+</style>
+</head>
+<body>
+<h1>SHIFT Hub <span class="v" id="ident">connecting…</span><span class="spacer"></span>
+  <button class="ghost" id="logoutbtn" style="display:none" onclick="logout()">Sign out</button></h1>
+
+<div id="login">
+  <h2>Sign in</h2>
+  <div id="oidcbox" style="display:none">
+    <button onclick="location.href='/auth/login'">Login with your identity provider</button>
+    <div class="hint">Redirects to the configured OIDC issuer.</div>
+    <hr style="border:0;border-top:1px solid var(--line);margin:1rem 0">
+  </div>
+  <div class="hint">Break-glass admin token:</div>
+  <input id="tok" type="password" placeholder="admin token" onkeydown="if(event.key==='Enter')useToken()">
+  <button onclick="useToken()">Use token</button>
+  <div class="err" id="loginerr"></div>
+</div>
+
+<main id="panels" style="display:none">
+  <section class="wide">
+    <h2>Overview</h2>
+    <div class="stats" id="overview"></div>
+    <div class="hint" id="schedline"></div>
+  </section>
+  <section class="wide">
+    <h2>Flows</h2>
+    <table><thead><tr><th>Name</th><th>Latest</th><th>Published</th><th>Schedule</th><th></th></tr></thead>
+    <tbody id="flows"></tbody></table>
+    <div class="hint">Publish promotes a version to the default execute path and the scheduler. Cron is UTC, 5-field.</div>
+  </section>
+  <section class="wide">
+    <h2>Recent tasks</h2>
+    <table><thead><tr><th>Flow</th><th>v</th><th>State</th><th>Attempt</th><th>Enqueued</th><th>Error</th></tr></thead>
+    <tbody id="tasks"></tbody></table>
+  </section>
+  <section>
+    <h2>Runners</h2>
+    <table><thead><tr><th>Name</th><th>Registered</th><th>Last seen</th></tr></thead><tbody id="runners"></tbody></table>
+  </section>
+  <section>
+    <h2>Connectors (registry)</h2>
+    <table><thead><tr><th>Name</th><th>Version</th><th>Platform</th><th>Digest</th><th>Size</th></tr></thead><tbody id="connectors"></tbody></table>
+  </section>
+  <section>
+    <h2>Secrets</h2>
+    <table><thead><tr><th>Name</th><th>Version</th><th>Updated</th></tr></thead><tbody id="secrets"></tbody></table>
+    <div class="hint">Values are write-only; reference them in flow configs as {"$secret":"name"}.</div>
+  </section>
+</main>
+
+<script>
+'use strict';
+let bearer = sessionStorage.getItem('shift_admin_token') || '';
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({}, opts.headers);
+  if (bearer) opts.headers['Authorization'] = 'Bearer ' + bearer;
+  const r = await fetch(path, opts);
+  if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
+  return r.status === 204 ? null : r.json();
+}
+
+function showLogin() {
+  $('panels').style.display = 'none'; $('login').style.display = 'block';
+  $('logoutbtn').style.display = 'none'; $('ident').textContent = 'signed out';
+  fetch('/api/v1/authinfo').then(r => r.json()).then(info => {
+    $('oidcbox').style.display = info.oidc_login ? 'block' : 'none';
+  }).catch(() => {});
+}
+function useToken() {
+  bearer = $('tok').value.trim();
+  sessionStorage.setItem('shift_admin_token', bearer);
+  boot();
+}
+function logout() {
+  bearer = ''; sessionStorage.removeItem('shift_admin_token');
+  location.href = '/auth/logout';
+}
+
+async function boot() {
+  try {
+    const me = await api('/api/v1/me');
+    $('login').style.display = 'none'; $('panels').style.display = 'grid';
+    $('logoutbtn').style.display = '';
+    $('ident').textContent = me.email || me.kind;
+    refresh(); if (!window._timer) window._timer = setInterval(refresh, 3000);
+  } catch (e) { $('loginerr').textContent = bearer ? 'rejected: ' + e.message : ''; }
+}
+
+async function refresh() {
+  try {
+    const [ov, flows, tasks, runners, conns, secrets, scheds] = await Promise.all([
+      api('/api/v1/stats'), api('/api/v1/flows'), api('/api/v1/tasks?limit=30'),
+      api('/api/v1/runners'), api('/api/v1/connectors'),
+      api('/api/v1/secrets').catch(() => ({secrets: []})),
+      api('/api/v1/schedules'),
+    ]);
+    if (ov.oidc_login) $('oidcbox').style.display = 'block';
+    renderOverview(ov); renderFlows(flows.flows || [], scheds.schedules || []);
+    renderTasks(tasks.tasks || []); renderRunners(runners.runners || []);
+    renderConnectors(conns.connectors || []); renderSecrets(secrets.secrets || []);
+  } catch (e) { /* auth handled in api() */ }
+}
+
+function stat(v, label) { return `<div class="stat"><b>${esc(v)}</b><span>${esc(label)}</span></div>`; }
+
+function renderOverview(ov) {
+  const t = ov.stats.tasks || {};
+  $('overview').innerHTML =
+    stat(t.queued || 0, 'queued') + stat(t.leased || 0, 'leased') +
+    stat(t.completed || 0, 'completed') + stat(t.failed || 0, 'failed') +
+    stat(`${ov.stats.runners_active}/${ov.stats.runners_total}`, 'runners active') +
+    stat(ov.stats.flows, 'flows') +
+    stat(`${ov.stats.schedules_due}/${ov.stats.schedules}`, 'schedules due') +
+    stat(Math.round(ov.stats.oldest_queued_seconds) + 's', 'oldest queued');
+  const s = ov.scheduler || {};
+  $('schedline').textContent = s.last_pass
+    ? `scheduler: last pass ${new Date(s.last_pass).toLocaleTimeString()}, fired ${s.last_fired}` +
+      (s.last_error ? ` — error: ${s.last_error}` : '')
+    : 'scheduler: no pass yet on this replica (any replica may hold the pass lock)';
+}
+
+function renderFlows(flows, scheds) {
+  const byFlow = {}; scheds.forEach(s => byFlow[s.flow_name] = s);
+  $('flows').innerHTML = flows.map(f => {
+    const s = byFlow[f.name];
+    const schedTxt = s ? `<span class="mono">${esc(s.cron)}</span> ${s.enabled ? '' : '(disabled)'}` +
+      (s.last_error ? ` <span class="err">${esc(s.last_error)}</span>` : '') : '—';
+    const pubChip = f.published_version
+      ? `<span class="chip published">v${f.published_version}</span>` : '<span class="chip draft">none</span>';
+    const canPublish = f.latest_version !== f.published_version
+      ? `<button onclick="publish('${esc(f.name)}',${f.latest_version})">Publish v${f.latest_version}</button>` : '';
+    return `<tr><td>${esc(f.name)}</td><td>v${f.latest_version}</td><td>${pubChip}</td>
+      <td>${schedTxt}</td>
+      <td style="white-space:nowrap">${canPublish}
+        <button class="ghost" onclick="editSchedule('${esc(f.name)}')">Schedule…</button>
+        <button class="ghost" onclick="runNow('${esc(f.name)}')">Run</button></td></tr>`;
+  }).join('') || '<tr><td colspan="5" class="hint">no flows deployed</td></tr>';
+}
+
+async function publish(name, v) { await api(`/api/v1/flows/${name}/versions/${v}/publish`, {method: 'POST'}); refresh(); }
+async function runNow(name) { await api(`/api/v1/flows/${name}/execute`, {method: 'POST', body: '{}'}); refresh(); }
+async function editSchedule(name) {
+  const cron = prompt(`Cron for "${name}" (UTC, 5-field; empty to remove):`, '*/5 * * * *');
+  if (cron === null) return;
+  if (cron.trim() === '') { await api(`/api/v1/flows/${name}/schedule`, {method: 'DELETE'}).catch(()=>{}); }
+  else { await api(`/api/v1/flows/${name}/schedule`, {method: 'PUT', body: JSON.stringify({cron: cron.trim()})}); }
+  refresh();
+}
+
+function renderTasks(tasks) {
+  $('tasks').innerHTML = tasks.map(t =>
+    `<tr class="task" onclick="toggleTask(this,'${t.id}')">
+      <td>${esc(t.flow_name)}</td><td>v${t.flow_version}</td>
+      <td><span class="chip ${esc(t.state)}">${esc(t.state)}</span></td>
+      <td>${t.attempt}/${t.max_attempts}</td>
+      <td class="mono">${new Date(t.enqueued_at).toLocaleTimeString()}</td>
+      <td class="err">${esc(t.error || '')}</td></tr>`
+  ).join('') || '<tr><td colspan="6" class="hint">no tasks yet</td></tr>';
+}
+
+async function toggleTask(row, id) {
+  const next = row.nextElementSibling;
+  if (next && next.classList.contains('detail')) { next.remove(); return; }
+  const d = await api('/api/v1/tasks/' + id);
+  const res = d.task.result ? JSON.stringify(d.task.result) : '';
+  const attempts = (d.attempts || []).map(a =>
+    `<tr><td>#${a.attempt}</td><td class="mono">${esc((a.runner_id || '').slice(0, 8))}</td><td>${esc(a.outcome || 'running')}</td><td class="err">${esc(a.error || '')}</td></tr>`).join('');
+  const tr = document.createElement('tr'); tr.className = 'detail';
+  tr.innerHTML = `<td colspan="6"><div class="ops"><table>${attempts}</table>
+    ${res ? `<div class="mono">${esc(res)}</div>` : ''}</div></td>`;
+  row.after(tr);
+}
+
+function renderRunners(rs) {
+  $('runners').innerHTML = rs.map(r =>
+    `<tr><td>${esc(r.name)}</td><td class="mono">${new Date(r.registered_at).toLocaleString()}</td>
+     <td class="mono">${r.last_seen_at ? new Date(r.last_seen_at).toLocaleTimeString() : '—'}</td></tr>`
+  ).join('') || '<tr><td colspan="3" class="hint">no runners registered</td></tr>';
+}
+
+function renderConnectors(cs) {
+  $('connectors').innerHTML = cs.map(c =>
+    `<tr><td>${esc(c.name)}</td><td>${esc(c.version)}</td><td class="mono">${esc(c.os)}/${esc(c.arch)}</td>
+     <td class="mono">${esc(c.digest.slice(0, 12))}…</td><td class="mono">${(c.size_bytes / 1048576).toFixed(1)} MiB</td></tr>`
+  ).join('') || '<tr><td colspan="5" class="hint">registry empty (operator-provisioned connectors don\'t appear here)</td></tr>';
+}
+
+function renderSecrets(ss) {
+  $('secrets').innerHTML = ss.map(s =>
+    `<tr><td>${esc(s.name)}</td><td>v${s.version}</td><td class="mono">${new Date(s.updated_at).toLocaleString()}</td></tr>`
+  ).join('') || '<tr><td colspan="3" class="hint">no secrets (or no KEK configured)</td></tr>';
+}
+
+boot();
+</script>
+</body>
+</html>

@@ -31,6 +31,20 @@ func open(t *testing.T) *store.Store {
 	return s
 }
 
+// deployPublished deploys a flowDoc version and publishes it — the
+// state most queue tests need (deploys are drafts since M4b).
+func deployPublished(t *testing.T, s *store.Store, name string) int {
+	t.Helper()
+	v, err := s.DeployFlow(t.Context(), name, flowDoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PublishFlow(t.Context(), name, v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
 func registerRunner(t *testing.T, s *store.Store, name string) (id, secret string) {
 	t.Helper()
 	tok, _, err := s.CreateRegistrationToken(t.Context(), time.Minute)
@@ -66,12 +80,15 @@ func TestRunnerRegistration(t *testing.T) {
 		t.Fatalf("bad token: err = %v", err)
 	}
 
-	// Secret authenticates to the same id; garbage does not.
-	got, err := s.AuthRunner(ctx, secret)
+	// Secret authenticates to the same id and account; garbage does not.
+	got, account, err := s.AuthRunner(ctx, secret)
 	if err != nil || got != id {
 		t.Fatalf("auth = %q, %v (want %q)", got, err, id)
 	}
-	if _, err := s.AuthRunner(ctx, "rs_nope"); !errors.Is(err, store.ErrUnauthorized) {
+	if account != store.DefaultAccountID {
+		t.Fatalf("auth account = %q, want default", account)
+	}
+	if _, _, err := s.AuthRunner(ctx, "rs_nope"); !errors.Is(err, store.ErrUnauthorized) {
 		t.Fatalf("bad secret: err = %v", err)
 	}
 
@@ -94,12 +111,30 @@ func TestFlowVersioning(t *testing.T) {
 		t.Fatalf("deploy 2 = %d, %v", v2, err)
 	}
 
-	f, doc, err := s.GetFlow(ctx, "orders", 0)
-	if err != nil || f.LatestVersion != 2 || len(doc) == 0 {
-		t.Fatalf("latest = %+v, %v", f, err)
+	// Drafts: version 0 resolves nothing until a publish.
+	if _, _, err := s.GetFlow(ctx, "orders", 0); !errors.Is(err, store.ErrNotPublished) {
+		t.Fatalf("unpublished default: %v (want ErrNotPublished)", err)
 	}
-	if _, _, err := s.GetFlow(ctx, "orders", 1); err != nil {
-		t.Fatalf("pinned version: %v", err)
+	if err := s.PublishFlow(ctx, "orders", 2); err != nil {
+		t.Fatal(err)
+	}
+	f, doc, err := s.GetFlow(ctx, "orders", 0)
+	if err != nil || f.LatestVersion != 2 || f.PublishedVersion != 2 || len(doc) == 0 {
+		t.Fatalf("published = %+v, %v", f, err)
+	}
+	// Rollback: publishing an older version repoints the default.
+	if err := s.PublishFlow(ctx, "orders", 1); err != nil {
+		t.Fatal(err)
+	}
+	if f, _, _ := s.GetFlow(ctx, "orders", 0); f.PublishedVersion != 1 {
+		t.Fatalf("rollback publish = %+v", f)
+	}
+	// Draft versions stay directly addressable.
+	if _, _, err := s.GetFlow(ctx, "orders", 2); err != nil {
+		t.Fatalf("pinned draft version: %v", err)
+	}
+	if err := s.PublishFlow(ctx, "orders", 99); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("publish missing version: %v", err)
 	}
 	if _, _, err := s.GetFlow(ctx, "ghost", 0); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("missing flow: %v", err)
@@ -111,9 +146,7 @@ func TestQueueLifecycle(t *testing.T) {
 	ctx := t.Context()
 	runnerID, _ := registerRunner(t, s, "runner-a")
 
-	if _, err := s.DeployFlow(ctx, "orders", flowDoc); err != nil {
-		t.Fatal(err)
-	}
+	deployPublished(t, s, "orders")
 
 	// Idempotent enqueue: same key → same task.
 	id1, err := s.Enqueue(ctx, "orders", 0, "key-1", 3)
@@ -163,9 +196,7 @@ func TestFailRequeueAndExhaustion(t *testing.T) {
 	ctx := t.Context()
 	runnerID, _ := registerRunner(t, s, "runner-a")
 
-	if _, err := s.DeployFlow(ctx, "orders", flowDoc); err != nil {
-		t.Fatal(err)
-	}
+	deployPublished(t, s, "orders")
 	id, err := s.Enqueue(ctx, "orders", 0, "", 2)
 	if err != nil {
 		t.Fatal(err)
@@ -202,9 +233,7 @@ func TestLeaseExpiryRedispatch(t *testing.T) {
 	deadRunner, _ := registerRunner(t, s, "dead")
 	liveRunner, _ := registerRunner(t, s, "live")
 
-	if _, err := s.DeployFlow(ctx, "orders", flowDoc); err != nil {
-		t.Fatal(err)
-	}
+	deployPublished(t, s, "orders")
 	id, err := s.Enqueue(ctx, "orders", 0, "", 3)
 	if err != nil {
 		t.Fatal(err)
@@ -246,9 +275,7 @@ func TestLeaseExpiryExhaustionFails(t *testing.T) {
 	ctx := t.Context()
 	runnerID, _ := registerRunner(t, s, "flaky")
 
-	if _, err := s.DeployFlow(ctx, "orders", flowDoc); err != nil {
-		t.Fatal(err)
-	}
+	deployPublished(t, s, "orders")
 	id, err := s.Enqueue(ctx, "orders", 0, "", 1)
 	if err != nil {
 		t.Fatal(err)

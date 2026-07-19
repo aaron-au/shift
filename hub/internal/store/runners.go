@@ -35,7 +35,7 @@ func (s *Store) CreateRegistrationToken(ctx context.Context, ttl time.Duration) 
 	_, err = s.pool.Exec(ctx,
 		`INSERT INTO runner_registration_tokens (id, account_id, token_hash, expires_at)
 		 VALUES ($1,$2,$3,$4)`,
-		newUUID(), DefaultAccountID, hash, expires)
+		newUUID(), accountID(ctx), hash, expires)
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -77,26 +77,26 @@ func (s *Store) RegisterRunner(ctx context.Context, token, name string) (id, sec
 	return id, plaintext, nil
 }
 
-// AuthRunner resolves a bearer secret to a runner id and updates
-// last_seen_at. Lookup is by SHA-256 of the presented secret.
-func (s *Store) AuthRunner(ctx context.Context, secret string) (string, error) {
-	var id string
-	err := s.pool.QueryRow(ctx,
-		`UPDATE runners SET last_seen_at = now() WHERE secret_hash = $1 RETURNING id`,
-		hashSecret(secret)).Scan(&id)
+// AuthRunner resolves a bearer secret to a runner id and its account,
+// updating last_seen_at. Lookup is by SHA-256 of the presented secret.
+func (s *Store) AuthRunner(ctx context.Context, secret string) (id, accountID string, err error) {
+	err = s.pool.QueryRow(ctx,
+		`UPDATE runners SET last_seen_at = now() WHERE secret_hash = $1 RETURNING id, account_id`,
+		hashSecret(secret)).Scan(&id, &accountID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", ErrUnauthorized
+		return "", "", ErrUnauthorized
 	}
 	if err != nil {
-		return "", fmt.Errorf("store: auth runner: %w", err)
+		return "", "", fmt.Errorf("store: auth runner: %w", err)
 	}
-	return id, nil
+	return id, accountID, nil
 }
 
-// Runners lists registered runners, newest first.
+// Runners lists the account's registered runners, newest first.
 func (s *Store) Runners(ctx context.Context) ([]Runner, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, name, registered_at, last_seen_at FROM runners ORDER BY registered_at DESC`)
+		`SELECT id, name, registered_at, last_seen_at FROM runners
+		 WHERE account_id = $1 ORDER BY registered_at DESC`, accountID(ctx))
 	if err != nil {
 		return nil, err
 	}

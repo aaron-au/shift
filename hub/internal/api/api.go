@@ -6,8 +6,6 @@
 package api
 
 import (
-	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,14 +16,30 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aaron-au/shift/hub/internal/oidcauth"
+	"github.com/aaron-au/shift/hub/internal/scheduler"
+	"github.com/aaron-au/shift/hub/internal/secrets"
 	"github.com/aaron-au/shift/hub/internal/store"
 	"github.com/aaron-au/shift/pkg/flowdoc"
 )
 
 // Options configure the API.
 type Options struct {
-	// AdminToken guards admin endpoints. Required, min 16 bytes.
+	// AdminToken is the break-glass admin credential (min 16 bytes when
+	// set). Optional once OIDC is configured; at least one of the two is
+	// required.
 	AdminToken string
+	// OIDC verifies human bearer tokens / session cookies. Optional.
+	OIDC *oidcauth.Verifier
+	// OIDCFlow enables the dashboard's browser login (/auth/*). Optional;
+	// requires OIDC.
+	OIDCFlow *oidcauth.Flow
+	// Secrets enables the secrets endpoints. Optional (absent without a
+	// configured KEK).
+	Secrets *secrets.Service
+	// SchedStatus reports the scheduler loop's last pass for /api/v1/stats.
+	// Optional (tests and API-only deployments).
+	SchedStatus func() scheduler.Status
 	// LeaseTTL is how long a claimed task stays leased between heartbeats
 	// (default 30s).
 	LeaseTTL time.Duration
@@ -37,8 +51,14 @@ type Options struct {
 }
 
 func (o *Options) defaults() error {
-	if len(o.AdminToken) < 16 {
+	if o.AdminToken == "" && o.OIDC == nil {
+		return fmt.Errorf("api: an admin realm is required — configure OIDC or a break-glass admin token")
+	}
+	if o.AdminToken != "" && len(o.AdminToken) < 16 {
 		return fmt.Errorf("api: admin token must be at least 16 characters")
+	}
+	if o.OIDCFlow != nil && o.OIDC == nil {
+		return fmt.Errorf("api: OIDCFlow requires OIDC")
 	}
 	if o.LeaseTTL <= 0 {
 		o.LeaseTTL = 30 * time.Second
@@ -65,6 +85,18 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	a := &api{st: st, opts: opts}
 	mux := http.NewServeMux()
 
+	// Dashboard page (static; its data calls are authenticated). The
+	// authinfo probe is unauthenticated so the login page knows whether
+	// to offer OIDC — it reveals only which login methods exist.
+	mux.HandleFunc("GET /", a.dashboard)
+	mux.HandleFunc("GET /api/v1/authinfo", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]bool{
+			"oidc_login":  opts.OIDCFlow != nil,
+			"break_glass": opts.AdminToken != "",
+		})
+	})
+	mux.Handle("GET /api/v1/stats", a.admin(a.stats))
+
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -82,9 +114,41 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("PUT /api/v1/flows/{name}", a.admin(a.deployFlow))
 	mux.Handle("GET /api/v1/flows", a.admin(a.listFlows))
 	mux.Handle("GET /api/v1/flows/{name}", a.admin(a.getFlow))
+	mux.Handle("POST /api/v1/flows/{name}/versions/{version}/publish", a.admin(a.publishFlow))
 	mux.Handle("POST /api/v1/flows/{name}/execute", a.admin(a.executeFlow))
+	mux.Handle("PUT /api/v1/flows/{name}/schedule", a.admin(a.putSchedule))
+	mux.Handle("GET /api/v1/flows/{name}/schedule", a.admin(a.getSchedule))
+	mux.Handle("DELETE /api/v1/flows/{name}/schedule", a.admin(a.deleteSchedule))
+	mux.Handle("GET /api/v1/schedules", a.admin(a.listSchedules))
 	mux.Handle("GET /api/v1/tasks", a.admin(a.listTasks))
 	mux.Handle("GET /api/v1/tasks/{id}", a.admin(a.getTask))
+	mux.Handle("GET /api/v1/me", a.admin(a.me))
+
+	// Secrets (admin manages; runners resolve). Absent without a KEK.
+	if opts.Secrets != nil {
+		mux.Handle("PUT /api/v1/secrets/{name}", a.admin(a.putSecret))
+		mux.Handle("GET /api/v1/secrets", a.admin(a.listSecrets))
+		mux.Handle("DELETE /api/v1/secrets/{name}", a.admin(a.deleteSecret))
+		mux.Handle("POST /api/v1/keys/rotate", a.admin(a.rotateKEK))
+		mux.Handle("POST /api/v1/secrets/resolve", a.runner(a.resolveSecrets))
+	}
+
+	// Connector registry: publishing is admin-only; resolve/fetch and
+	// the trusted-key list serve runners too (their verification path).
+	mux.Handle("POST /api/v1/publisher-keys", a.admin(a.addPublisherKey))
+	mux.Handle("GET /api/v1/publisher-keys", a.adminOrRunner(a.listPublisherKeys))
+	mux.Handle("DELETE /api/v1/publisher-keys/{id}", a.admin(a.revokePublisherKey))
+	mux.Handle("PUT /api/v1/connectors/{name}/versions/{version}", a.admin(a.uploadConnector))
+	mux.Handle("GET /api/v1/connectors", a.admin(a.listConnectors))
+	mux.Handle("GET /api/v1/connectors/{name}/resolve", a.adminOrRunner(a.resolveConnector))
+	mux.Handle("GET /api/v1/connectors/{name}/versions/{version}/artifact", a.adminOrRunner(a.downloadConnector))
+
+	// Dashboard browser login.
+	if opts.OIDCFlow != nil {
+		mux.HandleFunc("GET /auth/login", a.login)
+		mux.HandleFunc("GET /auth/callback", a.callback)
+		mux.HandleFunc("GET /auth/logout", a.logout)
+	}
 
 	// Runner realm. Registration authenticates by single-use token in the
 	// body; everything else by the runner's bearer secret.
@@ -106,35 +170,6 @@ func bearer(r *http.Request) string {
 		return ""
 	}
 	return strings.TrimSpace(h[len(p):])
-}
-
-func (a *api) admin(next http.HandlerFunc) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tok := bearer(r)
-		if subtle.ConstantTimeCompare([]byte(tok), []byte(a.opts.AdminToken)) != 1 {
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-			return
-		}
-		next(w, r)
-	})
-}
-
-type runnerKey struct{}
-
-func (a *api) runner(next http.HandlerFunc) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, err := a.st.AuthRunner(r.Context(), bearer(r))
-		if err != nil {
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-			return
-		}
-		next(w, r.WithContext(context.WithValue(r.Context(), runnerKey{}, id)))
-	})
-}
-
-func runnerID(r *http.Request) string {
-	id, _ := r.Context().Value(runnerKey{}).(string)
-	return id
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -178,7 +213,7 @@ func (a *api) createRunnerToken(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	_ = a.st.Audit(r.Context(), "admin", "runner-token.create", "", nil)
+	_ = a.st.Audit(r.Context(), actor(r), "runner-token.create", "", nil)
 	writeJSON(w, http.StatusCreated, map[string]any{"token": token, "expires_at": expires})
 }
 
@@ -208,12 +243,16 @@ func (a *api) deployFlow(w http.ResponseWriter, r *http.Request) {
 			fmt.Errorf("document name %q does not match URL flow %q", doc.Name, name))
 		return
 	}
+	if err := a.checkSecretRefs(r, doc); err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
 	version, err := a.st.DeployFlow(r.Context(), name, raw)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	_ = a.st.Audit(r.Context(), "admin", "flow.deploy", name, map[string]int{"version": version})
+	_ = a.st.Audit(r.Context(), actor(r), "flow.deploy", name, map[string]int{"version": version})
 	writeJSON(w, http.StatusCreated, map[string]any{"name": name, "version": version})
 }
 
@@ -239,6 +278,27 @@ func (a *api) getFlow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"flow": f, "document": json.RawMessage(doc)})
 }
 
+// publishFlow marks a version published (POST .../versions/{version}/publish).
+func (a *api) publishFlow(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	version, err := strconv.Atoi(r.PathValue("version"))
+	if err != nil || version < 1 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("version must be a positive integer"))
+		return
+	}
+	err = a.st.PublishFlow(r.Context(), name, version)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	_ = a.st.Audit(r.Context(), actor(r), "flow.publish", name, map[string]int{"version": version})
+	writeJSON(w, http.StatusOK, map[string]any{"name": name, "published_version": version})
+}
+
 func (a *api) executeFlow(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Version        int    `json:"version"`
@@ -249,16 +309,26 @@ func (a *api) executeFlow(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	// The scheduler derives its dedup keys as "sched:<id>:<tick>"; a
+	// user key in that namespace could silently absorb a tick.
+	if strings.HasPrefix(req.IdempotencyKey, "sched:") {
+		writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf(`idempotency keys may not use the reserved "sched:" prefix`))
+		return
+	}
 	id, err := a.st.Enqueue(r.Context(), r.PathValue("name"), req.Version, req.IdempotencyKey, req.MaxAttempts)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if errors.Is(err, store.ErrNotPublished) {
+		writeErr(w, http.StatusConflict, err)
 		return
 	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	_ = a.st.Audit(r.Context(), "admin", "task.enqueue", id, nil)
+	_ = a.st.Audit(r.Context(), actor(r), "task.enqueue", id, nil)
 	writeJSON(w, http.StatusAccepted, map[string]string{"task_id": id})
 }
 

@@ -20,9 +20,35 @@ internal/connpool      connector subprocess pool (reuse, health, idle-reap)
 internal/task          task model + in-memory result ring (dashboard state)
 internal/service       THE core: admission → pool → pipeline → results; benchmark
 internal/api           HTTP API + embedded dashboard (go:embed ui.html)
-internal/hubclient     HTTP client for the hub control API (ADR-0009)
-internal/leaseloop     hub intake (M3b): lease → submit → heartbeat → report
+internal/hubclient     HTTP client for the hub control API (ADR-0009);
+                       M4b: secret resolve, artifact resolve/fetch, trusted keys,
+                       CA trust (SHIFT_HUB_CA_FILE), persisted credentials
+internal/leaseloop     hub intake (M3b): lease → submit → heartbeat → report;
+                       M4b: per-task {"$secret":…} resolution before Submit
+internal/connstore     M4b (ADR-0011): fetch signed connector artifacts from the
+                       hub registry, verify Ed25519+SHA-256 fail-closed, cache
+                       content-addressed, re-hash on every use
 ```
+
+## M4b: secrets and signed connectors
+
+- **Secrets**: documents arrive from the hub carrying inert
+  `{"$secret":"name"}` refs. The leaseloop resolves them per task via
+  the runner-realm `POST /api/v1/secrets/resolve` (no cache — revocation
+  is immediate, the runner stays stateless) and substitutes into a copy
+  of the document. Resolution failures fail the task with **names only**;
+  values never appear in logs or reports (e2e: `TestSecretsNeverAtRest`).
+- **Signed connectors**: with `-hub` set, `connstore.Ensure` becomes the
+  pool's locator. Order: operator `-connector-dir` first (local trust,
+  unchanged dev workflow), registry second. `SHIFT_REQUIRE_SIGNED=1`
+  disables the Dir fallback — everything must come verified from the
+  registry (the compose bundle runs this way). Trust root = the hub's
+  key list over the authenticated TLS channel; `SHIFT_TRUSTED_KEYS`
+  (comma-separated base64) pins keys and disables hub fetch.
+- **Restart identity**: registration tokens are single-use, so
+  `SHIFT_HUB_CRED_FILE` persists the issued secret; `SHIFT_HUB_REG_TOKEN_FILE`
+  reads the token from a file (compose hands it over that way); bounded
+  registration retry (~60s) tolerates hub boot ordering.
 
 ## Flow documents
 

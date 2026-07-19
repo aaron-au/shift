@@ -6,11 +6,14 @@ package hubclient
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -39,6 +42,10 @@ func New(baseURL, secret string) *Client {
 // Register consumes a single-use registration token and returns the
 // runner's issued identity plus a ready-to-use client.
 func Register(ctx context.Context, baseURL, token, name string) (runnerID string, c *Client, err error) {
+	return registerWith(ctx, http.DefaultClient, baseURL, token, name)
+}
+
+func registerWith(ctx context.Context, hc *http.Client, baseURL, token, name string) (runnerID string, c *Client, err error) {
 	body, _ := json.Marshal(map[string]string{"token": token, "name": name})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		strings.TrimRight(baseURL, "/")+"/api/v1/runners/register", bytes.NewReader(body))
@@ -46,7 +53,7 @@ func Register(ctx context.Context, baseURL, token, name string) (runnerID string
 		return "", nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return "", nil, fmt.Errorf("hubclient: register: %w", err)
 	}
@@ -61,6 +68,8 @@ func Register(ctx context.Context, baseURL, token, name string) (runnerID string
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return "", nil, err
 	}
+	// The returned client keeps the standard 90s-timeout transport;
+	// Connect swaps in a CA-trusting one when configured.
 	return out.RunnerID, New(baseURL, out.Secret), nil
 }
 
@@ -172,6 +181,114 @@ func (c *Client) Fail(ctx context.Context, taskID, msg string) error {
 	default:
 		return fmt.Errorf("hubclient: fail: %s", readErr(resp))
 	}
+}
+
+// ConnectorManifest is what a runner needs to fetch and verify one
+// connector artifact (mirrors the hub's resolve response).
+type ConnectorManifest struct {
+	Name         string `json:"name"`
+	Version      string `json:"version"`
+	OS           string `json:"os"`
+	Arch         string `json:"arch"`
+	Digest       string `json:"digest"`        // hex SHA-256
+	Signature    string `json:"signature"`     // base64 Ed25519
+	PublisherKey string `json:"publisher_key"` // base64 Ed25519 public key
+	SizeBytes    int64  `json:"size_bytes"`
+}
+
+// ResolveConnector asks the hub for the named connector's manifest for
+// this runner's platform (version "" = latest).
+func (c *Client) ResolveConnector(ctx context.Context, name, version string) (ConnectorManifest, error) {
+	path := fmt.Sprintf("/api/v1/connectors/%s/resolve?version=%s&os=%s&arch=%s",
+		url.PathEscape(name), url.QueryEscape(version), runtime.GOOS, runtime.GOARCH)
+	resp, err := c.do(ctx, http.MethodGet, path, "")
+	if err != nil {
+		return ConnectorManifest{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return ConnectorManifest{}, fmt.Errorf("hubclient: resolve connector %s: %s", name, readErr(resp))
+	}
+	var m ConnectorManifest
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&m); err != nil {
+		return ConnectorManifest{}, fmt.Errorf("hubclient: resolve connector %s: %w", name, err)
+	}
+	return m, nil
+}
+
+// FetchConnector streams the manifest's artifact into w. The caller
+// verifies digest+signature — this just moves bytes.
+func (c *Client) FetchConnector(ctx context.Context, m ConnectorManifest, w io.Writer) error {
+	path := fmt.Sprintf("/api/v1/connectors/%s/versions/%s/artifact?os=%s&arch=%s",
+		url.PathEscape(m.Name), url.PathEscape(m.Version), m.OS, m.Arch)
+	resp, err := c.do(ctx, http.MethodGet, path, "")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("hubclient: fetch connector %s: %s", m.Name, readErr(resp))
+	}
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		return fmt.Errorf("hubclient: fetch connector %s: %w", m.Name, err)
+	}
+	return nil
+}
+
+// PublisherKeys fetches the hub's trusted signing keys (raw Ed25519
+// public keys) — the runner's default trust root for artifact
+// verification.
+func (c *Client) PublisherKeys(ctx context.Context) ([][]byte, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/v1/publisher-keys", "")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("hubclient: publisher keys: %s", readErr(resp))
+	}
+	var out struct {
+		Keys []struct {
+			PublicKey string `json:"public_key"`
+		} `json:"keys"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
+		return nil, err
+	}
+	keys := make([][]byte, 0, len(out.Keys))
+	for _, k := range out.Keys {
+		raw, err := base64.StdEncoding.DecodeString(k.PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("hubclient: publisher keys: bad base64: %w", err)
+		}
+		keys = append(keys, raw)
+	}
+	return keys, nil
+}
+
+// ResolveSecrets decrypts the named secrets hub-side and returns their
+// values. Callers must never log the returned map or wrap its contents
+// into errors — names only.
+func (c *Client) ResolveSecrets(ctx context.Context, names []string) (map[string]string, error) {
+	raw, err := json.Marshal(map[string][]string{"names": names})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, http.MethodPost, "/api/v1/secrets/resolve", string(raw))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("hubclient: resolve secrets: %s", readErr(resp))
+	}
+	var out struct {
+		Secrets map[string]string `json:"secrets"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("hubclient: resolve secrets: %w", err)
+	}
+	return out.Secrets, nil
 }
 
 func (c *Client) do(ctx context.Context, method, path, body string) (*http.Response, error) {

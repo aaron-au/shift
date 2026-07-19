@@ -9,6 +9,7 @@ package leaseloop
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -131,6 +132,16 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 		return
 	}
 
+	// Documents arrive from the hub with inert {"$secret": name} refs;
+	// plaintext exists only here, per task, never in the queue or logs.
+	if doc, err = l.resolveSecrets(ctx, doc); err != nil {
+		l.report(t.ID, func(ctx context.Context) error {
+			// err carries secret names only, never values.
+			return l.opts.Client.Fail(ctx, t.ID, "secret resolution: "+err.Error())
+		})
+		return
+	}
+
 	localID, err := l.opts.Service.Submit(doc, false)
 	if err != nil {
 		l.report(t.ID, func(ctx context.Context) error {
@@ -207,6 +218,32 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 			done = nil
 		}
 	}
+}
+
+// resolveSecrets fetches this task's referenced secrets from the hub
+// and substitutes them into a copy of the document. No caching: a
+// per-task fetch keeps revocation immediate and the runner stateless.
+func (l *Loop) resolveSecrets(ctx context.Context, doc *flowdoc.Document) (*flowdoc.Document, error) {
+	refs, err := doc.SecretRefs()
+	if err != nil {
+		return nil, err
+	}
+	if len(refs) == 0 {
+		return doc, nil
+	}
+	rctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	values, err := l.opts.Client.ResolveSecrets(rctx, refs)
+	if err != nil {
+		return nil, err
+	}
+	return doc.ResolveSecrets(func(name string) (string, error) {
+		v, ok := values[name]
+		if !ok {
+			return "", fmt.Errorf("secret %q not returned by hub", name)
+		}
+		return v, nil
+	})
 }
 
 // report delivers a terminal state with retries — losing the race to a

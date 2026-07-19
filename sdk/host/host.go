@@ -81,7 +81,7 @@ func Launch(ctx context.Context, binary string, opts LaunchOptions) (*Process, e
 
 	// The binary path is chosen by the runner from its connector store —
 	// spawning it is this package's purpose.
-	cmd := exec.CommandContext(ctx, binary) //nolint:gosec // G204: launching connector binaries is the point of this package; callers vet paths (registry-signed from M4)
+	cmd := exec.CommandContext(ctx, binary) //nolint:gosec // G204: launching connector binaries is the point of this package; callers vet paths (operator Dir or Ed25519-verified via runner connstore)
 	cmd.Env = append(os.Environ(),
 		sdk.EnvSocket+"="+socket,
 		sdk.EnvToken+"="+token,

@@ -1,0 +1,101 @@
+# SHIFT "just runs" bundle (M4b exit criterion):
+#   make up        (builds images, then docker compose up)
+# → dashboard at https://localhost:8400 (self-signed — accept once, or
+#   trust the CA in the bootstrap volume), Dex login admin@example.com /
+#   password, demo flow fires every minute on a signed connector.
+#
+# Every value in this file is a deliberately-non-secret dev default
+# (same policy as compose.dev.yml). Real deployments template their own.
+
+name: shift
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: shift
+      POSTGRES_PASSWORD: shift-dev-only
+      POSTGRES_DB: shift
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shift"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    # Internal only — no published port (compose.dev.yml is for that).
+
+  certgen:
+    image: shift/tools:${VERSION:-dev}
+    command: ["certs", "-dir", "/bootstrap"]
+    volumes:
+      - bootstrap:/bootstrap
+
+  dex:
+    image: dexidp/dex:v2.44.0
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    volumes:
+      - ./dex/config.yaml:/etc/dex/config.yaml:ro
+    ports:
+      - "127.0.0.1:${SHIFT_DEX_PORT:-5556}:5556" # browser redirects during login
+
+  hubd:
+    image: shift/hubd:${VERSION:-dev}
+    depends_on:
+      postgres: { condition: service_healthy }
+      certgen: { condition: service_completed_successfully }
+      dex: { condition: service_started }
+    environment:
+      SHIFT_HUB_LISTEN: 0.0.0.0:8400
+      SHIFT_HUB_DB: postgres://shift:shift-dev-only@postgres:5432/shift
+      SHIFT_HUB_TLS_CERT: /bootstrap/hub.pem
+      SHIFT_HUB_TLS_KEY: /bootstrap/hub.key
+      SHIFT_HUB_KEK_FILE: /bootstrap/kek.bin
+      # Break-glass token: bootstrap automation uses it; humans use Dex.
+      SHIFT_HUB_ADMIN_TOKEN: bundle-admin-token-dev-only
+      SHIFT_HUB_OIDC_ISSUER: http://dex:5556/dex
+      SHIFT_HUB_OIDC_CLIENT_ID: shift-hub
+      SHIFT_HUB_OIDC_CLIENT_SECRET: shift-dev-client-secret
+      SHIFT_HUB_OIDC_REDIRECT_URL: https://localhost:8400/auth/callback
+    volumes:
+      - bootstrap:/bootstrap
+    ports:
+      - "127.0.0.1:${SHIFT_HUB_PORT:-8400}:8400"
+
+  bootstrap:
+    image: shift/tools:${VERSION:-dev}
+    command: ["seed", "-dir", "/bootstrap", "-hub", "https://hubd:8400"]
+    depends_on:
+      hubd: { condition: service_started }
+    environment:
+      SHIFT_HUB_ADMIN_TOKEN: bundle-admin-token-dev-only
+      SHIFT_BOOTSTRAP_DEMO: "1"
+    volumes:
+      - bootstrap:/bootstrap
+
+  runnerd:
+    image: shift/runnerd:${VERSION:-dev}
+    depends_on:
+      bootstrap: { condition: service_completed_successfully }
+    environment:
+      SHIFT_HUB_URL: https://hubd:8400
+      SHIFT_HUB_CA_FILE: /bootstrap/ca.pem
+      # Registration tokens are single-use; persisted credentials keep
+      # `docker compose restart runnerd` working.
+      SHIFT_HUB_REG_TOKEN_FILE: /bootstrap/runner-token
+      SHIFT_HUB_CRED_FILE: /bootstrap/runner-cred.json
+      # No local connector dir: everything arrives signed via the
+      # registry — the whole supply chain is exercised on every boot.
+      SHIFT_REQUIRE_SIGNED: "1"
+      SHIFT_CONNECTOR_CACHE: /var/lib/shift/connectors
+      SHIFT_LISTEN: 0.0.0.0:8340
+    volumes:
+      - bootstrap:/bootstrap
+      - runner_cache:/var/lib/shift
+    ports:
+      - "127.0.0.1:${SHIFT_RUNNER_PORT:-8340}:8340" # override when a local runnerd holds 8340
+
+volumes:
+  postgres_data:
+  bootstrap: # certs, KEK, publisher + runner credentials — never bind-mounted into the repo
+  runner_cache:

@@ -21,8 +21,17 @@ var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 // Options tune the pool.
 type Options struct {
-	// Dir holds connector binaries named shift-connector-<name>.
+	// Dir holds operator-provisioned connector binaries named
+	// shift-connector-<name> (local trust: whoever populates Dir vouches
+	// for its contents — the M2/M3a dev workflow).
 	Dir string
+	// Locate resolves a connector to a VERIFIED executable path when Dir
+	// doesn't have it (wired to connstore.Ensure when a hub registry is
+	// configured). Optional.
+	Locate func(ctx context.Context, name string) (string, error)
+	// RequireSigned disables the Dir fallback entirely: every binary
+	// must come through Locate (SHIFT_REQUIRE_SIGNED).
+	RequireSigned bool
 	// IdleTTL reaps processes unused this long (default 5m).
 	IdleTTL time.Duration
 	// ReapEvery is the sweep interval (default 30s).
@@ -89,9 +98,9 @@ func (p *Pool) Get(ctx context.Context, name string) (*host.Process, error) {
 		delete(p.entries, name)
 	}
 
-	binary := filepath.Join(p.opts.Dir, "shift-connector-"+name)
-	if _, err := os.Stat(binary); err != nil {
-		return nil, fmt.Errorf("connpool: connector %q not installed (%s)", name, binary)
+	binary, err := p.locate(ctx, name)
+	if err != nil {
+		return nil, err
 	}
 	proc, err := host.Launch(ctx, binary, host.LaunchOptions{})
 	if err != nil {
@@ -100,6 +109,31 @@ func (p *Pool) Get(ctx context.Context, name string) (*host.Process, error) {
 	p.launches++
 	p.entries[name] = &entry{proc: proc, refs: 1, lastUsed: time.Now()}
 	return proc, nil
+}
+
+// locate finds the connector binary: operator Dir first (unless signed
+// artifacts are required), then the registry locator. Verification of
+// registry artifacts happens inside Locate (connstore) — a path
+// returned here is cleared to execute.
+func (p *Pool) locate(ctx context.Context, name string) (string, error) {
+	if !p.opts.RequireSigned && p.opts.Dir != "" {
+		binary := filepath.Join(p.opts.Dir, "shift-connector-"+name)
+		if _, err := os.Stat(binary); err == nil {
+			return binary, nil
+		}
+	}
+	if p.opts.Locate != nil {
+		path, err := p.opts.Locate(ctx, name)
+		if err != nil {
+			return "", fmt.Errorf("connpool: connector %q: %w", name, err)
+		}
+		return path, nil
+	}
+	if p.opts.RequireSigned {
+		return "", fmt.Errorf("connpool: connector %q: signed artifacts required but no registry locator configured", name)
+	}
+	return "", fmt.Errorf("connpool: connector %q not installed (%s)", name,
+		filepath.Join(p.opts.Dir, "shift-connector-"+name))
 }
 
 // Put releases a task's use of the named connector.

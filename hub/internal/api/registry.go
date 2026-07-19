@@ -1,0 +1,230 @@
+package api
+
+import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"regexp"
+	"runtime"
+
+	"github.com/aaron-au/shift/hub/internal/store"
+	"github.com/aaron-au/shift/pkg/consign"
+)
+
+// connectorNameRE mirrors runner/internal/connpool's naming rule — the
+// runner refuses anything else, so reject it at publish time.
+var connectorNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+
+var osArchAllow = map[string]bool{
+	"linux/amd64": true, "linux/arm64": true,
+	"darwin/amd64": true, "darwin/arm64": true,
+	"windows/amd64": true,
+}
+
+// maxArtifact caps upload/download size (the blob crosses hub RAM).
+const defaultMaxArtifact = 128 << 20
+
+// uploadConnector verifies and stores a signed artifact:
+// PUT /api/v1/connectors/{name}/versions/{version}?os=&arch=
+// headers X-Shift-Publisher-Key (key name), X-Shift-Signature (base64).
+// Fail closed: bad signature/unknown key → 403, nothing stored.
+func (a *api) uploadConnector(w http.ResponseWriter, r *http.Request) {
+	name, version := r.PathValue("name"), r.PathValue("version")
+	if !connectorNameRE.MatchString(name) {
+		writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf("connector name must match %s", connectorNameRE))
+		return
+	}
+	if version == "" || len(version) > 64 {
+		writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf("version must be 1-64 characters"))
+		return
+	}
+	osName, arch := r.URL.Query().Get("os"), r.URL.Query().Get("arch")
+	if osName == "" {
+		osName = runtime.GOOS
+	}
+	if arch == "" {
+		arch = runtime.GOARCH
+	}
+	if !osArchAllow[osName+"/"+arch] {
+		writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf("unsupported os/arch %s/%s", osName, arch))
+		return
+	}
+	keyName := r.Header.Get("X-Shift-Publisher-Key")
+	sig, err := base64.StdEncoding.DecodeString(r.Header.Get("X-Shift-Signature"))
+	if keyName == "" || err != nil || len(sig) == 0 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("X-Shift-Publisher-Key and base64 X-Shift-Signature headers are required"))
+		return
+	}
+
+	body := http.MaxBytesReader(w, r.Body, defaultMaxArtifact)
+	hasher := sha256.New()
+	data, err := io.ReadAll(io.TeeReader(body, hasher))
+	if err != nil {
+		if tooBig, ok := errors.AsType[*http.MaxBytesError](err); ok {
+			writeErr(w, http.StatusRequestEntityTooLarge, fmt.Errorf("artifact exceeds %d bytes", tooBig.Limit))
+			return
+		}
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if len(data) == 0 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("empty artifact"))
+		return
+	}
+
+	key, err := a.st.PublisherKeyByName(r.Context(), keyName)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusForbidden, fmt.Errorf("unknown or revoked publisher key %q", keyName))
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	m := consign.Manifest{Name: name, Version: version, OS: osName, Arch: arch}
+	copy(m.Digest[:], hasher.Sum(nil))
+	if err := consign.Verify(key.PublicKey, m, sig); err != nil {
+		writeErr(w, http.StatusForbidden, err)
+		return
+	}
+
+	if err := a.st.PutConnectorVersion(r.Context(), name, version, osName, arch, m.Digest[:], sig, key.ID, data); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	_ = a.st.Audit(r.Context(), actor(r), "connector.publish", name,
+		map[string]any{"version": version, "os": osName, "arch": arch, "digest": hex.EncodeToString(m.Digest[:]), "publisher_key": keyName})
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"name": name, "version": version, "os": osName, "arch": arch,
+		"digest": hex.EncodeToString(m.Digest[:]), "size_bytes": len(data),
+	})
+}
+
+// resolveConnector returns the manifest a runner needs to fetch+verify:
+// GET /api/v1/connectors/{name}/resolve?version=latest&os=&arch=
+func (a *api) resolveConnector(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	cv, err := a.st.ResolveConnector(r.Context(), r.PathValue("name"),
+		q.Get("version"), q.Get("os"), q.Get("arch"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, connectorManifestJSON(cv))
+}
+
+// downloadConnector streams the artifact bytes with verification
+// headers: GET /api/v1/connectors/{name}/versions/{version}/artifact?os=&arch=
+func (a *api) downloadConnector(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	cv, err := a.st.ResolveConnector(r.Context(), r.PathValue("name"),
+		r.PathValue("version"), q.Get("os"), q.Get("arch"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	data, err := a.st.ConnectorBlob(r.Context(), cv.Digest)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("X-Shift-Digest", hex.EncodeToString(cv.Digest))
+	w.Header().Set("X-Shift-Signature", base64.StdEncoding.EncodeToString(cv.Signature))
+	w.Header().Set("X-Shift-Publisher-Key", base64.StdEncoding.EncodeToString(cv.PublisherKey))
+	w.Header().Set("Content-Length", fmt.Sprint(len(data)))
+	_, _ = w.Write(data)
+}
+
+func (a *api) listConnectors(w http.ResponseWriter, r *http.Request) {
+	cvs, err := a.st.Connectors(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(cvs))
+	for _, cv := range cvs {
+		out = append(out, connectorManifestJSON(cv))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"connectors": out})
+}
+
+func connectorManifestJSON(cv store.ConnectorVersion) map[string]any {
+	return map[string]any{
+		"name": cv.Name, "version": cv.Version, "os": cv.OS, "arch": cv.Arch,
+		"digest":        hex.EncodeToString(cv.Digest),
+		"signature":     base64.StdEncoding.EncodeToString(cv.Signature),
+		"publisher_key": base64.StdEncoding.EncodeToString(cv.PublisherKey),
+		"size_bytes":    cv.SizeBytes,
+		"created_at":    cv.Created,
+	}
+}
+
+// --- publisher keys ----------------------------------------------------------
+
+func (a *api) addPublisherKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name      string `json:"name"`
+		PublicKey string `json:"public_key"` // base64
+	}
+	if err := readBody(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	pub, err := base64.StdEncoding.DecodeString(req.PublicKey)
+	if req.Name == "" || err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("name and base64 public_key are required"))
+		return
+	}
+	id, err := a.st.AddPublisherKey(r.Context(), req.Name, pub)
+	if err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	_ = a.st.Audit(r.Context(), actor(r), "publisher-key.add", req.Name, nil)
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id, "name": req.Name})
+}
+
+func (a *api) listPublisherKeys(w http.ResponseWriter, r *http.Request) {
+	keys, err := a.st.TrustedKeys(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, map[string]any{
+			"id": k.ID, "name": k.Name,
+			"public_key": base64.StdEncoding.EncodeToString(k.PublicKey),
+			"created_at": k.Created,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"keys": out})
+}
+
+func (a *api) revokePublisherKey(w http.ResponseWriter, r *http.Request) {
+	err := a.st.RevokePublisherKey(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	_ = a.st.Audit(r.Context(), actor(r), "publisher-key.revoke", r.PathValue("id"), nil)
+	w.WriteHeader(http.StatusNoContent)
+}

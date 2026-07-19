@@ -31,6 +31,12 @@ type Options struct {
 	TaskOverhead int64
 	// SpillDir hosts task scratch ("" = OS temp).
 	SpillDir string
+	// LocateConnector resolves connectors from the hub registry
+	// (verified) when ConnectorDir doesn't provide them. Optional.
+	LocateConnector func(ctx context.Context, name string) (string, error)
+	// RequireSigned disables the ConnectorDir fallback: everything must
+	// come verified through LocateConnector.
+	RequireSigned bool
 	// TaskHistory bounds the result ring (default 500).
 	TaskHistory int
 	// PoolIdleTTL reaps idle connectors (default 5m).
@@ -68,9 +74,14 @@ type Service struct {
 func New(opts Options) *Service {
 	opts.defaults()
 	return &Service{
-		opts:     opts,
-		gov:      mem.New(opts.MemBudget),
-		pool:     connpool.New(connpool.Options{Dir: opts.ConnectorDir, IdleTTL: opts.PoolIdleTTL}),
+		opts: opts,
+		gov:  mem.New(opts.MemBudget),
+		pool: connpool.New(connpool.Options{
+			Dir:           opts.ConnectorDir,
+			Locate:        opts.LocateConnector,
+			RequireSigned: opts.RequireSigned,
+			IdleTTL:       opts.PoolIdleTTL,
+		}),
 		store:    task.NewStore(opts.TaskHistory),
 		released: make(chan struct{}),
 		bench:    &benchState{},
