@@ -26,9 +26,9 @@ shift/
   docs/
 ```
 
-### M1 — Streaming engine + proof (ADR-0003, ADR-0004)
+### M1 — Streaming engine + proof (ADR-0003, ADR-0004) ✅ 2026-07-19
 Record model, pull-based batch pipeline, pooled buffers, spill-over-watermark, JSON/NDJSON + CSV readers/writers, core transforms, `shift-bench` harness with buffered baseline.
-**Exit:** 1 GB stream transformed at bounded RSS (~100 MB), zero disk below watermark, honest per-step metrics, benchmarks in CI.
+**Exit met** (see `docs/bench-M1.md`): 1 GiB transformed at **24 MiB peak RSS** (bar was 100 MB), zero disk below watermark; spilling aggregate holds 1M groups at 164 MiB with a 337 MiB single-file spill; **80× less memory and 2× faster** than the buffered baseline.
 
 ### M1.5 — Format depth
 XML streaming reader; EDI segment reader (X12/EDIFACT — deep domain, timeboxed spike first); DB cursor source with hub-persisted offsets.

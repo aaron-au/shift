@@ -39,10 +39,24 @@ Hub-and-spoke Integration Platform as a Service. Goal: a provisionable, enterpri
 ## Layout
 
 ```
+engine/     Streaming data plane (M1, done — see docs/bench-M1.md for proven numbers):
+  record/     hierarchical typed Values in arena-backed Batches; 0-alloc steady state; compiled Paths
+  stream/     pull pipelines: Project/Filter/Coerce/Flatten + spillable Aggregate; per-op metrics
+  format/     ndjson (hand-rolled tokenizer, differential-tested vs encoding/json), csvf
+  spill/      single-file unlinked scratch store + compact binary Value codec
+  mem/        watermark Governor (TryReserve fail == spill signal)
+  cmd/shift-bench/  the proof harness; run with -max-rss to enforce exit criteria
+sdk/ runner/ hub/ pkg/ proto/ deploy/   M2+ (stubs)
 _archive/   The complete 2025 prototype (hub, runner, scripts, compose, legacy docs). Read-only reference.
-docs/       Review, prototype architecture map, reference schema, ADRs.
-PLAN.md     Rebuild milestones. Target layout (from M0): go.work + engine/ sdk/ runner/ hub/ pkg/ proto/ deploy/
+docs/       Review, prototype architecture map, reference schema, ADRs, bench results.
+PLAN.md     Rebuild milestones.
 ```
+
+**Engine contracts to preserve** (violating these reintroduces v0's failure mode):
+- Batch lifetime: a batch from `Source.Next` is valid only until the next `Next`/`Close`; retaining data across batches requires `record.CopyValue` into your own batch.
+- No `map[string]interface{}` on any hot path; build values via `record.Builder` into a batch.
+- Operators mutate the flowing batch in place (they share its allocators); blocking operators (aggregate) account state via `mem.Governor` and spill to `spill.Store` when `TryReserve` fails.
+- Paths (`record.ParsePath`) compile once at pipeline build, never per record.
 
 ## Lessons already paid for (don't relearn)
 

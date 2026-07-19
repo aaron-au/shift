@@ -19,9 +19,14 @@ build:
 test:
 	@for m in $(MODULES); do echo "--- test $$m"; (cd $$m && go test -race ./...) || exit 1; done
 
-## bench: run benchmarks (non-blocking job; perf regressions gate from M1)
+## bench: micro-benchmarks + shift-bench RSS regression checks (ADR-0003)
 bench:
 	@for m in $(MODULES); do echo "--- bench $$m"; (cd $$m && go test -bench=. -benchmem -run='^$$' ./...) || exit 1; done
+	@mkdir -p bin && cd engine && go build -o ../bin/shift-bench ./cmd/shift-bench
+	@echo "--- shift-bench transform (RSS must stay bounded)"
+	bin/shift-bench -scenario transform -bytes 64MiB -max-rss 100MiB
+	@echo "--- shift-bench aggregate with spill"
+	bin/shift-bench -scenario aggregate -bytes 64MiB -watermark 8MiB -groups 100000 -max-rss 120MiB
 
 fmt:
 	@for m in $(MODULES); do (cd $$m && gofmt -w .); done
