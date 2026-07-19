@@ -328,6 +328,8 @@ type Status struct {
 	Connectors []connpool.Status `json:"connectors"`
 	Benchmark  *CapacityReport   `json:"benchmark,omitempty"`
 	BenchBusy  bool              `json:"benchmark_running"`
+	Tiered     *TieredReport     `json:"tiered,omitempty"`
+	TieredBusy bool              `json:"tiered_running"`
 }
 
 // Status snapshots the service.
@@ -341,6 +343,7 @@ func (s *Service) Status() Status {
 	st.Totals = s.store.Totals()
 	st.Connectors = s.pool.Snapshot()
 	st.Benchmark, st.BenchBusy = s.bench.snapshot()
+	st.Tiered, st.TieredBusy = s.bench.snapshotTiered()
 	return st
 }
 

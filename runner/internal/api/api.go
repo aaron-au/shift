@@ -96,6 +96,26 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 		writeJSON(w, http.StatusOK, map[string]any{"history": svc.BenchHistory()})
 	})
 
+	mux.HandleFunc("POST /api/benchmark/tiers", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Records int64 `json:"records"`
+			Streams int   `json:"streams"`
+		}
+		if r.ContentLength > 0 {
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+				writeErr(w, http.StatusBadRequest, err)
+				return
+			}
+		}
+		// Run asynchronously; the dashboard polls status for completion.
+		go func() { _, _ = svc.RunTieredBenchmark(req.Records, req.Streams) }()
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "tiered benchmark started"})
+	})
+
+	mux.HandleFunc("GET /api/benchmark/tiers", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"history": svc.TieredHistory()})
+	})
+
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)

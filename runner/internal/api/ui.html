@@ -50,6 +50,15 @@
     </div>
   </section>
   <section>
+    <h2>Workload tiers <span id="tierflag"></span></h2>
+    <table><thead><tr><th>tier</th><th>shape</th><th>single</th><th>aggregate</th><th>scaling</th></tr></thead>
+      <tbody id="tiers"><tr><td colspan=5 class="mono">run the tiered benchmark to grade throughput by process shape</td></tr></tbody></table>
+    <div style="margin-top:.8rem;display:flex;gap:.6rem;align-items:center">
+      <button id="tierbtn" onclick="runBenchTiers()">Run tiered benchmark</button>
+      <span class="hint" id="tierhint">Graded shapes — simple (passthrough), standard (filter+coerce+project), complex (flatten+aggregate/spill), extreme (multi-stage, high cardinality) — the honest basis for incumbent comparison.</span>
+    </div>
+  </section>
+  <section>
     <h2>Memory admission (ADR-0005)</h2>
     <div class="stats" id="gov"></div>
     <div class="bar"><i id="govbar" style="width:0"></i></div>
@@ -103,6 +112,16 @@ function render(s,tasks){
       stat(b.max_concurrent_by_mem,'max tasks by memory');
     $('benchhint').textContent='Last run '+new Date(b.at).toLocaleTimeString()+' · '+fmt(b.records_per_stream)+' records/stream · took '+b.duration_s.toFixed(1)+'s';
   }
+  // workload tiers
+  const tr=st.tiered;
+  $('tierflag').innerHTML = st.tiered_running?'<span class="chip running">running…</span>':'';
+  $('tierbtn').disabled = !!st.tiered_running;
+  if(tr){
+    $('tiers').innerHTML = (tr.tiers||[]).map(t=>
+      `<tr><td>${t.tier}</td><td class="mono">${t.shape}</td><td>${fmt(t.single_stream_rec_s)}/s</td>`+
+      `<td>${fmt(t.aggregate_rec_s)}/s</td><td>${(t.scaling_efficiency*100).toFixed(0)}%</td></tr>`).join('');
+    $('tierhint').textContent='Last run '+new Date(tr.at).toLocaleTimeString()+' · '+fmt(tr.tiers[0]&&tr.tiers[0].records_per_stream)+' records/stream × '+(tr.tiers[0]?tr.tiers[0].concurrent_streams:0)+' streams · took '+tr.duration_s.toFixed(1)+'s';
+  }
   // governor
   $('gov').innerHTML =
     stat(fmtB(g.used),'reserved now')+
@@ -145,6 +164,11 @@ function toggle(id){ open.has(id)?open.delete(id):open.add(id); refresh(); }
 async function runBench(){
   $('benchbtn').disabled=true;
   await fetch('/api/benchmark',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  setTimeout(refresh,300);
+}
+async function runBenchTiers(){
+  $('tierbtn').disabled=true;
+  await fetch('/api/benchmark/tiers',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
   setTimeout(refresh,300);
 }
 refresh(); setInterval(refresh,2000);

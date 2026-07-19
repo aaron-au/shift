@@ -41,12 +41,23 @@ type benchState struct {
 	running bool
 	latest  *CapacityReport
 	history []CapacityReport // newest first, bounded
+
+	// Tiered workload benchmark (M5e): graded process shapes.
+	tieredRunning bool
+	tieredLatest  *TieredReport
+	tieredHistory []TieredReport
 }
 
 func (b *benchState) snapshot() (*CapacityReport, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.latest, b.running
+}
+
+func (b *benchState) snapshotTiered() (*TieredReport, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.tieredLatest, b.tieredRunning
 }
 
 // History returns past capacity reports, newest first.

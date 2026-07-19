@@ -55,15 +55,15 @@ OIDC auth + tenancy enforcement (generic OIDC via go-oidc; Dex in the bundle; br
 ### M5 — Flow model & studio API 🚧 in progress
 DAG flows (branch/merge, error handlers, parallel fan-out, sub-flows), mapping/transform authoring API (AI-friendly: flows and mappings are declarative JSON/YAML documents with a JSON-Schema), WASM (wazero) user transforms, webhook triggers with custom API endpoints on runners.
 
-M5 is milestone-scale, split into sub-milestones (each lands green through `make check`):
+M5 is milestone-scale, split into sub-milestones (each lands green through `make check`). Build order (chosen 2026-07-20 — operational + visual first, custom code last since it is "another step, not needed right now"): **M5a → M5e → M5c → M5d → M5b**.
 - **M5a — Flow model v2 (ADR-0013) ✅ 2026-07-20.** Step graph with typed outcome edges (`onSuccess`/`onComplete` happy path, `onFailure` error handler); linear form kept as sugar, both lower to one validated `Plan`; engine `OpError` for step-attributed error routing; per-step-id telemetry; runner routes a step failure to its dead-letter handler with a payload-free, secret-redacted error record. Deferred to later ADRs: parallel fan-out/merge/multi-sink, per-record routing, sub-flows.
 - **M5b — Custom code:** Starlark-WASM inline transform op + Python subprocess step (ADR-0014; step types `wasm`/`python` reserved by M5a). Studio remains low/no-code first — code is the escape hatch, not the default.
 - **M5c — Test mode + live per-step logs + data capture + payload storage** (needs a runner→hub/studio streaming channel that does not exist yet).
 - **M5d — Studio authoring API + webhook triggers + per-hub connector capability policy** (cloud hubs hide dangerous connectors).
-- **M5e — Tiered benchmark suite** (below).
+- **M5e — Tiered benchmark suite ✅ 2026-07-20.** Graded process shapes — simple (passthrough), standard (filter+coerce+project), complex (flatten+aggregate/spill-capable), extreme (multi-stage, very high cardinality) — each measured single + concurrent through the production path (gen source → discard sink, lowered via the v2 Plan), reported per tier on the runner dashboard. `POST/GET /api/benchmark/tiers`. Http-sink "extreme" profile deferred (needs a live target; would couple the numbers to an unrelated endpoint).
 
 - **Studio is low/no-code first**; the escape hatch for custom logic is **sandboxed WASM user transforms** (no filesystem/network, fuel-metered), not embedded scripting engines. Guest-language candidates in preference order: Starlark (Python-like syntax, deterministic, cheap), JS (QuickJS-wasm), Python (micro-Python/RustPython-wasm) — decided by ADR when M5 starts. (Boomi-style custom steps, done safely.)
-- **Tiered benchmark suite:** extend the capacity benchmark beyond raw streams to graded process shapes — *simple* (passthrough), *standard* (filter+project+coerce), *complex* (flatten+aggregate w/ spill), *extreme* (multi-stage + http sink + high cardinality) — reported per tier on the runner dashboard; the basis for honest incumbent comparisons (M6 collateral).
+- **Tiered benchmark suite** (done — M5e above): graded process shapes reported per tier on the runner dashboard; the basis for honest incumbent comparisons (M6 collateral). The *extreme* tier ships as multi-stage + very-high-cardinality on the reproducible gen→discard path; an http-sink variant is deferred (would couple numbers to an external target).
 
 ### M6 — Enterprise hardening
 Observability (OpenTelemetry + Prometheus), audit log, billing aggregation from telemetry, rate limiting, connector marketplace plumbing, migration tooling (OpenAPI importer), benchmark-vs-incumbent collateral.

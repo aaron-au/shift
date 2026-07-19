@@ -144,6 +144,25 @@ add/subtract-compute signal; the same numbers are the intended input for
 hub-side placement later. Estimates never extrapolate beyond what was
 measured.
 
+**Tiered workload benchmark (M5e).** `POST /api/benchmark/tiers` sweeps
+graded process shapes and reports `single_stream_rec_s` /
+`aggregate_rec_s` / `scaling_efficiency` **per tier**, so throughput is
+never one number hiding the shape it was measured on:
+
+| Tier | Shape |
+|---|---|
+| simple | passthrough (source → sink) |
+| standard | filter + coerce + project |
+| complex | flatten + aggregate (high-cardinality, spill-capable) |
+| extreme | filter + flatten + project + aggregate (very high cardinality) |
+
+Every tier runs the production path (gen source → discard sink) and lowers
+through the v2 flow Plan like any flow, so the numbers are reproducible on
+any runner with no external target — the honest basis for incumbent
+comparison (M6 collateral). An http-sink "extreme" profile is deferred: a
+live endpoint under load would couple the figures to an unrelated network
+target.
+
 ## HTTP surface
 
 | Route | Purpose |
@@ -154,6 +173,7 @@ measured.
 | `POST /api/flows/execute` | submit a flow document → `{task_id}` (202) |
 | `GET /api/tasks[?limit=]`, `GET /api/tasks/{id}` | results + per-op stats |
 | `POST /api/benchmark`, `GET /api/benchmark` | run/read capacity reports |
+| `POST /api/benchmark/tiers`, `GET /api/benchmark/tiers` | run/read tiered workload reports (M5e) |
 
 **Security posture:** binds `127.0.0.1` by default and is unauthenticated
 — hub-issued identity (M4) must land before any non-local bind ships.
