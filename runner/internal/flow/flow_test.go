@@ -11,42 +11,8 @@ import (
 	"github.com/aaron-au/shift/engine/stream"
 )
 
-func TestParseAndValidate(t *testing.T) {
-	good := `{
-	  "name":"orders",
-	  "source":{"connector":"http","action":"get","config":{"url":"https://x"}},
-	  "ops":[
-	    {"type":"filter","path":"$.active","op":"eq","value":true},
-	    {"type":"filter","path":"$.amount","op":"gte","value":10.5},
-	    {"type":"filter","path":"$.name","op":"exists"},
-	    {"type":"coerce","rules":[{"field":"amount","to":"float"}]},
-	    {"type":"flatten","sep":"."},
-	    {"type":"project","fields":[{"path":"$.id"},{"out":"c","path":"$.addr.city"}]},
-	    {"type":"aggregate","key":"$.region","aggs":[{"op":"count","out":"n"},{"op":"sum","path":"$.amount","out":"total"}]}
-	  ],
-	  "sink":{"connector":"http","action":"post","config":{"url":"https://y"}}
-	}`
-	if _, err := Parse([]byte(good)); err != nil {
-		t.Fatalf("good doc rejected: %v", err)
-	}
-
-	bad := []string{
-		`{"source":{"connector":"a","action":"b"},"sink":{"connector":"c","action":"d"}}`,                                                                                        // no name
-		`{"name":"x","source":{"connector":"a"},"sink":{"connector":"c","action":"d"}}`,                                                                                          // source missing action
-		`{"name":"x","source":{"connector":"a","action":"b"},"ops":[{"type":"nope"}],"sink":{"connector":"c","action":"d"}}`,                                                     // unknown op
-		`{"name":"x","source":{"connector":"a","action":"b"},"ops":[{"type":"filter","path":"bad","op":"eq","value":1}],"sink":{"connector":"c","action":"d"}}`,                  // bad path
-		`{"name":"x","source":{"connector":"a","action":"b"},"ops":[{"type":"filter","path":"$.a","op":"eq"}],"sink":{"connector":"c","action":"d"}}`,                            // eq without value
-		`{"name":"x","source":{"connector":"a","action":"b"},"ops":[{"type":"filter","path":"$.a","op":"eq","value":{"o":1}}],"sink":{"connector":"c","action":"d"}}`,            // non-scalar value
-		`{"name":"x","source":{"connector":"a","action":"b"},"ops":[{"type":"coerce","rules":[{"field":"f","to":"complex"}]}],"sink":{"connector":"c","action":"d"}}`,            // bad kind
-		`{"name":"x","source":{"connector":"a","action":"b"},"ops":[{"type":"flatten"}],"sink":{"connector":"c","action":"d"}}`,                                                  // flatten no sep
-		`{"name":"x","source":{"connector":"a","action":"b"},"ops":[{"type":"aggregate","key":"$.k","aggs":[{"op":"median","out":"m"}]}],"sink":{"connector":"c","action":"d"}}`, // bad agg
-	}
-	for i, doc := range bad {
-		if _, err := Parse([]byte(doc)); err == nil {
-			t.Errorf("bad doc %d accepted", i)
-		}
-	}
-}
+// Document parse/validate tests live with the model in pkg/flowdoc; this
+// file covers compilation semantics only.
 
 // runDoc executes a flow's ops over NDJSON input in-process.
 func runDoc(t *testing.T, opsJSON, input string) string {
@@ -61,7 +27,7 @@ func runDoc(t *testing.T, opsJSON, input string) string {
 		t.Fatal(err)
 	}
 	src := ndjson.NewReader(strings.NewReader(input), ndjson.ReaderOptions{})
-	p, err := d.Apply(stream.New(src, "src"), CompileOptions{Gov: mem.New(1 << 20), SpillDir: t.TempDir()})
+	p, err := Apply(d, stream.New(src, "src"), CompileOptions{Gov: mem.New(1 << 20), SpillDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

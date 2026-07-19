@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"slices"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -37,6 +38,19 @@ func Serve(c Connector) error {
 	if socket == "" || token == "" {
 		return fmt.Errorf("sdk: %s and %s must be set (this binary is spawned by a SHIFT runner)", EnvSocket, EnvToken)
 	}
+	// Orphan watch: runners are disposable at any moment (ADR-0002). If
+	// the spawning runner dies without Shutdown (kill -9), this process is
+	// re-parented to init — exit instead of lingering on a socket no one
+	// owns. Subprocess path only; ServeOn (sdktest, in-process) skips it.
+	go func() {
+		tick := time.NewTicker(2 * time.Second)
+		defer tick.Stop()
+		for range tick.C {
+			if os.Getppid() == 1 {
+				os.Exit(0)
+			}
+		}
+	}()
 	return ServeOn(socket, token, c)
 }
 

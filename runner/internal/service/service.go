@@ -178,7 +178,7 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document) (stream.Repor
 	sink := sinkProc.Sink(doc.Sink.Action, doc.Sink.Config)
 
 	taskGov := mem.New(s.opts.TaskWatermark)
-	p, err := doc.Apply(
+	p, err := flow.Apply(doc,
 		stream.New(src, "source:"+doc.Source.Connector+"/"+doc.Source.Action),
 		flow.CompileOptions{Gov: taskGov, SpillDir: s.opts.SpillDir},
 	)

@@ -8,6 +8,7 @@ require (
 )
 
 require (
+	github.com/aaron-au/shift/pkg v0.0.0
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
@@ -19,3 +20,5 @@ require (
 replace github.com/aaron-au/shift/engine => ../engine
 
 replace github.com/aaron-au/shift/sdk => ../sdk
+
+replace github.com/aaron-au/shift/pkg => ../pkg

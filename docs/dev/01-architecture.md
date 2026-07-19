@@ -18,8 +18,9 @@ it is on the dispatch path, not the data path.
 ```
 connectors ──▶ sdk ──▶ engine        (engine is stdlib-only, always)
 runner ─────▶ sdk ──▶ engine
-hub ────────▶ pkg (+ engine for shared types where needed)
-pkg: tiny shared primitives only (buildinfo). Resist growing it.
+runner ─────▶ pkg/flowdoc ──▶ engine/record   (document model + validation)
+hub ────────▶ pkg/flowdoc ──▶ engine/record   (validates at deploy; never touches payloads)
+pkg: tiny shared primitives only (buildinfo, flowdoc). Resist growing it.
 ```
 
 One Go workspace (`go.work`), one module per top-level directory. Modules
@@ -32,11 +33,11 @@ whenever govulncheck flags a reachable stdlib CVE).
 | `engine` | Streaming data plane. No network, no DB, no third-party deps. | `record`, `stream`, `format/*`, `spill`, `mem`, `cmd/shift-bench` |
 | `sdk` | Both sides of the connector protocol. | root (author side), `host` (runner side), `sdktest`, `connectorpb` (generated) |
 | `connectors` | Connector binaries. | `cmd/shift-connector-*`, `cmd/shift-bench-remote` |
-| `runner` | The spoke: executes flows, exposes the dashboard/API. | `cmd/runnerd`, `internal/*` |
-| `hub` | Control plane (M4 — stub today). | `cmd/hubd` |
+| `runner` | The spoke: executes flows, exposes the dashboard/API, leases from the hub. | `cmd/runnerd`, `internal/*` (incl. `hubclient`, `leaseloop`) |
+| `hub` | Control plane: durable queue, flow versions, runner identity (M4a). | `cmd/hubd`, `internal/store`, `internal/api` |
 | `proto` | gRPC contracts (not a Go module; generated code is committed). | `connector/v1` |
 
-## How an execution flows (today, local intake; hub lease from M3b/M4)
+## How an execution flows (local intake; hub lease intake is identical below the top arrow)
 
 ```mermaid
 sequenceDiagram
@@ -59,17 +60,21 @@ sequenceDiagram
     A->>R: GET /api/tasks/{id} (per-op stats, timings)
 ```
 
-When the hub exists, the only change is intake: instead of (only) HTTP
-submissions, a lease loop pulls durable tasks from the hub's Postgres queue
-(`FOR UPDATE SKIP LOCKED` + heartbeat leases) and reports status back.
-Execution machinery is identical — that is deliberate: the intake is a thin
-layer over the same task service (ADR-0008).
+With a hub configured (`runnerd -hub …`), a second intake runs alongside:
+the lease loop (`runner/internal/leaseloop`) long-polls the hub's Postgres
+queue (`FOR UPDATE SKIP LOCKED` + heartbeat leases, ADR-0009), submits
+each leased task to the **same task service**, heartbeats while it runs,
+and reports the terminal state. Claiming is capacity-gated by the memory
+governor, so backlog queues at the hub where any runner can take it
+(ADR-0005/0008). Kill -9 a runner mid-flow and the lease expires, the hub
+re-dispatches, and another runner completes it — proven by
+`hub/e2e/crash_recovery_test.go`. See [06-hub.md](06-hub.md).
 
 ## Where state lives
 
 | State | Where | Why |
 |---|---|---|
-| Flow definitions, task queue, execution history (durable) | Hub Postgres (M4) | ADR-0002: runners are disposable |
+| Flow definitions, task queue, attempt history, audit (durable) | Hub Postgres (`hub/internal/store`) | ADR-0002: runners are disposable |
 | In-flight batch data | Runner memory (arena-backed batches) | bounded by watermark |
 | Operator overflow (large aggregates etc.) | Runner scratch: single unlinked spill file | ADR-0003: never file sprawl; vanishes on exit |
 | Recent task results on a runner | In-memory ring (dashboard convenience) | truth lives in the hub once it exists |

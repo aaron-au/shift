@@ -15,6 +15,24 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      # Hub store/queue tests run against real Postgres (pgtest falls back
+      # to a throwaway pg_ctl cluster when this env is absent locally).
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: shift
+          POSTGRES_PASSWORD: shift-ci-only
+          POSTGRES_DB: shift
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U shift"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      SHIFT_TEST_PG: postgres://shift:shift-ci-only@localhost:5432/shift
     steps:
       - uses: actions/checkout@v4
         with:

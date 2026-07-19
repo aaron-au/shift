@@ -19,8 +19,10 @@ import (
 //go:embed ui.html
 var uiHTML []byte
 
-// Handler builds the runner's HTTP mux.
-func Handler(svc *service.Service, runnerName, version string, started time.Time) http.Handler {
+// Handler builds the runner's HTTP mux. hubStatus is optional: when the
+// hub lease intake is running it supplies the intake snapshot for
+// /api/status (nil = local-only runner).
+func Handler(svc *service.Service, runnerName, version string, started time.Time, hubStatus func() any) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -29,12 +31,16 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 	})
 
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{
+		body := map[string]any{
 			"name":     runnerName,
 			"version":  version,
 			"uptime_s": time.Since(started).Seconds(),
 			"status":   svc.Status(),
-		})
+		}
+		if hubStatus != nil {
+			body["hub"] = hubStatus()
+		}
+		writeJSON(w, http.StatusOK, body)
 	})
 
 	mux.HandleFunc("POST /api/flows/execute", func(w http.ResponseWriter, r *http.Request) {

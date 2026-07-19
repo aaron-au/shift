@@ -10,7 +10,9 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # postgres:18+ images keep PGDATA in a subdirectory; mount the parent
+      # (mounting …/data directly fails the 18-alpine entrypoint).
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U shift"]
       interval: 5s

@@ -11,6 +11,7 @@ Hub-and-spoke Integration Platform as a Service. Goal: a provisionable, enterpri
 2. The HA hub owns task durability (Postgres queue + leases via SKIP LOCKED); runners are **stateless** disposable workers; hubs deploy cloud or local — "offline" means "local hub". At-least-once semantics ⇒ step idempotency keys in the engine contract. (ADR-0002)
 3. Milestone 1 = streaming engine + `shift-bench` benchmark harness, before any distributed machinery. Exit: 1 GB stream at bounded ~100 MB RSS. (ADR-0003)
 4. First-class workloads: JSON APIs, CSV/fixed-width, XML/EDI, DB sync/CDC ⇒ hierarchical typed record model, batch-based pull pipelines, streaming parsers, no `map[string]interface{}` on the hot path. (ADR-0004)
+5. Hub control API = HTTP/JSON on stdlib mux, two auth realms (admin token → OIDC in M4b; runners: single-use registration token → hashed bearer secret), long-poll lease claims with reap-at-claim, zombie-result rejection; runner lease intake is capacity-gated. Secrets stored as SHA-256 only. (ADR-0009)
 
 ## Doctrine (non-negotiable for new code)
 
@@ -54,10 +55,16 @@ sdk/        Connector SDK (M2, done — see docs/bench-M2.md: 1.32x subprocess o
   connectorpb/       generated from proto/connector/v1 (make proto to regenerate)
 connectors/ Connector binaries: gen (bench/test), http (streaming GET source, NDJSON POST sink, SSRF guard)
 proto/      gRPC contracts (ADR-0007: batches cross as opaque binary frames, never per-record proto)
-runner/     runnerd (M3a, done — see docs/dev/04-runner.md): flow docs → engine pipelines,
+runner/     runnerd (M3a+M3b, done — see docs/dev/04-runner.md): flow docs → engine pipelines,
   internal/{flow,connpool,task,service,api}   resource-governed admission (ADR-0005), connector pool,
                                               capacity benchmark (ADR-0008), embedded dashboard on :8340
-hub/ pkg/ deploy/   M3b/M4+ (stubs)
+  internal/{hubclient,leaseloop}              hub lease intake (M3b): capacity-gated claims, heartbeats
+hub/        hubd (M4a, done — see docs/dev/06-hub.md): Postgres store (schema v1, embedded
+  internal/{store,api,pgtest} cmd/hubd        migrations), SKIP LOCKED queue + leases + attempt history,
+                                              runner registration, flow versions, admin/runner auth realms;
+                                              crash-recovery e2e (kill -9) in hub/e2e. OIDC/registry → M4b
+pkg/        flowdoc (flow document model + validation — shared hub↔runner), buildinfo
+deploy/     compose.dev.yml (dev Postgres for hub work)
 _archive/   The complete 2025 prototype (hub, runner, scripts, compose, legacy docs). Read-only reference.
 docs/       Review, prototype architecture map, reference schema, ADRs, bench results.
 PLAN.md     Rebuild milestones.
@@ -68,7 +75,8 @@ PLAN.md     Rebuild milestones.
 - No `map[string]interface{}` on any hot path; build values via `record.Builder` into a batch.
 - Operators mutate the flowing batch in place (they share its allocators); blocking operators (aggregate) account state via `mem.Governor` and spill to `spill.Store` when `TryReserve` fails.
 - Paths (`record.ParsePath`) compile once at pipeline build, never per record.
-- Connector actions mirror the same contracts (`sdk.SourceAction`/`SinkAction`); the spawn contract is two env vars (`SHIFT_CONNECTOR_SOCKET`, `SHIFT_CONNECTOR_TOKEN`) and every RPC carries the token. Dependency direction: connectors → sdk → engine; engine stays stdlib-only.
+- Connector actions mirror the same contracts (`sdk.SourceAction`/`SinkAction`); the spawn contract is two env vars (`SHIFT_CONNECTOR_SOCKET`, `SHIFT_CONNECTOR_TOKEN`) and every RPC carries the token. Dependency direction: connectors → sdk → engine; engine stays stdlib-only. The hub imports only `pkg/flowdoc` (+ `engine/record` for path validation) — it must never import stream/sdk or touch payload data.
+- Hub tasks are at-least-once: any sink with side effects must honor the injected `idempotency_key` (stable across re-dispatched attempts). Results from a runner whose lease expired are rejected (409) — never "fix" that by loosening the `leased_by` check.
 
 ## Lessons already paid for (don't relearn)
 

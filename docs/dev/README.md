@@ -22,6 +22,9 @@ is wrong in the same PR.
    benchmark, and the dashboard/API.
 5. [05-conventions.md](05-conventions.md) — dev workflow: the gate, make
    targets, module layout rules, ADR process, how to add things.
+6. [06-hub.md](06-hub.md) — the hub: Postgres schema, the queue/lease
+   lifecycle, auth realms, the runner lease intake, and the kill -9
+   crash-recovery guarantee.
 
 ## Where decisions live
 

@@ -25,7 +25,7 @@ func testHandler(t *testing.T) http.Handler {
 	}
 	svc := service.New(service.Options{ConnectorDir: dir})
 	t.Cleanup(func() { _ = svc.Close(30 * time.Second) })
-	return Handler(svc, "test-runner", "0.0.0", time.Now())
+	return Handler(svc, "test-runner", "0.0.0", time.Now(), nil)
 }
 
 func TestAPISurface(t *testing.T) {

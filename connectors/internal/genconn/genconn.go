@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/aaron-au/shift/engine/record"
 	"github.com/aaron-au/shift/sdk"
@@ -35,6 +36,9 @@ type SourceConfig struct {
 	Groups int64 `json:"groups"`
 	// BatchRecords sizes emitted batches (default 1024).
 	BatchRecords int `json:"batch_records"`
+	// DelayMS sleeps per batch — makes deliberately slow flows for
+	// crash/drain testing (0 = full speed).
+	DelayMS int `json:"delay_ms"`
 }
 
 type source struct {
@@ -62,9 +66,18 @@ func (s *source) Open(_ context.Context, config []byte) error {
 	return nil
 }
 
-func (s *source) Next(context.Context) (*record.Batch, error) {
+func (s *source) Next(ctx context.Context) (*record.Batch, error) {
 	if s.next >= s.cfg.Records {
 		return nil, io.EOF
+	}
+	if s.cfg.DelayMS > 0 {
+		t := time.NewTimer(time.Duration(s.cfg.DelayMS) * time.Millisecond)
+		defer t.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-t.C:
+		}
 	}
 	s.batch.Reset()
 	bld := s.batch.Builder()

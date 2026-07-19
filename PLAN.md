@@ -41,16 +41,21 @@ gRPC connector protocol over UDS (opaque record-batch frames), handshake/version
 Operational `runnerd`: flow documents (declarative JSON) compiled onto engine pipelines, connector subprocess pool (reuse/health/idle-reap), resource-governed admission (ADR-0005 — waiting is capacity-based, never a count cap), embedded dashboard + HTTP API, and the **capacity benchmark** as a runner feature (single + concurrent streams through the production path; reports throughput, scaling efficiency, and the memory-admission ceiling — the admin's add/subtract-compute signal).
 **Exit met:** live smoke — flow with aggregate over 250k records executed via API with per-op stats; benchmark established 1.4M rec/s single / 4.0M rec/s across 12 streams on the dev box; admission serialization and concurrency proven under `-race`. Docs: `docs/dev/04-runner.md`.
 
-### M3b — Runner, hub intake (with M4)
-Lease-loop against the hub queue API as a second intake over the same task service, heartbeats, step idempotency keys, crash-recovery semantics (lease expiry → re-dispatch), durable execution records.
-**Exit:** kill -9 a runner mid-flow; task completes on another runner; no duplicate side effects on idempotent steps.
+### M3b — Runner, hub intake (ADR-0009) ✅ 2026-07-19
+Lease-loop against the hub queue API as a second intake over the same task service (`runner/internal/leaseloop`), capacity-gated claiming (ADR-0005), heartbeats at TTL/3, idempotency keys injected into sink config (http sink emits `Idempotency-Key`), crash-recovery semantics (lease expiry → re-dispatch), zombie-result rejection.
+**Exit met:** `hub/e2e/crash_recovery_test.go` — kill -9 a runner mid-flow (real `runnerd` processes, real Postgres); task completes on the second runner (attempt trail: `lease-expired` → `completed`, full record count, idempotency key still maps to the one task).
 
-### M4 — Hub control plane
-Postgres schema (evolve `docs/reference/schema-v0.sql`; add audit + secrets/envelope-encryption tables), OIDC auth + tenancy enforcement, runner registration (single-use token → mTLS/signed-token channel), task queue + lease API (SKIP LOCKED), HA-safe scheduler (advisory locks), flow deploy/versioning/publish, connector registry with signing.
+### M4a — Hub queue core (ADR-0009) ✅ 2026-07-19
+Postgres schema v1 (evolved from `docs/reference/schema-v0.sql`: accounts, runner identity, flow versions, task queue + leases + attempt history, audit log), migrations (advisory-locked, embedded), task queue + lease API (`FOR UPDATE SKIP LOCKED`), runner registration (single-use hashed tokens → hashed bearer secrets), flow deploy/versioning, idempotent enqueue, `hubd` (stateless over Postgres, HA-ready; TLS flags). Tests run against real Postgres everywhere: `SHIFT_TEST_PG` (CI service container / compose dev DB) or a throwaway `pg_ctl` cluster.
+
+### M4b — Hub control plane, complete
+OIDC auth + tenancy enforcement (replaces the admin-token realm), connector registry with artifact signing, secrets/envelope-encryption tables, HA-safe scheduler (advisory locks; adds periodic lease sweep), hub dashboard, flow publish workflow.
 **Exit:** `docker compose up` the "just runs" bundle → login via OIDC → deploy a flow → schedule fires exactly once → runner executes → telemetry visible. All endpoints authenticated.
 
 ### M5 — Flow model & studio API
 DAG flows (branch/merge, error handlers, parallel fan-out, sub-flows), mapping/transform authoring API (AI-friendly: flows and mappings are declarative JSON/YAML documents with a JSON-Schema), WASM (wazero) user transforms, webhook triggers with custom API endpoints on runners.
+- **Studio is low/no-code first**; the escape hatch for custom logic is **sandboxed WASM user transforms** (no filesystem/network, fuel-metered), not embedded scripting engines. Guest-language candidates in preference order: Starlark (Python-like syntax, deterministic, cheap), JS (QuickJS-wasm), Python (micro-Python/RustPython-wasm) — decided by ADR when M5 starts. (Boomi-style custom steps, done safely.)
+- **Tiered benchmark suite:** extend the capacity benchmark beyond raw streams to graded process shapes — *simple* (passthrough), *standard* (filter+project+coerce), *complex* (flatten+aggregate w/ spill), *extreme* (multi-stage + http sink + high cardinality) — reported per tier on the runner dashboard; the basis for honest incumbent comparisons (M6 collateral).
 
 ### M6 — Enterprise hardening
 Observability (OpenTelemetry + Prometheus), audit log, billing aggregation from telemetry, rate limiting, connector marketplace plumbing, migration tooling (OpenAPI importer), benchmark-vs-incumbent collateral.

@@ -12,12 +12,16 @@ bin/runnerd -connector-dir bin        # dashboard on http://127.0.0.1:8340
 ## Package map
 
 ```
-cmd/runnerd            flags/env wiring, HTTP server, SIGTERM drain
-internal/flow          flow document model + validation + engine compilation
+cmd/runnerd            flags/env wiring, HTTP server, hub registration, SIGTERM drain
+internal/flow          compiles flow documents onto engine pipelines
+                       (the document model itself lives in pkg/flowdoc,
+                        shared with the hub for deploy-time validation)
 internal/connpool      connector subprocess pool (reuse, health, idle-reap)
 internal/task          task model + in-memory result ring (dashboard state)
 internal/service       THE core: admission → pool → pipeline → results; benchmark
 internal/api           HTTP API + embedded dashboard (go:embed ui.html)
+internal/hubclient     HTTP client for the hub control API (ADR-0009)
+internal/leaseloop     hub intake (M3b): lease → submit → heartbeat → report
 ```
 
 ## Flow documents
@@ -105,7 +109,7 @@ measured.
 |---|---|
 | `GET /` | embedded dashboard (poll-based, no external assets) |
 | `GET /healthz` | liveness |
-| `GET /api/status` | governor, totals, pool, latest capacity report |
+| `GET /api/status` | governor, totals, pool, latest capacity report, hub intake stats |
 | `POST /api/flows/execute` | submit a flow document → `{task_id}` (202) |
 | `GET /api/tasks[?limit=]`, `GET /api/tasks/{id}` | results + per-op stats |
 | `POST /api/benchmark`, `GET /api/benchmark` | run/read capacity reports |
@@ -114,10 +118,27 @@ measured.
 — hub-issued identity (M4) must land before any non-local bind ships.
 Config: flags or `SHIFT_*` env vars (see `runnerd -h`).
 
+## Hub intake (M3b)
+
+`runnerd -hub <url>` (+ `SHIFT_HUB_REG_TOKEN`, single-use) registers the
+runner and starts `internal/leaseloop` alongside the local API — a second
+intake over the same `service.Submit` path, exactly as ADR-0008 promised:
+
+- **Capacity-gated claiming (ADR-0005):** the loop leases only while the
+  governor has headroom for another task; a busy runner leaves work on
+  the hub queue for idle runners instead of hoarding it.
+- **Heartbeats at TTL/3.** A lost lease (409) stops reporting but lets
+  the local task finish — the injected idempotency key (stable across
+  attempts; sinks like `http` emit it as `Idempotency-Key` per batch)
+  keeps the duplicate side-effect-free.
+- **SIGTERM drain:** stop leasing, finish + report in-flight tasks, then
+  shut down. SIGKILL needs no cooperation at all — the lease expires and
+  the hub re-dispatches (`hub/e2e/crash_recovery_test.go`).
+
+See [06-hub.md](06-hub.md) for the hub side of the protocol.
+
 ## What's deliberately NOT here yet
 
-- Hub lease intake, heartbeats, durable execution records → M3b/M4
-  (ADR-0008 §1; the lease loop will be a second intake over the same
-  `service.Submit` path).
 - Task cancellation API, per-flow retry/error routing → M5 flow model.
 - Webhook/custom-API triggers on the runner → M5.
+- Dashboard auth → M4b hub-issued identity (until then: loopback bind only).

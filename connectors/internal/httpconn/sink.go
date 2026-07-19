@@ -15,9 +15,20 @@ import (
 // bounded by batch size; per-batch requests keep failures attributable and
 // retryable (flow-level retry policy arrives in M5).
 type postSink struct {
-	cfg    commonConfig
-	client *http.Client
-	buf    bytes.Buffer
+	cfg     sinkConfig
+	client  *http.Client
+	buf     bytes.Buffer
+	batches int64
+}
+
+// sinkConfig adds sink-only options to the shared HTTP config.
+type sinkConfig struct {
+	commonConfig
+	// IdempotencyKey, when set (the runner injects the hub task's key),
+	// is sent as an Idempotency-Key header suffixed with the batch
+	// ordinal — at-least-once re-dispatch replays the same key sequence,
+	// so idempotent receivers can dedup (ADR-0002/0009).
+	IdempotencyKey string `json:"idempotency_key"`
 }
 
 func (s *postSink) Open(_ context.Context, config []byte) error {
@@ -46,6 +57,10 @@ func (s *postSink) Write(ctx context.Context, b *record.Batch) error {
 	}
 	s.cfg.apply(req)
 	req.Header.Set("Content-Type", "application/x-ndjson")
+	if s.cfg.IdempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", fmt.Sprintf("%s:%d", s.cfg.IdempotencyKey, s.batches))
+	}
+	s.batches++
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("http: post %s: %w", s.cfg.URL, err)
