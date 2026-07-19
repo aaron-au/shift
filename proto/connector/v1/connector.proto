@@ -1,0 +1,86 @@
+// SHIFT connector protocol v1 (ADR-0007).
+//
+// Record batches cross as opaque frames encoded with the engine's binary
+// value codec — protobuf never sees individual records.
+syntax = "proto3";
+
+package shift.connector.v1;
+
+option go_package = "github.com/aaron-au/shift/sdk/connectorpb";
+
+service Connector {
+  // Handshake verifies the host token and negotiates protocol version.
+  // It is the readiness probe: hosts retry it until the socket serves.
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
+
+  // Health reports liveness of the connector process.
+  rpc Health(HealthRequest) returns (HealthResponse);
+
+  // Pull streams batches from a source action until exhausted.
+  rpc Pull(PullRequest) returns (stream Frame);
+
+  // Push streams batches into a sink action. The first message must be
+  // the Open control message; frames follow.
+  rpc Push(stream PushMessage) returns (PushSummary);
+
+  // Shutdown asks the connector to terminate gracefully.
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+}
+
+message HandshakeRequest {
+  // Protocol versions the host can speak, ascending.
+  repeated uint32 protocol_versions = 1;
+}
+
+message HandshakeResponse {
+  // The version the connector selected from the offered set.
+  uint32 protocol_version = 1;
+  string name = 2;
+  string version = 3;
+  // Action names this connector exposes.
+  repeated string source_actions = 4;
+  repeated string sink_actions = 5;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool ok = 1;
+  string detail = 2;
+}
+
+message PullRequest {
+  string action = 1;
+  // Connector-specific configuration document (JSON).
+  bytes config = 2;
+}
+
+// Frame carries one encoded record batch.
+message Frame {
+  // Batch payload: length-delimited sequence of values in the SHIFT
+  // binary value encoding (engine/spill codec).
+  bytes payload = 1;
+  // Record count in this frame (redundant with payload; lets hosts
+  // meter without decoding).
+  int64 records = 2;
+}
+
+message PushMessage {
+  oneof msg {
+    PushOpen open = 1;
+    Frame frame = 2;
+  }
+}
+
+message PushOpen {
+  string action = 1;
+  bytes config = 2;
+}
+
+message PushSummary {
+  int64 records = 1;
+}
+
+message ShutdownRequest {}
+
+message ShutdownResponse {}

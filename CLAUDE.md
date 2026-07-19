@@ -46,7 +46,14 @@ engine/     Streaming data plane (M1, done — see docs/bench-M1.md for proven n
   spill/      single-file unlinked scratch store + compact binary Value codec
   mem/        watermark Governor (TryReserve fail == spill signal)
   cmd/shift-bench/  the proof harness; run with -max-rss to enforce exit criteria
-sdk/ runner/ hub/ pkg/ proto/ deploy/   M2+ (stubs)
+sdk/        Connector SDK (M2, done — see docs/bench-M2.md: 1.32x subprocess overhead):
+  sdk.go/server.go   author side: SourceAction/SinkAction + Serve (UDS, token auth, graceful stop)
+  host/              runner side: Launch/Attach, handshake-as-readiness, stream.Source/Sink adapters
+  sdktest/           in-process wire-protocol test harness for connector authors
+  connectorpb/       generated from proto/connector/v1 (make proto to regenerate)
+connectors/ Connector binaries: gen (bench/test), http (streaming GET source, NDJSON POST sink, SSRF guard)
+proto/      gRPC contracts (ADR-0007: batches cross as opaque binary frames, never per-record proto)
+runner/ hub/ pkg/ deploy/   M3+ (stubs)
 _archive/   The complete 2025 prototype (hub, runner, scripts, compose, legacy docs). Read-only reference.
 docs/       Review, prototype architecture map, reference schema, ADRs, bench results.
 PLAN.md     Rebuild milestones.
@@ -57,6 +64,7 @@ PLAN.md     Rebuild milestones.
 - No `map[string]interface{}` on any hot path; build values via `record.Builder` into a batch.
 - Operators mutate the flowing batch in place (they share its allocators); blocking operators (aggregate) account state via `mem.Governor` and spill to `spill.Store` when `TryReserve` fails.
 - Paths (`record.ParsePath`) compile once at pipeline build, never per record.
+- Connector actions mirror the same contracts (`sdk.SourceAction`/`SinkAction`); the spawn contract is two env vars (`SHIFT_CONNECTOR_SOCKET`, `SHIFT_CONNECTOR_TOKEN`) and every RPC carries the token. Dependency direction: connectors → sdk → engine; engine stays stdlib-only.
 
 ## Lessons already paid for (don't relearn)
 

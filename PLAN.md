@@ -33,9 +33,9 @@ Record model, pull-based batch pipeline, pooled buffers, spill-over-watermark, J
 ### M1.5 — Format depth
 XML streaming reader; EDI segment reader (X12/EDIFACT — deep domain, timeboxed spike first); DB cursor source with hub-persisted offsets.
 
-### M2 — Connector runtime + SDK (ADR-0001)
-gRPC connector protocol over UDS (record-batch framing), handshake/versioning, spawn/health/idle-reap lifecycle, signature verification, Go SDK + connector test kit. First real connectors: HTTP (streaming request/response), SFTP or filesystem.
-**Exit:** engine pipeline where source and sink are out-of-process connectors, with benchmark parity targets vs in-process (quantified overhead).
+### M2 — Connector runtime + SDK (ADR-0001, ADR-0007) ✅ 2026-07-19
+gRPC connector protocol over UDS (opaque record-batch frames), handshake/versioning, spawn/health lifecycle, Go SDK + sdktest kit. Connectors: `gen` (bench/test) and `http` (streaming GET source, NDJSON POST sink, SSRF guard).
+**Exit met** (see `docs/bench-M2.md`): engine pipelines run with subprocess source **and** sink at **1.32× the wall time of in-process** (~1.8M boundary-crossings/sec/core). Deferred deliberately: signature verification → M4 (registry owns signing); idle-reap/restart pooling → M3; SFTP connector → M3+.
 
 ### M3 — Runner
 Lease-loop worker against the hub queue API, resource-governed concurrency (ADR-0005: goroutine-per-task, coordinator-only orchestration, admission by resource signals — no task-count caps), connector lifecycle management, step idempotency keys, crash-recovery semantics (lease expiry → re-dispatch), structured telemetry.

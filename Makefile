@@ -1,6 +1,6 @@
 .PHONY: setup build test bench fmt fmt-check vet lint vuln leaks check tidy clean
 
-MODULES := engine sdk pkg runner hub
+MODULES := engine sdk pkg runner hub connectors
 VERSION ?= dev
 LDFLAGS := -s -w -X github.com/aaron-au/shift/pkg/buildinfo.Version=$(VERSION)
 
@@ -14,6 +14,14 @@ build:
 	@mkdir -p bin
 	cd runner && go build -ldflags="$(LDFLAGS)" -o ../bin/runnerd ./cmd/runnerd
 	cd hub && go build -ldflags="$(LDFLAGS)" -o ../bin/hubd ./cmd/hubd
+	cd connectors && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-connector-gen ./cmd/shift-connector-gen
+	cd connectors && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-connector-http ./cmd/shift-connector-http
+
+## proto: regenerate gRPC code from proto/ (requires protoc + Go plugins)
+proto:
+	protoc --go_out=. --go_opt=module=github.com/aaron-au/shift \
+	       --go-grpc_out=. --go-grpc_opt=module=github.com/aaron-au/shift \
+	       proto/connector/v1/connector.proto
 
 ## test: run all tests with the race detector (always on — ADR-0006)
 test:
@@ -27,6 +35,9 @@ bench:
 	bin/shift-bench -scenario transform -bytes 64MiB -max-rss 100MiB
 	@echo "--- shift-bench aggregate with spill"
 	bin/shift-bench -scenario aggregate -bytes 64MiB -watermark 8MiB -groups 100000 -max-rss 120MiB
+	@echo "--- connector transport parity (ADR-0007)"
+	@cd connectors && go build -o ../bin/shift-connector-gen ./cmd/shift-connector-gen && go build -o ../bin/shift-bench-remote ./cmd/shift-bench-remote
+	bin/shift-bench-remote -records 500000 -connector bin/shift-connector-gen -max-ratio 3.0
 
 fmt:
 	@for m in $(MODULES); do (cd $$m && gofmt -w .); done
