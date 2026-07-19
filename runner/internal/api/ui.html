@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SHIFT Runner</title>
+<style>
+  :root{--bg:#0e1116;--panel:#161b23;--line:#232b37;--text:#dbe2ec;--dim:#8b98ab;
+        --accent:#4da3ff;--ok:#3ecf8e;--warn:#f5a623;--bad:#ef5f6b;font-size:15px}
+  *{box-sizing:border-box;margin:0}
+  body{background:var(--bg);color:var(--text);font:1rem/1.5 -apple-system,'Segoe UI',Roboto,sans-serif;padding:1.2rem}
+  h1{font-size:1.15rem;font-weight:600;display:flex;gap:.6rem;align-items:baseline}
+  h1 .v{color:var(--dim);font-size:.8rem;font-weight:400}
+  h2{font-size:.8rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:.6rem}
+  main{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));margin-top:1rem;max-width:1400px}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1rem}
+  section.wide{grid-column:1/-1}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:.8rem}
+  .stat b{display:block;font-size:1.35rem;font-weight:600}
+  .stat span{color:var(--dim);font-size:.75rem}
+  .bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:.6rem}
+  .bar i{display:block;height:100%;background:var(--accent);transition:width .4s}
+  table{width:100%;border-collapse:collapse;font-size:.85rem}
+  th{color:var(--dim);text-align:left;font-weight:500;padding:.35rem .5rem;border-bottom:1px solid var(--line)}
+  td{padding:.4rem .5rem;border-bottom:1px solid var(--line);vertical-align:top}
+  tr.task{cursor:pointer} tr.task:hover{background:#1b2230}
+  .chip{padding:.1rem .55rem;border-radius:99px;font-size:.72rem;font-weight:600}
+  .chip.completed{background:#12352a;color:var(--ok)} .chip.running{background:#12283f;color:var(--accent)}
+  .chip.failed{background:#3a1a1f;color:var(--bad)} .chip.waiting{background:#3a2d12;color:var(--warn)}
+  .chip.bench{background:#2a2140;color:#b79bff;margin-left:.35rem}
+  button{background:var(--accent);border:0;color:#04101f;font-weight:600;padding:.5rem .9rem;border-radius:8px;cursor:pointer}
+  button:disabled{opacity:.45;cursor:default}
+  .hint{color:var(--dim);font-size:.78rem;margin-top:.6rem}
+  .hint.warn{color:var(--warn)}
+  .ops{background:#10141b;border-radius:8px;margin:.3rem 0 .6rem;padding:.5rem .7rem;font-size:.78rem}
+  .ops td{border:0;padding:.15rem .5rem;color:var(--dim)} .ops td:first-child{color:var(--text)}
+  .err{color:var(--bad);font-size:.78rem}
+  .mono{font-family:ui-monospace,Menlo,monospace;font-size:.78rem;color:var(--dim)}
+</style>
+</head>
+<body>
+<h1>SHIFT Runner <span class="v" id="ident">connecting…</span></h1>
+<main>
+  <section>
+    <h2>Capacity <span id="benchflag"></span></h2>
+    <div class="stats" id="capacity"><div class="stat"><b>—</b><span>run a benchmark to establish capacity</span></div></div>
+    <div style="margin-top:.8rem;display:flex;gap:.6rem;align-items:center">
+      <button id="benchbtn" onclick="runBench()">Run benchmark</button>
+      <span class="hint" id="benchhint">Measures this runner's real execution throughput (single &amp; concurrent streams) via the production connector path.</span>
+    </div>
+  </section>
+  <section>
+    <h2>Memory admission (ADR-0005)</h2>
+    <div class="stats" id="gov"></div>
+    <div class="bar"><i id="govbar" style="width:0"></i></div>
+    <div class="hint" id="govhint"></div>
+  </section>
+  <section>
+    <h2>Work</h2>
+    <div class="stats" id="totals"></div>
+    <div class="hint" id="scalehint"></div>
+  </section>
+  <section>
+    <h2>Connectors</h2>
+    <table><thead><tr><th>name</th><th>version</th><th>in use</th></tr></thead><tbody id="conns"></tbody></table>
+  </section>
+  <section class="wide">
+    <h2>Tasks</h2>
+    <table>
+      <thead><tr><th>flow</th><th>state</th><th>records in→out</th><th>duration</th><th>submitted</th><th>id</th></tr></thead>
+      <tbody id="tasks"></tbody>
+    </table>
+    <div class="hint">Task history is runner-local and non-durable — durable execution records arrive with the hub (ADR-0002/0008).</div>
+  </section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const fmt=n=>n>=1e6?(n/1e6).toFixed(2)+'M':n>=1e3?(n/1e3).toFixed(1)+'k':String(Math.round(n));
+const fmtB=n=>n>=2**30?(n/2**30).toFixed(1)+' GiB':n>=2**20?(n/2**20).toFixed(0)+' MiB':fmt(n)+' B';
+const dur=(a,b)=>a&&b?((new Date(b)-new Date(a))/1000).toFixed(2)+'s':'—';
+let open=new Set();
+
+async function refresh(){
+  try{
+    const [sr,tr]=await Promise.all([fetch('/api/status'),fetch('/api/tasks?limit=100')]);
+    const s=await sr.json(), t=await tr.json();
+    render(s,t.tasks||[]);
+    $('ident').textContent=s.name+' · v'+s.version+' · up '+Math.floor(s.uptime_s/60)+'m';
+  }catch(e){ $('ident').textContent='connection lost — retrying'; }
+}
+
+function render(s,tasks){
+  const st=s.status, g=st.governor;
+  // capacity
+  const b=st.benchmark;
+  $('benchflag').innerHTML = st.benchmark_running?'<span class="chip running">running…</span>':'';
+  $('benchbtn').disabled = !!st.benchmark_running;
+  if(b){
+    $('capacity').innerHTML =
+      stat(fmt(b.single_stream_rec_s)+'/s','single stream')+
+      stat(fmt(b.aggregate_rec_s)+'/s',b.concurrent_streams+' concurrent streams')+
+      stat((b.scaling_efficiency*100).toFixed(0)+'%','scaling efficiency')+
+      stat(b.max_concurrent_by_mem,'max tasks by memory');
+    $('benchhint').textContent='Last run '+new Date(b.at).toLocaleTimeString()+' · '+fmt(b.records_per_stream)+' records/stream · took '+b.duration_s.toFixed(1)+'s';
+  }
+  // governor
+  $('gov').innerHTML =
+    stat(fmtB(g.used),'reserved now')+
+    stat(fmtB(g.budget),'admission budget')+
+    stat(fmtB(g.peak),'peak')+
+    stat(fmtB(st.task_cost),'per-task cost');
+  $('govbar').style.width=Math.min(100,(g.used/g.budget)*100)+'%';
+  $('govhint').textContent='Admits '+st.max_concurrent_by_mem+' concurrent tasks before work waits for capacity — a resource limit, never a count cap.';
+  // totals
+  const tt=st.totals;
+  $('totals').innerHTML =
+    stat(tt.running,'running')+
+    stat(tt.waiting,'waiting for capacity')+
+    stat(tt.completed,'completed')+
+    stat(tt.failed,'failed')+
+    stat(fmt(tt.records_in),'records processed');
+  $('scalehint').className = tt.waiting>0?'hint warn':'hint';
+  $('scalehint').textContent = tt.waiting>0
+    ? '⚠ '+tt.waiting+' task(s) waiting for capacity — consider adding compute (or raising this runner\'s memory budget).'
+    : 'No tasks waiting — capacity is sufficient for current load.';
+  // connectors
+  $('conns').innerHTML=(st.connectors||[]).map(c=>`<tr><td>${c.name}</td><td class="mono">${c.version}</td><td>${c.in_use}</td></tr>`).join('')||'<tr><td colspan=3 class="mono">none launched yet</td></tr>';
+  // tasks
+  $('tasks').innerHTML=tasks.map(t=>{
+    const rows=`<tr class="task" onclick="toggle('${t.id}')">
+      <td>${t.flow}${t.benchmark?'<span class="chip bench">bench</span>':''}</td>
+      <td><span class="chip ${t.state}">${t.state}</span></td>
+      <td>${fmt(t.records_in||0)} → ${fmt(t.records_out||0)}</td>
+      <td>${dur(t.started,t.finished)}</td>
+      <td>${new Date(t.submitted).toLocaleTimeString()}</td>
+      <td class="mono">${t.id.slice(0,12)}</td></tr>`;
+    if(!open.has(t.id)) return rows;
+    const ops=(t.ops||[]).map(o=>`<tr><td>${o.name}</td><td>${fmt(o.records_in)} → ${fmt(o.records_out)}</td><td>${o.seconds.toFixed(3)}s</td></tr>`).join('');
+    const err=t.error?`<div class="err">${t.error}</div>`:'';
+    return rows+`<tr><td colspan=6><div class="ops">${err}<table>${ops||'<tr><td>no op stats</td></tr>'}</table></div></td></tr>`;
+  }).join('')||'<tr><td colspan=6 class="mono">no tasks yet — POST /api/flows/execute or run a benchmark</td></tr>';
+}
+const stat=(v,l)=>`<div class="stat"><b>${v}</b><span>${l}</span></div>`;
+function toggle(id){ open.has(id)?open.delete(id):open.add(id); refresh(); }
+async function runBench(){
+  $('benchbtn').disabled=true;
+  await fetch('/api/benchmark',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  setTimeout(refresh,300);
+}
+refresh(); setInterval(refresh,2000);
+</script>
+</body>
+</html>

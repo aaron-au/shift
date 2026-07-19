@@ -37,8 +37,12 @@ XML streaming reader; EDI segment reader (X12/EDIFACT — deep domain, timeboxed
 gRPC connector protocol over UDS (opaque record-batch frames), handshake/versioning, spawn/health lifecycle, Go SDK + sdktest kit. Connectors: `gen` (bench/test) and `http` (streaming GET source, NDJSON POST sink, SSRF guard).
 **Exit met** (see `docs/bench-M2.md`): engine pipelines run with subprocess source **and** sink at **1.32× the wall time of in-process** (~1.8M boundary-crossings/sec/core). Deferred deliberately: signature verification → M4 (registry owns signing); idle-reap/restart pooling → M3; SFTP connector → M3+.
 
-### M3 — Runner
-Lease-loop worker against the hub queue API, resource-governed concurrency (ADR-0005: goroutine-per-task, coordinator-only orchestration, admission by resource signals — no task-count caps), connector lifecycle management, step idempotency keys, crash-recovery semantics (lease expiry → re-dispatch), structured telemetry.
+### M3a — Runner, local intake (ADR-0008) ✅ 2026-07-19
+Operational `runnerd`: flow documents (declarative JSON) compiled onto engine pipelines, connector subprocess pool (reuse/health/idle-reap), resource-governed admission (ADR-0005 — waiting is capacity-based, never a count cap), embedded dashboard + HTTP API, and the **capacity benchmark** as a runner feature (single + concurrent streams through the production path; reports throughput, scaling efficiency, and the memory-admission ceiling — the admin's add/subtract-compute signal).
+**Exit met:** live smoke — flow with aggregate over 250k records executed via API with per-op stats; benchmark established 1.4M rec/s single / 4.0M rec/s across 12 streams on the dev box; admission serialization and concurrency proven under `-race`. Docs: `docs/dev/04-runner.md`.
+
+### M3b — Runner, hub intake (with M4)
+Lease-loop against the hub queue API as a second intake over the same task service, heartbeats, step idempotency keys, crash-recovery semantics (lease expiry → re-dispatch), durable execution records.
 **Exit:** kill -9 a runner mid-flow; task completes on another runner; no duplicate side effects on idempotent steps.
 
 ### M4 — Hub control plane
@@ -54,6 +58,7 @@ Observability (OpenTelemetry + Prometheus), audit log, billing aggregation from 
 ## Standing rules
 
 - Every milestone lands with tests (`-race` mandatory) and updated docs/ADRs for decisions made in flight.
+- **Internal dev docs (`docs/dev/`) are part of every milestone's definition of done** — the behind-the-scenes "how it all operates" documentation for new developers, kept in lockstep with the code (public/user docs are a separate, later concern).
 - Any deviation from ADRs gets a superseding ADR, not a silent fork (v0's Kafka lesson).
 - Benchmarks run in CI from M1 onward; a perf regression fails the build.
 - Developer & AI friendliness is a feature: declarative flow documents, schema'd APIs, one-command dev environment, CLAUDE.md kept current.

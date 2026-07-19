@@ -29,6 +29,7 @@ Hub-and-spoke Integration Platform as a Service. Goal: a provisionable, enterpri
 
 | Doc | What it is |
 |---|---|
+| `docs/dev/` | **Internal developer docs** — how everything operates together (architecture, engine, connector protocol, runner, conventions). Read these first; keep them in lockstep with code (standing rule). |
 | `PLAN.md` | The rebuild plan: topology, milestones M0–M6 with exit criteria, standing rules. |
 | `docs/adr/` | Architecture Decision Records — locked decisions with context. Deviations require a superseding ADR. |
 | `docs/REVIEW-2026-07.md` | Review of the prototype + viability study that triggered the restart. §5 lists what to carry forward and the decision sequence for the rebuild. |
@@ -53,7 +54,10 @@ sdk/        Connector SDK (M2, done — see docs/bench-M2.md: 1.32x subprocess o
   connectorpb/       generated from proto/connector/v1 (make proto to regenerate)
 connectors/ Connector binaries: gen (bench/test), http (streaming GET source, NDJSON POST sink, SSRF guard)
 proto/      gRPC contracts (ADR-0007: batches cross as opaque binary frames, never per-record proto)
-runner/ hub/ pkg/ deploy/   M3+ (stubs)
+runner/     runnerd (M3a, done — see docs/dev/04-runner.md): flow docs → engine pipelines,
+  internal/{flow,connpool,task,service,api}   resource-governed admission (ADR-0005), connector pool,
+                                              capacity benchmark (ADR-0008), embedded dashboard on :8340
+hub/ pkg/ deploy/   M3b/M4+ (stubs)
 _archive/   The complete 2025 prototype (hub, runner, scripts, compose, legacy docs). Read-only reference.
 docs/       Review, prototype architecture map, reference schema, ADRs, bench results.
 PLAN.md     Rebuild milestones.
