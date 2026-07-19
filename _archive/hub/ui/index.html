@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SHIFT Hub - WebSocket Monitor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #4a9eff;
+            margin-bottom: 20px;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            display: inline-block;
+        }
+        .status.connected {
+            background: #2d5a2d;
+            color: #90ee90;
+        }
+        .status.disconnected {
+            background: #5a2d2d;
+            color: #ee9090;
+        }
+        .runners {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .runner-card {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 5px;
+            border: 1px solid #3a3a3a;
+        }
+        .runner-card.active {
+            border-color: #4a9eff;
+        }
+        .messages {
+            background: #2a2a2a;
+            border-radius: 5px;
+            padding: 20px;
+            height: 500px;
+            overflow-y: auto;
+            border: 1px solid #3a3a3a;
+        }
+        .logs-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+            align-items: center;
+        }
+        .logs-controls select {
+            padding: 8px;
+            background: #2a2a2a;
+            color: #e0e0e0;
+            border: 1px solid #3a3a3a;
+            border-radius: 5px;
+            min-width: 200px;
+        }
+        .logs-controls label {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .docker-logs {
+            background: #1a1a1a;
+            border-radius: 5px;
+            padding: 15px;
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #3a3a3a;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #e0e0e0;
+        }
+        .log-line {
+            padding: 2px 0;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .log-line:hover {
+            background: #2a2a2a;
+        }
+        .message {
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 5px;
+            border-left: 3px solid #4a9eff;
+            background: #1f1f1f;
+        }
+        .message.from-hub {
+            border-left-color: #4a9eff;
+        }
+        .message.from-runner {
+            border-left-color: #90ee90;
+        }
+        .message.from-p2p {
+            border-left-color: #ffaa4a;
+        }
+        .message-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+            font-size: 0.9em;
+            color: #999;
+        }
+        .message-type {
+            font-weight: bold;
+            color: #4a9eff;
+        }
+        .message-payload {
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            color: #ccc;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .controls {
+            margin-bottom: 20px;
+        }
+        button {
+            background: #4a9eff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background: #3a8eef;
+        }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SHIFT Hub - WebSocket Monitor</h1>
+        <div class="status disconnected" id="status">Disconnected</div>
+        
+        <div class="controls">
+            <button id="connectBtn" onclick="connect()">Connect</button>
+            <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+            <button onclick="clearMessages()">Clear Messages</button>
+        </div>
+
+        <h2>Connected Runners</h2>
+        <div class="runners" id="runners"></div>
+
+        <h2>Messages</h2>
+        <div class="messages" id="messages"></div>
+
+        <h2>Docker Logs</h2>
+        <div class="logs-controls">
+            <select id="containerSelect">
+                <option value="">Select container...</option>
+            </select>
+            <button onclick="loadContainers()">Refresh Containers</button>
+            <button onclick="startLogStream()">Start Stream</button>
+            <button onclick="stopLogStream()">Stop Stream</button>
+            <label>
+                <input type="checkbox" id="followLogs" checked> Follow
+            </label>
+        </div>
+        <div id="dockerLogs" class="docker-logs">
+            <p>Select a container to view logs</p>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        const messagesDiv = document.getElementById('messages');
+        const runnersDiv = document.getElementById('runners');
+        const statusDiv = document.getElementById('status');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+
+        function connect() {
+            const wsUrl = `ws://${window.location.hostname}:2000/ws?type=ui&runner_id=hub-ui`;
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = function() {
+                statusDiv.textContent = 'Connected';
+                statusDiv.className = 'status connected';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                addMessage('system', 'Connected to Hub WebSocket', {});
+            };
+
+            ws.onmessage = function(event) {
+                const message = JSON.parse(event.data);
+                addMessage(message.from || 'unknown', message.type, message);
+            };
+
+            ws.onerror = function(error) {
+                addMessage('system', 'WebSocket Error', { error: error.toString() });
+            };
+
+            ws.onclose = function() {
+                statusDiv.textContent = 'Disconnected';
+                statusDiv.className = 'status disconnected';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                addMessage('system', 'Disconnected from Hub WebSocket', {});
+            };
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function addMessage(from, type, message) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+            
+            if (from.includes('runner') || from.includes('Runner')) {
+                messageDiv.className += ' from-runner';
+            } else if (from.includes('hub') || from === 'system') {
+                messageDiv.className += ' from-hub';
+            } else {
+                messageDiv.className += ' from-p2p';
+            }
+
+            const header = document.createElement('div');
+            header.className = 'message-header';
+            header.innerHTML = `
+                <span class="message-type">${type}</span>
+                <span>From: ${from}</span>
+                <span>${new Date(message.timestamp || Date.now()).toLocaleTimeString()}</span>
+            `;
+
+            const payload = document.createElement('div');
+            payload.className = 'message-payload';
+            payload.textContent = JSON.stringify(message, null, 2);
+
+            messageDiv.appendChild(header);
+            messageDiv.appendChild(payload);
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function clearMessages() {
+            messagesDiv.innerHTML = '';
+        }
+
+        // Docker logs functionality
+        let logReader = null;
+        let currentContainer = '';
+
+        function loadContainers() {
+            fetch('/api/docker/containers')
+                .then(res => res.json())
+                .then(containers => {
+                    const select = document.getElementById('containerSelect');
+                    select.innerHTML = '<option value="">Select container...</option>';
+                    containers.forEach(container => {
+                        const option = document.createElement('option');
+                        option.value = container.name;
+                        option.textContent = `${container.name} (${container.status})`;
+                        select.appendChild(option);
+                    });
+                })
+                .catch(err => {
+                    console.error('Failed to load containers:', err);
+                    document.getElementById('dockerLogs').innerHTML = '<p style="color: red;">Failed to load containers. Make sure Docker is accessible.</p>';
+                });
+        }
+
+        function startLogStream() {
+            const containerName = document.getElementById('containerSelect').value;
+            if (!containerName) {
+                alert('Please select a container');
+                return;
+            }
+
+            stopLogStream(); // Stop any existing stream
+
+            currentContainer = containerName;
+            const follow = document.getElementById('followLogs').checked;
+            const logsDiv = document.getElementById('dockerLogs');
+            logsDiv.innerHTML = '<p>Loading logs...</p>';
+
+            const url = `/api/docker/logs/${containerName}?follow=${follow}`;
+            
+            fetch(url)
+                .then(response => {
+                    if (!response.ok) {
+                        return response.text().then(text => {
+                            throw new Error('Failed to stream logs: ' + text);
+                        });
+                    }
+                    
+                    return response.text();
+                })
+                .then(logs => {
+                    logsDiv.innerHTML = '';
+                    if (!logs || logs.trim() === '') {
+                        logsDiv.innerHTML = '<p>No logs available for this container.</p>';
+                        return;
+                    }
+                    
+                    const lines = logs.split('\n');
+                    lines.forEach(line => {
+                        if (line.trim()) {
+                            const logLine = document.createElement('div');
+                            logLine.className = 'log-line';
+                            logLine.textContent = line;
+                            logsDiv.appendChild(logLine);
+                        }
+                    });
+                    logsDiv.scrollTop = logsDiv.scrollHeight;
+                })
+                .catch(err => {
+                    console.error('Failed to start log stream:', err);
+                    logsDiv.innerHTML = '<p style="color: red;">Failed to start log stream: ' + err.message + '</p>';
+                });
+        }
+
+        function stopLogStream() {
+            if (logReader) {
+                logReader.cancel();
+                logReader = null;
+            }
+            currentContainer = '';
+        }
+
+        // Auto-connect on load
+        window.onload = function() {
+            connect();
+            loadContainers();
+        };
+    </script>
+</body>
+</html>
+

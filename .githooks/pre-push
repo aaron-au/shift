@@ -1,0 +1,6 @@
+#!/bin/sh
+# ADR-0006: the security/reliability gate runs on every push.
+# Bypassing with --no-verify is a build-breaking event waiting in CI.
+set -e
+echo "pre-push: running make check (ADR-0006 gate)..."
+exec make check

@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SHIFT Runner - WebSocket Monitor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #90ee90;
+            margin-bottom: 20px;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            display: inline-block;
+        }
+        .status.connected {
+            background: #2d5a2d;
+            color: #90ee90;
+        }
+        .status.disconnected {
+            background: #5a2d2d;
+            color: #ee9090;
+        }
+        .connections {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .connection-card {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 5px;
+            border: 1px solid #3a3a3a;
+        }
+        .connection-card.active {
+            border-color: #90ee90;
+        }
+        .messages {
+            background: #2a2a2a;
+            border-radius: 5px;
+            padding: 20px;
+            height: 500px;
+            overflow-y: auto;
+            border: 1px solid #3a3a3a;
+        }
+        .message {
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 5px;
+            border-left: 3px solid #90ee90;
+            background: #1f1f1f;
+        }
+        .message.from-hub {
+            border-left-color: #4a9eff;
+        }
+        .message.from-p2p {
+            border-left-color: #ffaa4a;
+        }
+        .message.from-runner {
+            border-left-color: #90ee90;
+        }
+        .message-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+            font-size: 0.9em;
+            color: #999;
+        }
+        .message-type {
+            font-weight: bold;
+            color: #90ee90;
+        }
+        .message-payload {
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            color: #ccc;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .metrics-display {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 5px;
+        }
+        .metric-item {
+            margin: 8px 0;
+            padding: 5px;
+            background: #333;
+            border-radius: 3px;
+        }
+        .scheduled-tasks {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 5px;
+        }
+        .scheduled-tasks ul {
+            list-style: none;
+            padding: 0;
+        }
+        .scheduled-tasks li {
+            margin: 8px 0;
+            padding: 8px;
+            background: #333;
+            border-radius: 3px;
+        }
+        .section {
+            margin-bottom: 30px;
+        }
+        .section h2 {
+            color: #90ee90;
+            margin-bottom: 10px;
+        }
+        .controls {
+            margin-bottom: 20px;
+        }
+        button {
+            background: #90ee90;
+            color: #1a1a1a;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-right: 10px;
+            font-weight: bold;
+        }
+        button:hover {
+            background: #80de80;
+        }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SHIFT Runner - WebSocket Monitor</h1>
+        <div class="status disconnected" id="status">Disconnected</div>
+        
+        <div class="controls">
+            <button id="connectBtn" onclick="connect()">Connect</button>
+            <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+            <button onclick="clearMessages()">Clear Messages</button>
+        </div>
+
+        <div class="connections">
+            <div class="connection-card" id="hubConnection">
+                <h3>Hub Connection</h3>
+                <div id="hubStatus">Not connected</div>
+            </div>
+            <div class="connection-card" id="p2pConnection">
+                <h3>P2P Connection</h3>
+                <div id="p2pStatus">Not connected</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Resource Metrics</h2>
+            <div id="resourceMetrics" class="metrics-display">
+                <p>Loading...</p>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Scheduled Tasks</h2>
+            <div id="scheduledTasks" class="scheduled-tasks">
+                <p>Loading...</p>
+            </div>
+        </div>
+
+        <h2>Messages</h2>
+        <div class="messages" id="messages"></div>
+    </div>
+
+    <script>
+        let hubWs = null;
+        let p2pWs = null;
+        const messagesDiv = document.getElementById('messages');
+        const statusDiv = document.getElementById('status');
+        const hubStatusDiv = document.getElementById('hubStatus');
+        const p2pStatusDiv = document.getElementById('p2pStatus');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+
+        function connect() {
+            // Connect to Hub WebSocket (from runner, connect to hub service)
+            // Extract runner ID from port number
+            const port = window.location.port || '8000';
+            const runnerId = port === '8010' || port === '8011' ? 'runner-2' : 'runner-1';
+            const hubWsUrl = `ws://${window.location.hostname}:2000/ws?runner_id=${runnerId}`;
+            hubWs = new WebSocket(hubWsUrl);
+
+            hubWs.onopen = function() {
+                hubStatusDiv.textContent = 'Connected';
+                document.getElementById('hubConnection').classList.add('active');
+                addMessage('hub', 'Connected to Hub', {});
+                updateStatus();
+            };
+
+            hubWs.onmessage = function(event) {
+                const message = JSON.parse(event.data);
+                addMessage('hub', message.type, message);
+            };
+
+            hubWs.onerror = function(error) {
+                addMessage('system', 'Hub WebSocket Error', { error: error.toString() });
+            };
+
+            hubWs.onclose = function() {
+                hubStatusDiv.textContent = 'Disconnected';
+                document.getElementById('hubConnection').classList.remove('active');
+                addMessage('hub', 'Disconnected from Hub', {});
+                updateStatus();
+            };
+
+            // Connect to P2P WebSocket
+            const p2pPort = window.location.port || (window.location.hostname.includes('8010') ? '8010' : '8000');
+            const p2pWsUrl = `ws://${window.location.hostname}:${p2pPort}/p2p?peer_id=${runnerId}`;
+            p2pWs = new WebSocket(p2pWsUrl);
+
+            p2pWs.onopen = function() {
+                p2pStatusDiv.textContent = 'Connected';
+                document.getElementById('p2pConnection').classList.add('active');
+                addMessage('p2p', 'Connected to P2P', {});
+                updateStatus();
+            };
+
+            p2pWs.onmessage = function(event) {
+                const message = JSON.parse(event.data);
+                addMessage('p2p', message.type, message);
+            };
+
+            p2pWs.onerror = function(error) {
+                addMessage('system', 'P2P WebSocket Error', { error: error.toString() });
+            };
+
+            p2pWs.onclose = function() {
+                p2pStatusDiv.textContent = 'Disconnected';
+                document.getElementById('p2pConnection').classList.remove('active');
+                addMessage('p2p', 'Disconnected from P2P', {});
+                updateStatus();
+            };
+        }
+
+        function disconnect() {
+            if (hubWs) {
+                hubWs.close();
+                hubWs = null;
+            }
+            if (p2pWs) {
+                p2pWs.close();
+                p2pWs = null;
+            }
+        }
+
+        function updateStatus() {
+            const hubConnected = hubWs && hubWs.readyState === WebSocket.OPEN;
+            const p2pConnected = p2pWs && p2pWs.readyState === WebSocket.OPEN;
+            
+            if (hubConnected || p2pConnected) {
+                statusDiv.textContent = 'Connected';
+                statusDiv.className = 'status connected';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+            } else {
+                statusDiv.textContent = 'Disconnected';
+                statusDiv.className = 'status disconnected';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+            }
+            
+            loadResourceMetrics();
+            loadScheduledTasks();
+        }
+
+        function loadResourceMetrics() {
+            const port = window.location.port || '8000';
+            fetch(`http://${window.location.hostname}:${port}/api/metrics`)
+                .then(res => res.json())
+                .then(data => {
+                    const metricsDiv = document.getElementById('resourceMetrics');
+                    const loadScore = (data.cpu_percent * 0.5 + data.memory_percent * 0.3 + data.active_tasks * 10).toFixed(2);
+                    metricsDiv.innerHTML = `
+                        <div class="metric-item">
+                            <strong>CPU:</strong> ${data.cpu_percent.toFixed(2)}%
+                        </div>
+                        <div class="metric-item">
+                            <strong>Memory:</strong> ${data.memory_percent.toFixed(2)}% (${data.memory_used_mb}MB / ${data.memory_total_mb}MB)
+                        </div>
+                        <div class="metric-item">
+                            <strong>Active Tasks:</strong> ${data.active_tasks}
+                        </div>
+                        <div class="metric-item">
+                            <strong>Load Score:</strong> ${loadScore} (lower is better)
+                        </div>
+                    `;
+                })
+                .catch(err => {
+                    console.error('Failed to load metrics:', err);
+                });
+        }
+
+        function loadScheduledTasks() {
+            const port = window.location.port || '8000';
+            fetch(`http://${window.location.hostname}:${port}/api/scheduled-tasks`)
+                .then(res => res.json())
+                .then(data => {
+                    const tasksDiv = document.getElementById('scheduledTasks');
+                    if (data.scheduled_tasks && data.scheduled_tasks.length > 0) {
+                        let html = '<ul>';
+                        data.scheduled_tasks.forEach(task => {
+                            html += `<li><strong>Flow ID:</strong> ${task.flow_id}</li>`;
+                        });
+                        html += '</ul>';
+                        html += `<p><strong>Current Resource Metrics:</strong> CPU: ${data.resource_metrics.cpu_percent.toFixed(2)}%, Memory: ${data.resource_metrics.memory_percent.toFixed(2)}%, Active Tasks: ${data.resource_metrics.active_tasks}</p>`;
+                        tasksDiv.innerHTML = html;
+                    } else {
+                        tasksDiv.innerHTML = '<p>No scheduled tasks</p>';
+                    }
+                })
+                .catch(err => {
+                    console.error('Failed to load scheduled tasks:', err);
+                });
+        }
+
+        // Refresh metrics and scheduled tasks every 5 seconds
+        setInterval(() => {
+            if (hubWs && hubWs.readyState === WebSocket.OPEN) {
+                loadResourceMetrics();
+                loadScheduledTasks();
+            }
+        }, 5000);
+
+        function addMessage(from, type, message) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+            
+            if (from === 'hub') {
+                messageDiv.className += ' from-hub';
+            } else if (from === 'p2p') {
+                messageDiv.className += ' from-p2p';
+            } else {
+                messageDiv.className += ' from-runner';
+            }
+
+            const header = document.createElement('div');
+            header.className = 'message-header';
+            header.innerHTML = `
+                <span class="message-type">${type}</span>
+                <span>From: ${from}</span>
+                <span>${new Date(message.timestamp || Date.now()).toLocaleTimeString()}</span>
+            `;
+
+            const payload = document.createElement('div');
+            payload.className = 'message-payload';
+            payload.textContent = JSON.stringify(message, null, 2);
+
+            messageDiv.appendChild(header);
+            messageDiv.appendChild(payload);
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function clearMessages() {
+            messagesDiv.innerHTML = '';
+        }
+
+        // Auto-connect on load
+        window.onload = function() {
+            connect();
+        };
+    </script>
+</body>
+</html>
+

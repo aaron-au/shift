@@ -1,0 +1,49 @@
+# ADR-0006: same gate as local `make check` / pre-push — no CI-only checks.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GOLANGCI_LINT_VERSION: v2.11.4
+  GITLEAKS_VERSION: v8.30.0
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks scans history
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: "**/go.sum"
+
+      - name: Install gate tools (pinned)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/zricethezav/gitleaks/v8@${GITLEAKS_VERSION}
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" ${GOLANGCI_LINT_VERSION}
+
+      - name: make check
+        run: make check
+
+  bench:
+    # Non-blocking visibility job; becomes a regression gate in M1 (ADR-0003).
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: "**/go.sum"
+      - name: make bench
+        run: make bench

@@ -1,0 +1,23 @@
+# Gate config (ADR-0006). Runs per module via `make lint`.
+# Defaults already include errcheck, govet, ineffassign, staticcheck, unused.
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - gosec        # security anti-patterns (SQLi, weak crypto, exec, temp files)
+    - bodyclose    # unclosed HTTP response bodies
+    - noctx        # HTTP/DB calls without context propagation (v0 lesson)
+    - errorlint    # correct error wrapping/comparison
+    - sqlclosecheck
+    - rowserrcheck # sql.Rows.Err() checked (v0 swallowed row errors)
+    - misspell
+    - copyloopvar
+  settings:
+    gosec:
+      excludes: [] # no blanket exclusions — suppress inline with justification (ADR-0006)
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

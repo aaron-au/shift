@@ -1,0 +1,191 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: shift-postgres
+    environment:
+      POSTGRES_USER: shift
+      POSTGRES_PASSWORD: shift
+      POSTGRES_DB: shift
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./hub/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shift"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shift-network
+
+  account-service:
+    build:
+      context: ./hub
+      dockerfile: ./cmd/account-service/Dockerfile
+    container_name: shift-account-service
+    environment:
+      SERVER_PORT: "8080"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: shift
+      DB_PASSWORD: shift
+      DB_NAME: shift
+      DB_SSLMODE: disable
+    ports:
+      - "8081:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - shift-network
+
+  runner-service:
+    build:
+      context: ./hub
+      dockerfile: ./cmd/runner-service/Dockerfile
+    container_name: shift-runner-service
+    environment:
+      SERVER_PORT: "2000"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: shift
+      DB_PASSWORD: shift
+      DB_NAME: shift
+      DB_SSLMODE: disable
+    ports:
+      - "2000:2000"
+      - "2001:2001"
+    volumes:
+      - ./hub/ui:/app/ui
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - shift-network
+
+  billing-service:
+    build:
+      context: ./hub
+      dockerfile: ./cmd/billing-service/Dockerfile
+    container_name: shift-billing-service
+    environment:
+      SERVER_PORT: "8080"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: shift
+      DB_PASSWORD: shift
+      DB_NAME: shift
+      DB_SSLMODE: disable
+    ports:
+      - "8083:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - shift-network
+
+  api-gateway:
+    build:
+      context: ./hub
+      dockerfile: ./cmd/api-gateway/Dockerfile
+    container_name: shift-api-gateway
+    environment:
+      SERVER_PORT: "8080"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: shift
+      DB_PASSWORD: shift
+      DB_NAME: shift
+      DB_SSLMODE: disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - shift-network
+
+  runner-1:
+    build:
+      context: ./runner
+      dockerfile: ./cmd/runner/Dockerfile
+    container_name: shift-runner-1
+    environment:
+      SERVER_PORT: "8000"
+      UI_PORT: "8001"
+      P2P_PORT: "8002"
+      HUB_WS_URL: "ws://runner-service:2000/ws"
+      HUB_API_URL: "http://runner-service:2000"
+      RUNNER_ID: "runner-1"
+      RUNNER_NAME: "runner-1"
+      RUNNER_GROUP_ID: "group-1"
+      KAFKA_BROKERS: "kafka:9092"
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+      - "8002:8002"
+    volumes:
+      - ./runner/ui:/app/ui
+    depends_on:
+      - runner-service
+      - kafka
+    networks:
+      - shift-network
+
+  runner-2:
+    build:
+      context: ./runner
+      dockerfile: ./cmd/runner/Dockerfile
+    container_name: shift-runner-2
+    environment:
+      SERVER_PORT: "8000"
+      UI_PORT: "8001"
+      P2P_PORT: "8002"
+      HUB_WS_URL: "ws://runner-service:2000/ws"
+      HUB_API_URL: "http://runner-service:2000"
+      RUNNER_ID: "runner-2"
+      RUNNER_NAME: "runner-2"
+      RUNNER_GROUP_ID: "group-1"
+      KAFKA_BROKERS: "kafka:9092"
+    ports:
+      - "8010:8000"
+      - "8011:8001"
+      - "8012:8002"
+    volumes:
+      - ./runner/ui:/app/ui
+    depends_on:
+      - runner-service
+      - kafka
+    networks:
+      - shift-network
+
+  kafka:
+    image: apache/kafka:4.0.1
+    container_name: shift-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    ports:
+      - "9092:9092"
+    networks:
+      - shift-network
+
+volumes:
+  postgres_data:
+
+networks:
+  shift-network:
+    driver: bridge
+

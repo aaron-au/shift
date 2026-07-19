@@ -1,0 +1,21 @@
+# Dev-only stack. Credentials below are deliberately non-secret dev values.
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: shift-postgres
+    environment:
+      POSTGRES_USER: shift
+      POSTGRES_PASSWORD: shift-dev-only
+      POSTGRES_DB: shift
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shift"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:
