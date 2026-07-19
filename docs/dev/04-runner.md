@@ -73,11 +73,26 @@ Declarative JSON — deliberately plain data (AI/developer-friendly, no DSL):
 ```
 
 Validation is **eager** (submit time): paths compile, op shapes check,
-filter values must be scalars. Compilation (`Document.Apply`) maps ops 1:1
+filter values must be scalars. Compilation (`flow.Apply`) maps ops 1:1
 onto engine operators; filter comparisons are `eq/ne` on scalars
 (`EqualScalar`) and `gt/gte/lt/lte` numeric-only; a path miss fails the
-predicate (missing ≠ null). v1 is linear source→ops→sink; DAG shapes are
-M5.
+predicate (missing ≠ null).
+
+**Flow model v2 (M5a, ADR-0013).** A document is a **graph of steps**.
+The linear `source/ops/sink` above is kept as sugar; the graph form uses
+`steps[]` + `start` with typed outcome edges: `onSuccess`/`onComplete`
+(the happy path) and `onFailure` (an error handler — a `sink` step off the
+main path). Both forms lower to one validated `Plan{Main, Catch}`
+(`Document.Plan()`), so there is a single compile + telemetry path. Each
+operator is labeled by its **step id** (telemetry `OpStats.Name`, and the
+`stream.OpError` tag), so a run failure is routed via
+`errors.AsType[*stream.OpError]` to the nearest covering `onFailure`
+handler. The handler is fed **one payload-free error record** `{flow,
+step, error, at}` and the task ends failed with `handled=true`; with no
+handler the task fails exactly as before. Any resolved secret value is
+redacted from the error text before it reaches `task.Error` or the handler
+record (ADR-0010). DAG data-branching (parallel fan-out/merge, multi-sink)
+is deferred to a later M5 chunk.
 
 ## Task lifecycle and admission (ADR-0005 in practice)
 
@@ -165,6 +180,7 @@ See [06-hub.md](06-hub.md) for the hub side of the protocol.
 
 ## What's deliberately NOT here yet
 
-- Task cancellation API, per-flow retry/error routing → M5 flow model.
+- Step-level error routing (`onFailure` handlers) landed in M5a (ADR-0013);
+  task cancellation API and per-flow retry policy remain future work.
 - Webhook/custom-API triggers on the runner → M5.
 - Dashboard auth → M4b hub-issued identity (until then: loopback bind only).

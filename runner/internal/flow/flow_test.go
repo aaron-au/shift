@@ -39,6 +39,56 @@ func runDoc(t *testing.T, opsJSON, input string) string {
 	return out.String()
 }
 
+// TestApplyNamesOpsByStepID: a v2 graph compiles its transform steps with
+// each operator labeled by its step id (the telemetry + OpError routing
+// key), and Apply lowers only the middle steps (endpoints bound by caller).
+func TestApplyNamesOpsByStepID(t *testing.T) {
+	src := Step{ID: "in", Connector: "x", Action: "y", OnSuccess: "keep"}
+	src.Type = "source"
+	keep := Step{ID: "keep", OnComplete: "shape"}
+	keep.Op = Op{Type: "filter", Path: "$.a", Cmp: "exists"}
+	shape := Step{ID: "shape", OnComplete: "out"}
+	shape.Op = Op{Type: "flatten", Sep: "."}
+	out := Step{ID: "out", Connector: "x", Action: "y"}
+	out.Type = "sink"
+	d := &Document{Name: "t", Start: "in", Steps: []Step{src, keep, shape, out}}
+
+	if err := d.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := d.Plan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{plan.Main[0].ID, plan.Main[3].ID}; got[0] != "in" || got[1] != "out" {
+		t.Fatalf("endpoints = %v", got)
+	}
+
+	rd := ndjson.NewReader(strings.NewReader(`{"a":{"b":1}}`+"\n"), ndjson.ReaderOptions{})
+	p, err := Apply(d, stream.New(rd, plan.Main[0].ID), CompileOptions{Gov: mem.New(1 << 20), SpillDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out2 strings.Builder
+	rep, err := p.Run(t.Context(), ndjson.NewWriter(&out2), plan.Main[3].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, op := range rep.Ops {
+		names = append(names, op.Name)
+	}
+	want := []string{"in", "keep", "shape", "out"}
+	if len(names) != len(want) {
+		t.Fatalf("op names = %v, want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("op names = %v, want %v", names, want)
+		}
+	}
+}
+
 func TestFilterSemantics(t *testing.T) {
 	input := `{"a":1,"s":"x"}` + "\n" + `{"a":5,"s":"y"}` + "\n" + `{"a":null}` + "\n" + `{}` + "\n"
 

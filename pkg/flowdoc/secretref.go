@@ -22,14 +22,15 @@ const secretRefKey = "$secret"
 // SecretNameRE mirrors the hub's secrets.name CHECK constraint.
 var SecretNameRE = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
-// SecretRefs returns the sorted, de-duplicated secret names referenced
-// by the document's source and sink configs.
+// SecretRefs returns the sorted, de-duplicated secret names referenced by
+// the document's connector configs (source and sink in the linear form;
+// every connector step — including handlers — in the graph form).
 func (d *Document) SecretRefs() ([]string, error) {
 	seen := map[string]bool{}
-	for label, ep := range map[string]Endpoint{"source": d.Source, "sink": d.Sink} {
-		if err := walkConfig(ep.Config, func(name string) error {
+	for _, ep := range d.configRefs() {
+		if err := walkConfig(ep.config, func(name string) error {
 			if !SecretNameRE.MatchString(name) {
-				return fmt.Errorf("flow: %s config: invalid secret name %q", label, name)
+				return fmt.Errorf("flow: %s config: invalid secret name %q", ep.label, name)
 			}
 			seen[name] = true
 			return nil
@@ -47,24 +48,50 @@ func (d *Document) SecretRefs() ([]string, error) {
 
 // ResolveSecrets returns a copy of the document with every secret
 // reference replaced by the looked-up value. The receiver is not
-// modified. lookup errors propagate unchanged.
+// modified (the Steps slice is copied when present). lookup errors
+// propagate unchanged.
 func (d *Document) ResolveSecrets(lookup func(name string) (string, error)) (*Document, error) {
 	out := *d
-	for _, ep := range []struct {
-		label string
-		src   json.RawMessage
-		dst   *Endpoint
-	}{
-		{"source", d.Source.Config, &out.Source},
-		{"sink", d.Sink.Config, &out.Sink},
-	} {
-		resolved, err := resolveConfig(ep.src, lookup)
+	if len(d.Steps) > 0 {
+		out.Steps = make([]Step, len(d.Steps))
+		copy(out.Steps, d.Steps)
+	}
+	for _, ep := range out.configRefs() {
+		resolved, err := resolveConfig(ep.config, lookup)
 		if err != nil {
 			return nil, fmt.Errorf("flow: %s config: %w", ep.label, err)
 		}
-		ep.dst.Config = resolved
+		*ep.dst = resolved
 	}
 	return &out, nil
+}
+
+// configRef points at one connector config to walk/rewrite, with a label
+// for error messages. dst is nil for read-only callers (SecretRefs).
+type configRef struct {
+	label  string
+	config json.RawMessage
+	dst    *json.RawMessage
+}
+
+// configRefs enumerates the connector configs to inspect. For the graph
+// form it targets the receiver's own Steps slice, so callers that copied
+// Steps first (ResolveSecrets) rewrite the copy in place.
+func (d *Document) configRefs() []configRef {
+	if len(d.Steps) > 0 {
+		refs := make([]configRef, 0, len(d.Steps))
+		for i := range d.Steps {
+			s := &d.Steps[i]
+			if isConnectorType(s.Type) {
+				refs = append(refs, configRef{"step " + s.ID, s.Config, &s.Config})
+			}
+		}
+		return refs
+	}
+	return []configRef{
+		{"source", d.Source.Config, &d.Source.Config},
+		{"sink", d.Sink.Config, &d.Sink.Config},
+	}
 }
 
 // secretRefName returns the referenced name when v is exactly

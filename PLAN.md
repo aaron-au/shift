@@ -52,8 +52,16 @@ Postgres schema v1 (evolved from `docs/reference/schema-v0.sql`: accounts, runne
 OIDC auth + tenancy enforcement (generic OIDC via go-oidc; Dex in the bundle; break-glass token retained — ADR-0010), envelope-encrypted secrets with runner-pull resolution (`{"$secret":...}` refs; plaintext never at rest — ADR-0010), connector registry with Ed25519 artifact signing + fail-closed runner verification (`pkg/consign`, `runner/internal/connstore` — ADR-0011), HA scheduler with layered exactly-once (advisory lock + SKIP LOCKED + atomic tick + `sched:` idempotency keys; periodic lease sweep — ADR-0012), flow publish workflow (drafts; version 0 = published), hub dashboard (embedded, OIDC login), "just runs" compose bundle (`make up`: postgres + dex + certgen + hubd TLS + bootstrap seeding + runner with `SHIFT_REQUIRE_SIGNED=1`).
 **Exit met** (live walkthrough + e2e suite): compose up → Dex login → seeded demo flow → minutely schedule fired exactly once per tick → runner executed the registry-signed connector → telemetry on the dashboard. Proofs: `hub/e2e/{schedule,signed_artifact,secrets}_test.go` + two-account isolation and FireDue-contention store tests. Deferred deliberately: multi-tenant signup UX, connector version pinning in flow docs (M5), KMS KEK provider.
 
-### M5 — Flow model & studio API
+### M5 — Flow model & studio API 🚧 in progress
 DAG flows (branch/merge, error handlers, parallel fan-out, sub-flows), mapping/transform authoring API (AI-friendly: flows and mappings are declarative JSON/YAML documents with a JSON-Schema), WASM (wazero) user transforms, webhook triggers with custom API endpoints on runners.
+
+M5 is milestone-scale, split into sub-milestones (each lands green through `make check`):
+- **M5a — Flow model v2 (ADR-0013) ✅ 2026-07-20.** Step graph with typed outcome edges (`onSuccess`/`onComplete` happy path, `onFailure` error handler); linear form kept as sugar, both lower to one validated `Plan`; engine `OpError` for step-attributed error routing; per-step-id telemetry; runner routes a step failure to its dead-letter handler with a payload-free, secret-redacted error record. Deferred to later ADRs: parallel fan-out/merge/multi-sink, per-record routing, sub-flows.
+- **M5b — Custom code:** Starlark-WASM inline transform op + Python subprocess step (ADR-0014; step types `wasm`/`python` reserved by M5a). Studio remains low/no-code first — code is the escape hatch, not the default.
+- **M5c — Test mode + live per-step logs + data capture + payload storage** (needs a runner→hub/studio streaming channel that does not exist yet).
+- **M5d — Studio authoring API + webhook triggers + per-hub connector capability policy** (cloud hubs hide dangerous connectors).
+- **M5e — Tiered benchmark suite** (below).
+
 - **Studio is low/no-code first**; the escape hatch for custom logic is **sandboxed WASM user transforms** (no filesystem/network, fuel-metered), not embedded scripting engines. Guest-language candidates in preference order: Starlark (Python-like syntax, deterministic, cheap), JS (QuickJS-wasm), Python (micro-Python/RustPython-wasm) — decided by ADR when M5 starts. (Boomi-style custom steps, done safely.)
 - **Tiered benchmark suite:** extend the capacity benchmark beyond raw streams to graded process shapes — *simple* (passthrough), *standard* (filter+project+coerce), *complex* (flatten+aggregate w/ spill), *extreme* (multi-stage + http sink + high cardinality) — reported per tier on the runner dashboard; the basis for honest incumbent comparisons (M6 collateral).
 

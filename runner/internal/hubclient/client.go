@@ -136,9 +136,11 @@ type Result struct {
 	RunnerTaskID  string   `json:"runner_task_id,omitempty"`
 }
 
-// OpStat mirrors the runner's per-operator stats.
+// OpStat mirrors the runner's per-operator stats. Field layout matches
+// task.OpStat so the lease loop can convert directly.
 type OpStat struct {
 	Name       string  `json:"name"`
+	StepID     string  `json:"step_id,omitempty"`
 	RecordsIn  int64   `json:"records_in"`
 	RecordsOut int64   `json:"records_out"`
 	Seconds    float64 `json:"seconds"`

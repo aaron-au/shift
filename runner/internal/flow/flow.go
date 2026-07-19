@@ -21,6 +21,10 @@ type (
 	Endpoint = flowdoc.Endpoint
 	// Op is one transform step.
 	Op = flowdoc.Op
+	// Step is one node in the flow graph (v2).
+	Step = flowdoc.Step
+	// Plan is a document's normalized, validated execution plan.
+	Plan = flowdoc.Plan
 	// ProjectField mirrors stream.ProjectField in document form.
 	ProjectField = flowdoc.ProjectField
 	// CoerceRule converts a top-level field to a kind.
@@ -40,15 +44,30 @@ type CompileOptions struct {
 	SpillDir string
 }
 
-// Apply compiles the document's ops onto a pipeline (source and sink are
-// bound by the caller, which owns connector processes).
+// Apply compiles the document's transform steps onto a pipeline (source
+// and sink are bound by the caller, which owns connector processes). It
+// lowers through the document's Plan, so both authoring forms compile the
+// same way, and stamps each operator with its step id (the telemetry key
+// and the OpError tag used for error routing).
 func Apply(d *Document, p *stream.Pipeline, opts CompileOptions) (*stream.Pipeline, error) {
-	for i := range d.Ops {
-		var err error
-		p, err = applyOp(&d.Ops[i], p, opts)
+	plan, err := d.Plan()
+	if err != nil {
+		return nil, err
+	}
+	return applyTransforms(plan.Main, p, opts)
+}
+
+// applyTransforms folds the middle (non-endpoint) steps of a plan onto p.
+func applyTransforms(main []*flowdoc.Step, p *stream.Pipeline, opts CompileOptions) (*stream.Pipeline, error) {
+	if len(main) < 2 {
+		return p, nil
+	}
+	for _, s := range main[1 : len(main)-1] {
+		np, err := applyOp(&s.Op, p, opts)
 		if err != nil {
-			return nil, fmt.Errorf("flow: op %d: %w", i, err)
+			return nil, fmt.Errorf("flow: step %q: %w", s.ID, err)
 		}
+		p = np.RenameLastOp(s.ID)
 	}
 	return p, nil
 }

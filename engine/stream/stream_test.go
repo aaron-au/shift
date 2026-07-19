@@ -3,6 +3,7 @@ package stream
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -96,6 +97,12 @@ func TestCoerceFailure(t *testing.T) {
 	_, err := p.Run(context.Background(), ndjson.NewWriter(&bytes.Buffer{}), "write")
 	if err == nil || !strings.Contains(err.Error(), "coerce") {
 		t.Fatalf("err = %v", err)
+	}
+	// The failure is tagged with the operator name (the runner sets this to
+	// the flow step id) so it can be routed to that step's error handler.
+	var oe *OpError
+	if !errors.As(err, &oe) || oe.Op != "coerce" {
+		t.Fatalf("OpError not recoverable: %v", err)
 	}
 }
 

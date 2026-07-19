@@ -6,11 +6,14 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/aaron-au/shift/engine/mem"
+	"github.com/aaron-au/shift/engine/record"
 	"github.com/aaron-au/shift/engine/stream"
 	"github.com/aaron-au/shift/runner/internal/connpool"
 	"github.com/aaron-au/shift/runner/internal/flow"
@@ -96,6 +99,22 @@ func (s *Service) taskCost() int64 { return s.opts.TaskWatermark + s.opts.TaskOv
 // "waiting" until capacity frees (resource-based, never a count cap —
 // ADR-0005).
 func (s *Service) Submit(doc *flow.Document, benchmark bool) (string, error) {
+	return s.SubmitWith(doc, SubmitOpts{Benchmark: benchmark})
+}
+
+// SubmitOpts carries per-task execution options that the lease path
+// supplies but the simple (dashboard/benchmark) path does not.
+type SubmitOpts struct {
+	// Benchmark marks a synthetic capacity-benchmark task.
+	Benchmark bool
+	// SecretValues are the resolved secret plaintexts for this task. They
+	// are used only to redact any value that leaks into an error string or
+	// error-handler record (ADR-0010: secrets never in logs). Never stored.
+	SecretValues []string
+}
+
+// SubmitWith registers and runs a task with explicit options.
+func (s *Service) SubmitWith(doc *flow.Document, o SubmitOpts) (string, error) {
 	if err := doc.Validate(); err != nil {
 		return "", err
 	}
@@ -110,16 +129,16 @@ func (s *Service) Submit(doc *flow.Document, benchmark bool) (string, error) {
 	t := &task.Task{
 		ID:        task.NewID(),
 		Flow:      doc.Name,
-		Benchmark: benchmark,
+		Benchmark: o.Benchmark,
 		State:     task.StateWaiting,
 		Submitted: time.Now(),
 	}
 	s.store.Add(t)
-	go s.run(t.ID, doc)
+	go s.run(t.ID, doc, o)
 	return t.ID, nil
 }
 
-func (s *Service) run(id string, doc *flow.Document) {
+func (s *Service) run(id string, doc *flow.Document, o SubmitOpts) {
 	defer s.wg.Done()
 	ctx := context.Background()
 
@@ -146,24 +165,29 @@ func (s *Service) run(id string, doc *flow.Document) {
 		t.Started = &now
 	})
 
-	rep, confirmed, err := s.execute(ctx, doc)
+	redact := newRedactor(o.SecretValues)
+	res, err := s.execute(ctx, doc, redact)
 	end := time.Now()
 	s.store.Update(id, func(t *task.Task) {
 		t.Finished = &end
 		if err != nil {
 			t.State = task.StateFailed
-			t.Error = err.Error()
+			t.Error = redact(err.Error())
+			t.Handled = res.handled
+			t.HandlerStep = res.handlerStep
+			t.HandlerError = res.handlerErr
 			return
 		}
 		t.State = task.StateCompleted
-		t.SinkConfirmed = confirmed
-		t.RecordsOut = rep.RecordsOut
-		if len(rep.Ops) > 0 {
-			t.RecordsIn = rep.Ops[0].RecordsIn
+		t.SinkConfirmed = res.confirmed
+		t.RecordsOut = res.rep.RecordsOut
+		if len(res.rep.Ops) > 0 {
+			t.RecordsIn = res.rep.Ops[0].RecordsIn
 		}
-		for _, op := range rep.Ops {
+		for _, op := range res.rep.Ops {
 			t.Ops = append(t.Ops, task.OpStat{
 				Name:       op.Name,
+				StepID:     op.Name, // Apply/New/Run label every op by its step id
 				RecordsIn:  op.RecordsIn,
 				RecordsOut: op.RecordsOut,
 				Seconds:    float64(op.Nanos) / 1e9,
@@ -172,32 +196,123 @@ func (s *Service) run(id string, doc *flow.Document) {
 	})
 }
 
-// execute binds connectors and runs the compiled pipeline.
-func (s *Service) execute(ctx context.Context, doc *flow.Document) (stream.Report, int64, error) {
-	srcProc, err := s.pool.Get(ctx, doc.Source.Connector)
-	if err != nil {
-		return stream.Report{}, 0, err
-	}
-	defer s.pool.Put(doc.Source.Connector)
-	sinkProc, err := s.pool.Get(ctx, doc.Sink.Connector)
-	if err != nil {
-		return stream.Report{}, 0, err
-	}
-	defer s.pool.Put(doc.Sink.Connector)
+// execResult carries an execution's outcome, including whether an error
+// was routed to an onFailure handler.
+type execResult struct {
+	rep         stream.Report
+	confirmed   int64
+	handled     bool
+	handlerStep string
+	handlerErr  string
+}
 
-	src := srcProc.Source(doc.Source.Action, doc.Source.Config)
-	sink := sinkProc.Sink(doc.Sink.Action, doc.Sink.Config)
+// execute binds connectors, runs the compiled pipeline, and on failure
+// routes to the failing step's error handler (v2 onFailure), if any.
+func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(string) string) (execResult, error) {
+	plan, err := doc.Plan()
+	if err != nil {
+		return execResult{}, err
+	}
+	srcStep := plan.Main[0]
+	sinkStep := plan.Main[len(plan.Main)-1]
+
+	srcProc, err := s.pool.Get(ctx, srcStep.Connector)
+	if err != nil {
+		return execResult{}, err
+	}
+	defer s.pool.Put(srcStep.Connector)
+	sinkProc, err := s.pool.Get(ctx, sinkStep.Connector)
+	if err != nil {
+		return execResult{}, err
+	}
+	defer s.pool.Put(sinkStep.Connector)
+
+	src := srcProc.Source(srcStep.Action, srcStep.Config)
+	sink := sinkProc.Sink(sinkStep.Action, sinkStep.Config)
 
 	taskGov := mem.New(s.opts.TaskWatermark)
 	p, err := flow.Apply(doc,
-		stream.New(src, "source:"+doc.Source.Connector+"/"+doc.Source.Action),
+		stream.New(src, srcStep.ID),
 		flow.CompileOptions{Gov: taskGov, SpillDir: s.opts.SpillDir},
 	)
 	if err != nil {
-		return stream.Report{}, 0, err
+		return execResult{}, err
 	}
-	rep, err := p.Run(ctx, sink, "sink:"+doc.Sink.Connector+"/"+doc.Sink.Action)
-	return rep, sink.Records, err
+	rep, runErr := p.Run(ctx, sink, sinkStep.ID)
+	res := execResult{rep: rep, confirmed: sink.Records}
+	if runErr == nil {
+		return res, nil
+	}
+
+	// Error routing: identify the failing step (the OpError tag) and, if the
+	// flow declares an onFailure handler covering it, run the handler with a
+	// payload-free, redacted error record. The task still fails.
+	failStep := ""
+	if oe, ok := errors.AsType[*stream.OpError](runErr); ok {
+		failStep = oe.Op
+	}
+	if h := plan.HandlerFor(failStep); h != nil {
+		res.handled = true
+		res.handlerStep = h.ID
+		if herr := s.runHandler(ctx, h, doc.Name, failStep, redact(runErr.Error())); herr != nil {
+			res.handlerErr = redact(herr.Error())
+		}
+	}
+	return res, runErr
+}
+
+// runHandler delivers a single error record to a v2 onFailure handler (a
+// sink action). The record is metadata only — flow, failing step, error,
+// timestamp — never the payload the hub must not see (doctrine).
+func (s *Service) runHandler(ctx context.Context, h *flow.Step, flowName, failStep, errMsg string) error {
+	proc, err := s.pool.Get(ctx, h.Connector)
+	if err != nil {
+		return err
+	}
+	defer s.pool.Put(h.Connector)
+	sink := proc.Sink(h.Action, h.Config)
+
+	b := errorRecord(flowName, failStep, errMsg, time.Now().UTC().Format(time.RFC3339))
+	if err := sink.Write(ctx, b); err != nil {
+		_ = sink.Close()
+		return err
+	}
+	return sink.Close()
+}
+
+// errorRecord builds the single, payload-free record handed to an
+// onFailure handler: flow, failing step, (already-redacted) error, and a
+// timestamp. It never contains any of the flow's payload data.
+func errorRecord(flowName, failStep, errMsg, at string) *record.Batch {
+	b := record.NewBatch()
+	bld := b.Builder()
+	bld.BeginMap()
+	bld.KeyLiteral("flow")
+	bld.StringLiteral(flowName)
+	bld.KeyLiteral("step")
+	bld.StringLiteral(failStep)
+	bld.KeyLiteral("error")
+	bld.StringLiteral(errMsg)
+	bld.KeyLiteral("at")
+	bld.StringLiteral(at)
+	bld.EndMap()
+	b.Append(bld.Finish())
+	return b
+}
+
+// newRedactor returns a function that masks each non-empty secret value in
+// a string. Zero secrets yields the identity function.
+func newRedactor(values []string) func(string) string {
+	pairs := make([]string, 0, len(values)*2)
+	for _, v := range values {
+		if v != "" {
+			pairs = append(pairs, v, "***")
+		}
+	}
+	if len(pairs) == 0 {
+		return func(s string) string { return s }
+	}
+	return strings.NewReplacer(pairs...).Replace
 }
 
 // Status is the runner-wide snapshot for the API/dashboard.

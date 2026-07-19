@@ -22,9 +22,11 @@ const (
 	StateFailed    State = "failed"
 )
 
-// OpStat mirrors engine per-operator stats in API form.
+// OpStat mirrors engine per-operator stats in API form. StepID is the flow
+// step id (v2 graph) or the synthesized linear id (source, op0…, sink).
 type OpStat struct {
 	Name       string  `json:"name"`
+	StepID     string  `json:"step_id,omitempty"`
 	RecordsIn  int64   `json:"records_in"`
 	RecordsOut int64   `json:"records_out"`
 	Seconds    float64 `json:"seconds"`
@@ -45,6 +47,13 @@ type Task struct {
 	RecordsOut    int64    `json:"records_out"`
 	SinkConfirmed int64    `json:"sink_confirmed,omitempty"`
 	Ops           []OpStat `json:"ops,omitempty"`
+
+	// Error handling (v2 flows). When a step fails and its flow declares an
+	// onFailure handler, the handler runs and these record it. The task
+	// still ends failed (data never reached the real sink).
+	Handled      bool   `json:"handled,omitempty"`
+	HandlerStep  string `json:"handler_step,omitempty"`
+	HandlerError string `json:"handler_error,omitempty"`
 }
 
 // NewID returns a 16-byte random hex task id.

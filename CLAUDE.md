@@ -71,7 +71,9 @@ hub/        hubd (M4a+M4b, done — see docs/dev/06-hub.md): Postgres store (sch
                                               HA scheduler (exactly-once), embedded dashboard on :8400;
                                               e2e: crash recovery, exactly-once schedules, signed artifacts,
                                               secrets-never-at-rest (hub/e2e)
-pkg/        flowdoc (flow document model + validation + {"$secret":...} refs — shared hub↔runner),
+pkg/        flowdoc (flow document model + validation + {"$secret":...} refs — shared hub↔runner;
+              M5a: step graph with outcome edges — onSuccess/onComplete happy path, onFailure
+              error handler — linear source/ops/sink kept as sugar; both lower to one Plan; ADR-0013),
             consign (Ed25519 artifact signing — hub/runner/CLI), buildinfo
 deploy/     compose.dev.yml (dev Postgres), compose.yml + docker/ + dex/ (the M4b "just runs"
             bundle — `make up`; see deploy/README.md for the exit-criterion walkthrough)

@@ -14,13 +14,88 @@ import (
 	"github.com/aaron-au/shift/engine/record"
 )
 
-// Document is one executable flow definition (v1: linear source → ops →
-// sink; DAG shapes arrive in M5).
+// Document is one executable flow definition. Two authoring forms lower
+// to the same execution plan (see graph.go, Document.Plan):
+//
+//   - linear form (v1 sugar): Source + Ops + Sink — the ergonomic,
+//     AI-friendly shape for a straight-through pipeline. Kept unchanged.
+//   - graph form (v2): Steps + Start — nodes with typed outcome edges
+//     (onSuccess / onComplete happy path, onFailure error handler). The
+//     two forms are mutually exclusive within one document.
 type Document struct {
-	Name   string   `json:"name"`
-	Source Endpoint `json:"source"`
+	Name string `json:"name"`
+
+	// Linear form.
+	Source Endpoint `json:"source,omitzero"`
 	Ops    []Op     `json:"ops,omitempty"`
-	Sink   Endpoint `json:"sink"`
+	Sink   Endpoint `json:"sink,omitzero"`
+
+	// Graph form.
+	Steps []Step `json:"steps,omitempty"`
+	Start string `json:"start,omitempty"` // entry step id ("" = the sole source step)
+}
+
+// Step is one node in the flow graph (v2). Every node — connector or
+// transform — is a step. A Step embeds Op, so the transform types reuse
+// the exact same fields and validation as the linear form and compile
+// through the same applyOp path on the runner.
+//
+// Type namespace:
+//   - connector: source | sink   (Connector/Action/Config apply)
+//   - transform: filter | project | coerce | flatten | aggregate (Op fields)
+//   - reserved:  wasm | python | subflow — parsed but rejected until M5b.
+type Step struct {
+	ID string `json:"id"`
+	Op        // promotes Type + the transform option fields
+
+	// Connector steps (source|sink).
+	Connector string          `json:"connector,omitempty"`
+	Action    string          `json:"action,omitempty"`
+	Config    json.RawMessage `json:"config,omitempty"`
+
+	// Outcome edges (step ids). A non-terminal step has exactly one happy
+	// edge (OnSuccess XOR OnComplete); the two are structurally identical
+	// (both name the next step on the happy path) — the distinction is
+	// authoring intent. OnFailure names an error-handler step.
+	OnSuccess  string `json:"onSuccess,omitempty"`
+	OnComplete string `json:"onComplete,omitempty"`
+	OnFailure  string `json:"onFailure,omitempty"`
+}
+
+// Endpoint views a connector step (source|sink) as an Endpoint, so the
+// runner can bind it exactly like a linear-form endpoint.
+func (s *Step) Endpoint() Endpoint {
+	return Endpoint{Connector: s.Connector, Action: s.Action, Config: s.Config}
+}
+
+// happyEdge returns the step's single happy-path successor id (OnSuccess
+// or OnComplete) and whether one is set.
+func (s *Step) happyEdge() (string, bool) {
+	if s.OnSuccess != "" {
+		return s.OnSuccess, true
+	}
+	if s.OnComplete != "" {
+		return s.OnComplete, true
+	}
+	return "", false
+}
+
+func isConnectorType(t string) bool { return t == "source" || t == "sink" }
+
+func isTransformType(t string) bool {
+	switch t {
+	case "filter", "project", "coerce", "flatten", "aggregate":
+		return true
+	}
+	return false
+}
+
+func isReservedType(t string) bool {
+	switch t {
+	case "wasm", "python", "subflow":
+		return true
+	}
+	return false
 }
 
 // Endpoint names a connector action plus its opaque config document.
@@ -87,10 +162,19 @@ func Parse(data []byte) (*Document, error) {
 	return &d, nil
 }
 
-// Validate checks the document without touching connectors.
+// Validate checks the document without touching connectors. It routes to
+// the graph validator when the document is in v2 (Steps) form, and keeps
+// the linear-form checks otherwise.
 func (d *Document) Validate() error {
 	if d.Name == "" {
 		return fmt.Errorf("flow: name is required")
+	}
+	if len(d.Steps) > 0 {
+		if d.Source.Connector != "" || len(d.Ops) > 0 || d.Sink.Connector != "" {
+			return fmt.Errorf("flow: use either the linear form (source/ops/sink) or the graph form (steps), not both")
+		}
+		_, err := d.buildPlan()
+		return err
 	}
 	for label, ep := range map[string]Endpoint{"source": d.Source, "sink": d.Sink} {
 		if ep.Connector == "" || ep.Action == "" {

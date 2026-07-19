@@ -48,6 +48,19 @@ type Report struct {
 	WallNanos  int64
 }
 
+// OpError tags a run failure with the operator (Op == the OpStats.Name,
+// which the runner sets to the flow step id) that produced it, so the
+// runner can route to that step's error handler via errors.As rather than
+// parsing the message. The Error string is unchanged from the previous
+// "<op>: <err>" wrap.
+type OpError struct {
+	Op  string
+	Err error
+}
+
+func (e *OpError) Error() string { return e.Op + ": " + e.Err.Error() }
+func (e *OpError) Unwrap() error { return e.Err }
+
 // Pipeline chains a source through operators into a sink.
 type Pipeline struct {
 	src   Source
@@ -74,6 +87,18 @@ func (p *Pipeline) Apply(name string, fn Transform) *Pipeline {
 	st := &OpStats{Name: name}
 	p.stats = append(p.stats, st)
 	p.src = &opSource{up: p.src, fn: fn, stats: st}
+	return p
+}
+
+// RenameLastOp relabels the most recently appended operator. The runner
+// uses it to stamp the flow step id onto each op so both the telemetry
+// (OpStats.Name) and any OpError carry the step id — the convenience
+// operator methods otherwise name ops by kind ("project", "coerce", …).
+// No-op on an empty pipeline.
+func (p *Pipeline) RenameLastOp(id string) *Pipeline {
+	if n := len(p.stats); n > 0 {
+		p.stats[n-1].Name = id
+	}
 	return p
 }
 
@@ -107,7 +132,7 @@ func (p *Pipeline) Run(ctx context.Context, sink Sink, sinkName string) (Report,
 		n := int64(b.Len())
 		w := time.Now()
 		if err := sink.Write(ctx, b); err != nil {
-			runErr = fmt.Errorf("%s: %w", sinkName, err)
+			runErr = &OpError{Op: sinkName, Err: err}
 			break
 		}
 		sinkStats.Nanos += time.Since(w).Nanoseconds()
@@ -174,7 +199,7 @@ func (o *opSource) Next(ctx context.Context) (*record.Batch, error) {
 		nb, err := o.fn(ctx, b)
 		o.stats.Nanos += time.Since(start).Nanoseconds()
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", o.stats.Name, err)
+			return nil, &OpError{Op: o.stats.Name, Err: err}
 		}
 		o.stats.Batches++
 		o.stats.RecordsIn += in

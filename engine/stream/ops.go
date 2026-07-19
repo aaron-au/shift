@@ -72,8 +72,9 @@ type CoerceRule struct {
 }
 
 // Coerce converts top-level fields to target kinds in place. Null values
-// pass through untouched; a value that cannot convert is an error (fail
-// fast — error routing policies arrive with the flow model).
+// pass through untouched; a value that cannot convert is an error tagged
+// with the operator (OpError) so the runner can route it to the step's
+// onFailure handler (ADR-0013).
 func (p *Pipeline) Coerce(rules ...CoerceRule) *Pipeline {
 	return p.Apply("coerce", func(_ context.Context, b *record.Batch) (*record.Batch, error) {
 		bld := b.Builder()

@@ -134,7 +134,8 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 
 	// Documents arrive from the hub with inert {"$secret": name} refs;
 	// plaintext exists only here, per task, never in the queue or logs.
-	if doc, err = l.resolveSecrets(ctx, doc); err != nil {
+	doc, secretValues, err := l.resolveSecrets(ctx, doc)
+	if err != nil {
 		l.report(t.ID, func(ctx context.Context) error {
 			// err carries secret names only, never values.
 			return l.opts.Client.Fail(ctx, t.ID, "secret resolution: "+err.Error())
@@ -142,7 +143,9 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 		return
 	}
 
-	localID, err := l.opts.Service.Submit(doc, false)
+	// SecretValues let the service redact any secret that leaks into an
+	// error string or error-handler record; they are never stored.
+	localID, err := l.opts.Service.SubmitWith(doc, service.SubmitOpts{SecretValues: secretValues})
 	if err != nil {
 		l.report(t.ID, func(ctx context.Context) error {
 			return l.opts.Client.Fail(ctx, t.ID, err.Error())
@@ -204,8 +207,17 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 				return
 			case "failed":
 				if leaseHeld {
+					msg := lt.Error
+					if lt.Handled {
+						// The failure was routed to an onFailure handler; note
+						// it in the durable record the hub keeps (metadata only).
+						msg = fmt.Sprintf("%s (handled by onFailure step %q)", msg, lt.HandlerStep)
+						if lt.HandlerError != "" {
+							msg += "; handler error: " + lt.HandlerError
+						}
+					}
 					l.report(t.ID, func(ctx context.Context) error {
-						return l.opts.Client.Fail(ctx, t.ID, lt.Error)
+						return l.opts.Client.Fail(ctx, t.ID, msg)
 					})
 				}
 				return
@@ -223,27 +235,37 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 // resolveSecrets fetches this task's referenced secrets from the hub
 // and substitutes them into a copy of the document. No caching: a
 // per-task fetch keeps revocation immediate and the runner stateless.
-func (l *Loop) resolveSecrets(ctx context.Context, doc *flowdoc.Document) (*flowdoc.Document, error) {
+// resolveSecrets returns the document with secret refs resolved plus the
+// resolved plaintext values (for redaction in the service; never stored).
+func (l *Loop) resolveSecrets(ctx context.Context, doc *flowdoc.Document) (*flowdoc.Document, []string, error) {
 	refs, err := doc.SecretRefs()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(refs) == 0 {
-		return doc, nil
+		return doc, nil, nil
 	}
 	rctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	values, err := l.opts.Client.ResolveSecrets(rctx, refs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return doc.ResolveSecrets(func(name string) (string, error) {
+	resolved, err := doc.ResolveSecrets(func(name string) (string, error) {
 		v, ok := values[name]
 		if !ok {
 			return "", fmt.Errorf("secret %q not returned by hub", name)
 		}
 		return v, nil
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	plaintext := make([]string, 0, len(values))
+	for _, v := range values {
+		plaintext = append(plaintext, v)
+	}
+	return resolved, plaintext, nil
 }
 
 // report delivers a terminal state with retries — losing the race to a
