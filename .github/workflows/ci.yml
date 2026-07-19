@@ -8,9 +8,11 @@ on:
 permissions:
   contents: read
 
+# Actions are pinned to full commit SHAs (supply-chain hygiene, ADR-0006
+# spirit): a moved tag cannot change what runs here. Bump = new SHA + comment.
 env:
-  GOLANGCI_LINT_VERSION: v2.11.4
-  GITLEAKS_VERSION: v8.30.0
+  GOLANGCI_LINT_VERSION: v2.12.2
+  GITLEAKS_VERSION: v8.30.1
 
 jobs:
   check:
@@ -34,11 +36,11 @@ jobs:
     env:
       SHIFT_TEST_PG: postgres://shift:shift-ci-only@localhost:5432/shift
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0 # gitleaks scans history
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.x"
           cache-dependency-path: "**/go.sum"
@@ -58,8 +60,8 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.x"
           cache-dependency-path: "**/go.sum"
