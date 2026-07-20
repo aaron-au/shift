@@ -40,7 +40,11 @@ func (s *Store) ListAudit(ctx context.Context, f AuditFilter) ([]AuditEntry, err
 	}
 	if f.Action != "" {
 		if strings.HasSuffix(f.Action, ".") {
-			add(` AND action LIKE $`, f.Action+"%")
+			// Family prefix: escape LIKE metacharacters so "_"/"%" in the
+			// caller's value are literal, not wildcards (the value is already a
+			// bind param — this is about match precision, not injection).
+			add(` AND action LIKE $`, likeEscape(f.Action)+"%")
+			q.WriteString(` ESCAPE '\'`)
 		} else {
 			add(` AND action = $`, f.Action)
 		}
@@ -78,4 +82,11 @@ func (s *Store) ListAudit(ctx context.Context, f AuditFilter) ([]AuditEntry, err
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// likeEscape escapes the LIKE wildcards (\ % _) so a caller-supplied prefix
+// matches literally. Pair with an `ESCAPE '\'` clause.
+func likeEscape(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
 }

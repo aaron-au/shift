@@ -187,7 +187,11 @@
 'use strict';
 let bearer = sessionStorage.getItem('shift_admin_token') || '';
 const $ = id => document.getElementById(id);
-const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// Escapes &<>" AND ' ` — the single quote and backtick matter because several
+// handlers interpolate values into single-quoted inline attributes
+// (onclick="fn('${esc(x)}')"); without escaping ' a value could break out of
+// the JS string literal (stored XSS). Covers both attribute and JS-string sinks.
+const esc = s => String(s ?? '').replace(/[&<>"'`]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c]));
 
 async function api(path, opts = {}) {
   opts.headers = Object.assign({}, opts.headers);
@@ -380,13 +384,18 @@ async function publishSel(name) {
   const v = ($('pv-' + name) || {}).value; if (!v) return;
   try { await publish(name, v); } catch (e) { alert('publish failed: ' + e.message); }
 }
-async function runNow(name) { await api(`/api/v1/flows/${name}/execute`, {method: 'POST', body: '{}'}); refresh(); }
+async function runNow(name) {
+  try { await api(`/api/v1/flows/${name}/execute`, {method: 'POST', body: '{}'}); refresh(); }
+  catch (e) { alert('run failed: ' + e.message); }
+}
 async function editSchedule(name) {
   const cron = prompt(`Cron for "${name}" (UTC, 5-field; empty to remove):`, '*/5 * * * *');
   if (cron === null) return;
-  if (cron.trim() === '') { await api(`/api/v1/flows/${name}/schedule`, {method: 'DELETE'}).catch(()=>{}); }
-  else { await api(`/api/v1/flows/${name}/schedule`, {method: 'PUT', body: JSON.stringify({cron: cron.trim()})}); }
-  refresh();
+  try {
+    if (cron.trim() === '') { await api(`/api/v1/flows/${name}/schedule`, {method: 'DELETE'}); }
+    else { await api(`/api/v1/flows/${name}/schedule`, {method: 'PUT', body: JSON.stringify({cron: cron.trim()})}); }
+    refresh();
+  } catch (e) { alert('schedule failed: ' + e.message); }
 }
 
 function renderTasks(tasks) {
@@ -435,7 +444,7 @@ function renderSecrets(ss) {
 
 function renderExecutions(es) {
   $('executions').innerHTML = es.map(e => {
-    const st = `<span class="chip ${e.state}">${e.state}</span>`;
+    const st = `<span class="chip ${esc(e.state)}">${esc(e.state)}</span>`;
     const err = e.error ? ` <span class="err">${esc(e.error)}</span>` : '';
     return `<tr><td>${esc(e.flow_name)}</td><td class="mono">${esc(e.trigger)}</td>
       <td>${st}${err}</td><td class="mono">${e.records_in}→${e.records_out}</td>
@@ -868,7 +877,13 @@ function setCfgFrom(el) {
   if (!Object.keys(s.config).length) delete s.config;
   drawStudio();
 }
+// Reject path segments that would walk into the prototype chain. The path is
+// derived from connector-descriptor schema property names, which a third-party
+// connector publisher controls — a `__proto__` property would otherwise let a
+// malicious descriptor pollute Object.prototype in the admin's session.
+const UNSAFE_KEY = k => k === '__proto__' || k === 'constructor' || k === 'prototype';
 function setDeep(obj, path, val) {
+  if (path.some(UNSAFE_KEY)) return;
   let c = obj;
   for (let i = 0; i < path.length - 1; i++) {
     if (typeof c[path[i]] !== 'object' || c[path[i]] === null) c[path[i]] = {};

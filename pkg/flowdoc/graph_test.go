@@ -1,6 +1,7 @@
 package flowdoc
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 )
@@ -258,5 +259,37 @@ func TestGraphSecretRefsAcrossSteps(t *testing.T) {
 	// Copy semantics: the receiver's steps are untouched.
 	if string(d.Steps[0].Config) == string(out.Steps[0].Config) {
 		t.Fatal("ResolveSecrets mutated the original document")
+	}
+}
+
+// TestStepIDCharset pins the identifier charset for step ids (M6 review
+// hardening): a tight charset keeps ids safe as edge targets and in the
+// studio DOM. Valid ids parse+plan; ids with quotes/pipes/angle-brackets/
+// spaces are rejected.
+func TestStepIDCharset(t *testing.T) {
+	docFor := func(id string) string {
+		b, _ := json.Marshal(id)
+		return `{"name":"f","start":` + string(b) + `,"steps":[` +
+			`{"id":` + string(b) + `,"type":"source","connector":"http","action":"get","config":{"url":"https://x"},"onComplete":"snk"},` +
+			`{"id":"snk","type":"sink","connector":"http","action":"post","config":{"url":"https://y"}}]}`
+	}
+	for _, id := range []string{"in", "step-1", "step_2", "a.b.c", "S", "x9"} {
+		d, err := Parse([]byte(docFor(id)))
+		if err != nil {
+			t.Errorf("valid id %q: parse: %v", id, err)
+			continue
+		}
+		if _, err := d.Plan(); err != nil {
+			t.Errorf("valid id %q rejected: %v", id, err)
+		}
+	}
+	for _, id := range []string{"a'b", "a|b", "a<b", "a b", "a\"b", "-lead", ".lead", "a`b"} {
+		d, err := Parse([]byte(docFor(id)))
+		if err != nil {
+			continue // rejected at parse is also fine
+		}
+		if _, err := d.Plan(); err == nil {
+			t.Errorf("invalid id %q accepted", id)
+		}
 	}
 }

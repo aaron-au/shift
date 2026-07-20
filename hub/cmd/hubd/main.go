@@ -136,6 +136,7 @@ func main() {
 		"runner": {RPS: *rlRunnerRPS, Burst: burst(*rlRunnerRPS)},
 		"public": {RPS: *rlPublicRPS, Burst: burst(*rlPublicRPS)},
 	})
+	defer opts.RateLimit.Stop()
 
 	// Prometheus /metrics (M6a, ADR-0020). Sources platform-wide stats per
 	// scrape via a background context (no tenant scope — operational metrics).

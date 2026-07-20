@@ -32,6 +32,7 @@ type Limiter struct {
 	buckets  map[string]*bucket
 	rejected map[string]int64 // per-class reject counter (observability)
 	now      func() time.Time
+	stop     chan struct{} // closed by Stop to end the sweeper
 }
 
 // New builds a limiter from per-class configs and starts an idle-bucket
@@ -43,9 +44,20 @@ func New(classes map[string]Cfg) *Limiter {
 		buckets:  map[string]*bucket{},
 		rejected: map[string]int64{},
 		now:      time.Now,
+		stop:     make(chan struct{}),
 	}
 	go l.sweep()
 	return l
+}
+
+// Stop ends the sweeper goroutine. Nil-safe; call once at process shutdown.
+// Constructing a Limiter without Stopping it leaks the sweeper goroutine +
+// ticker (harmless for a process-lifetime singleton, a footgun anywhere else).
+func (l *Limiter) Stop() {
+	if l == nil {
+		return
+	}
+	close(l.stop)
 }
 
 // Allow reports whether one request in class for key may proceed. A nil
@@ -101,15 +113,20 @@ func (l *Limiter) Classes() []string {
 func (l *Limiter) sweep() {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
-	for range t.C {
-		cut := l.now().Add(-10 * time.Minute)
-		l.mu.Lock()
-		for k, b := range l.buckets {
-			if b.seen.Before(cut) {
-				delete(l.buckets, k)
+	for {
+		select {
+		case <-l.stop:
+			return
+		case <-t.C:
+			cut := l.now().Add(-10 * time.Minute)
+			l.mu.Lock()
+			for k, b := range l.buckets {
+				if b.seen.Before(cut) {
+					delete(l.buckets, k)
+				}
 			}
+			l.mu.Unlock()
 		}
-		l.mu.Unlock()
 	}
 }
 

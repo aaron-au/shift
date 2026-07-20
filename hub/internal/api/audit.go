@@ -39,11 +39,27 @@ func (a *api) listAudit(w http.ResponseWriter, r *http.Request) {
 		for _, e := range entries {
 			_ = cw.Write([]string{
 				strconv.FormatInt(e.ID, 10), e.At.UTC().Format(time.RFC3339),
-				e.Actor, e.Action, e.Entity, string(e.Detail),
+				csvSafe(e.Actor), csvSafe(e.Action), csvSafe(e.Entity), csvSafe(string(e.Detail)),
 			})
 		}
 		cw.Flush()
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"audit": entries})
+}
+
+// csvSafe neutralizes spreadsheet formula injection: a cell beginning with
+// =, +, -, or @ is executed as a formula by Excel/Sheets on open. Audit
+// fields (e.g. an OIDC-supplied actor name) are attacker-influenceable, so a
+// risky leading character is prefixed with a single quote. The csv writer
+// still handles delimiter/quote escaping.
+func csvSafe(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@':
+		return "'" + s
+	}
+	return s
 }

@@ -3,8 +3,16 @@ package flowdoc
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 )
+
+// stepIDPattern constrains step ids to an identifier charset. Step ids are
+// referenced in edge targets and rendered into the studio builder's DOM; a
+// tight charset keeps them safe as identifiers (no quotes/angle-brackets/pipe
+// that a UI sink or an edge-delimiter split could misparse) — defense in depth
+// alongside the builder's output escaping.
+var stepIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // Connectors returns the sorted, unique connector names the document
 // references — source and sink in the linear form; every connector step
@@ -92,6 +100,9 @@ func (d *Document) buildPlan() (*Plan, error) {
 		s := &d.Steps[i]
 		if s.ID == "" {
 			return nil, fmt.Errorf("flow: step %d: id is required", i)
+		}
+		if !stepIDPattern.MatchString(s.ID) {
+			return nil, fmt.Errorf("flow: step %d: id %q must match %s (letters, digits, . _ -)", i, s.ID, stepIDPattern)
 		}
 		if _, dup := byID[s.ID]; dup {
 			return nil, fmt.Errorf("flow: duplicate step id %q", s.ID)

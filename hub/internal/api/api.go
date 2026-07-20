@@ -111,7 +111,10 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("GET /api/v1/audit", a.admin(a.listAudit)) // M6b
 
 	if opts.MetricsHandler != nil {
-		mux.Handle("GET /metrics", opts.MetricsHandler) // Prometheus scrape (M6a, ADR-0020)
+		// publicLimit fronts the scrape (no-op unless the public class is
+		// configured): each scrape drives platform-wide aggregate queries, so
+		// an unauthenticated tight loop must not amplify DB load (ADR-0020/0021).
+		mux.Handle("GET /metrics", a.publicLimit(opts.MetricsHandler.ServeHTTP))
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -174,7 +177,10 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 
 	// Runner realm. Registration authenticates by single-use token in the
 	// body; everything else by the runner's bearer secret.
-	mux.HandleFunc("POST /api/v1/runners/register", a.register)
+	// publicLimit: registration is pre-auth and consumes a single-use token
+	// against the DB — throttle it like the other anonymous routes to bound
+	// online token brute-force and write-DoS (ADR-0021).
+	mux.HandleFunc("POST /api/v1/runners/register", a.publicLimit(a.register))
 	mux.Handle("POST /api/v1/lease", a.runner(a.lease))
 	mux.Handle("POST /api/v1/tasks/{id}/heartbeat", a.runner(a.heartbeat))
 	mux.Handle("POST /api/v1/tasks/{id}/complete", a.runner(a.complete))

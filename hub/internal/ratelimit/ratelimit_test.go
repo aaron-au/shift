@@ -157,3 +157,20 @@ func TestReject(t *testing.T) {
 		t.Fatalf("body = %q", body)
 	}
 }
+
+// TestLimiterStop verifies Stop ends the sweeper without panicking and that a
+// nil limiter's Stop is a no-op (constructing many limiters in tests must not
+// leak the sweeper goroutine — M6 review hardening).
+func TestLimiterStop(t *testing.T) {
+	var nilL *Limiter
+	nilL.Stop() // must not panic
+
+	l := New(map[string]Cfg{"x": {RPS: 1, Burst: 1}})
+	if !l.Allow("x", "k") { // first token available
+		t.Fatal("first request should be allowed")
+	}
+	l.Stop()               // ends the sweeper; Allow still works (buckets untouched)
+	if l.Allow("x", "k") { // burst 1 exhausted
+		t.Fatal("second immediate request should be rejected")
+	}
+}

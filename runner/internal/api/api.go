@@ -163,16 +163,20 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 	// (and .../capture) for status/results. Payload never leaves the runner.
 	mux.HandleFunc("POST /hooks/{name}", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
+		// Resolve the hook first: an attacker-chosen name must not mint a
+		// permanent limiter bucket (unbounded map growth = memory DoS). Only
+		// known hooks reach the limiter, so the bucket keyspace is bounded by
+		// the registered-hook set × source IPs.
+		h, ok := hooks.Get(name)
+		if !ok {
+			writeErr(w, http.StatusNotFound, errors.New("unknown webhook"))
+			return
+		}
 		// Rate limit the public ingress by {hook, source IP} before any work
 		// (M6c, ADR-0021) — a per-hook ceiling stops one flow flooding
 		// admission. Keyed pre-auth so a token isn't needed to be throttled.
 		if !webhookLimit.Allow("webhook", name+"|"+ratelimit.ClientIP(r)) {
 			ratelimit.Reject(w)
-			return
-		}
-		h, ok := hooks.Get(name)
-		if !ok {
-			writeErr(w, http.StatusNotFound, errors.New("unknown webhook"))
 			return
 		}
 		if h.TokenHash != "" && !validHookToken(r, h.TokenHash) {

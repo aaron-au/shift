@@ -191,6 +191,7 @@ func main() {
 		wlBurst = 1
 	}
 	webhookLimit := ratelimit.New(map[string]ratelimit.Cfg{"webhook": {RPS: *webhookRPS, Burst: wlBurst}})
+	defer webhookLimit.Stop()
 
 	// Prometheus /metrics (M6a, ADR-0020) — sourced from the in-memory
 	// service snapshot (governor, task totals, connector pool).
