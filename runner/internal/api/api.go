@@ -21,8 +21,13 @@ import (
 	"github.com/aaron-au/shift/runner/internal/auth"
 	"github.com/aaron-au/shift/runner/internal/flow"
 	"github.com/aaron-au/shift/runner/internal/service"
+	"github.com/aaron-au/shift/runner/internal/task"
 	"github.com/aaron-au/shift/runner/internal/webhook"
 )
+
+// ExecReporter reports a finished direct (push) execution to the hub as
+// metadata (ADR-0016). nil disables reporting (standalone runner).
+type ExecReporter func(t task.Task, trigger string)
 
 // maxWebhookBody bounds an inbound webhook payload (buffered before async
 // execution).
@@ -35,7 +40,7 @@ var uiHTML []byte
 // hub lease intake is running it supplies the intake snapshot for
 // /api/status (nil = local-only runner). guard authenticates the control
 // surface; a nil/open guard leaves it unauthenticated (loopback dev).
-func Handler(svc *service.Service, runnerName, version string, started time.Time, hubStatus func() any, guard *auth.Guard) http.Handler {
+func Handler(svc *service.Service, runnerName, version string, started time.Time, hubStatus func() any, guard *auth.Guard, report ExecReporter) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -76,6 +81,7 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 			writeErr(w, http.StatusUnprocessableEntity, err)
 			return
 		}
+		reportWhenDone(svc, id, "api", report)
 		writeJSON(w, http.StatusAccepted, map[string]string{"task_id": id})
 	})
 
@@ -173,6 +179,7 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 			writeErr(w, http.StatusUnprocessableEntity, err)
 			return
 		}
+		reportWhenDone(svc, id, "webhook", report)
 		writeJSON(w, http.StatusAccepted, map[string]string{"task_id": id})
 	})
 
@@ -245,6 +252,32 @@ func permFor(r *http.Request) (auth.Permission, bool) {
 	default: // POST and anything else that mutates
 		return auth.PermExecute, true
 	}
+}
+
+// reportWhenDone spawns a best-effort watcher that reports a direct
+// execution to the hub once it reaches a terminal state. No-op when there
+// is no reporter (standalone runner).
+func reportWhenDone(svc *service.Service, id, trigger string, report ExecReporter) {
+	if report == nil {
+		return
+	}
+	go func() {
+		deadline := time.Now().Add(10 * time.Minute)
+		for {
+			t, ok := svc.Task(id)
+			if !ok {
+				return // evicted before we saw it finish
+			}
+			if t.State == task.StateCompleted || t.State == task.StateFailed {
+				report(t, trigger)
+				return
+			}
+			if time.Now().After(deadline) {
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}()
 }
 
 func decodeFlow(r *http.Request) (*flow.Document, error) {

@@ -126,6 +126,7 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("DELETE /api/v1/flows/{name}/schedule", a.admin(a.deleteSchedule))
 	mux.Handle("GET /api/v1/schedules", a.admin(a.listSchedules))
 	mux.Handle("GET /api/v1/tasks", a.admin(a.listTasks))
+	mux.Handle("GET /api/v1/executions", a.admin(a.listDirectExecutions))
 	mux.Handle("GET /api/v1/tasks/{id}", a.admin(a.getTask))
 	mux.Handle("GET /api/v1/me", a.admin(a.me))
 
@@ -162,6 +163,7 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("POST /api/v1/tasks/{id}/heartbeat", a.runner(a.heartbeat))
 	mux.Handle("POST /api/v1/tasks/{id}/complete", a.runner(a.complete))
 	mux.Handle("POST /api/v1/tasks/{id}/fail", a.runner(a.fail))
+	mux.Handle("POST /api/v1/executions", a.runner(a.reportExecution))
 
 	return mux, nil
 }
@@ -450,6 +452,46 @@ func (a *api) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// listDirectExecutions returns the account's recent direct executions.
+func (a *api) listDirectExecutions(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	execs, err := a.st.DirectExecutions(r.Context(), limit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"executions": execs})
+}
+
+// reportExecution records a runner-reported direct (push) execution — a
+// webhook / direct-API run that never entered the queue (ADR-0016). It is
+// metadata only; no payload crosses to the hub.
+func (a *api) reportExecution(w http.ResponseWriter, r *http.Request) {
+	var e store.DirectExecution
+	if err := readBody(r, &e); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if e.FlowName == "" || (e.State != "completed" && e.State != "failed") {
+		writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf("flow_name and a terminal state are required"))
+		return
+	}
+	if e.Trigger == "" {
+		e.Trigger = "api"
+	}
+	id, err := a.st.RecordDirectExecution(r.Context(), runnerID(r), e)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
 }
 
 func (a *api) complete(w http.ResponseWriter, r *http.Request) {

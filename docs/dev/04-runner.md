@@ -203,8 +203,13 @@ never reaches the hub (the whole point: the hub holds no payload).
   see below.
 - **Registration:** stage 1 registers hooks on the runner
   (`PUT /api/webhooks/{name}` with `{document, token}`), in memory. A later
-  stage authors them on the hub and syncs to runners; the runner will also
-  report direct tasks to the hub as metadata so the hub sees fleet load.
+  stage authors them on the hub and syncs to runners.
+- **Hub load visibility:** direct executions (webhook and local
+  `/api/flows/execute`) never enter the hub queue, so when attached to a hub
+  the runner reports each finished one as **metadata** — flow, outcome,
+  record counts, timing, never payload — to `POST /api/v1/executions`. A
+  best-effort watcher (`reportWhenDone`) fires once the task is terminal.
+  Leased tasks keep reporting through the normal complete/fail path.
 
 ## Control-surface auth (M5d-2, ADR-0016)
 

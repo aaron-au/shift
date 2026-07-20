@@ -26,6 +26,7 @@ import (
 	"github.com/aaron-au/shift/runner/internal/hubclient"
 	"github.com/aaron-au/shift/runner/internal/leaseloop"
 	"github.com/aaron-au/shift/runner/internal/service"
+	"github.com/aaron-au/shift/runner/internal/task"
 )
 
 // version is stamped via -ldflags at release build time.
@@ -152,9 +153,28 @@ func main() {
 		log.Printf("runnerd: WARNING: control API is UNAUTHENTICATED on a non-loopback address %s — set SHIFT_RUNNER_USERS", *listen)
 	}
 
+	// Direct (push) executions never enter the hub queue; report their
+	// metadata so the hub still sees fleet load + history (ADR-0016).
+	// Best-effort, and only when attached to a hub.
+	var report api.ExecReporter
+	if client != nil {
+		report = func(t task.Task, trigger string) {
+			rep := hubclient.ExecutionReport{
+				FlowName: t.Flow, Trigger: trigger, State: string(t.State),
+				RecordsIn: t.RecordsIn, RecordsOut: t.RecordsOut,
+				Error: t.Error, Started: t.Started, Finished: t.Finished,
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := client.ReportExecution(ctx, rep); err != nil {
+				log.Printf("runnerd: report execution: %v", err)
+			}
+		}
+	}
+
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           api.Handler(svc, *name, version, time.Now(), hubStatus, guard),
+		Handler:           api.Handler(svc, *name, version, time.Now(), hubStatus, guard, report),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {

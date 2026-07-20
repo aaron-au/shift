@@ -167,6 +167,37 @@ func (c *Client) Complete(ctx context.Context, taskID string, res Result) error 
 	}
 }
 
+// ExecutionReport is the metadata for a direct (push) execution the runner
+// ran outside the queue (webhook / direct API, ADR-0016). No payload.
+type ExecutionReport struct {
+	FlowName   string     `json:"flow_name"`
+	Trigger    string     `json:"trigger"` // webhook | api
+	State      string     `json:"state"`   // completed | failed
+	RecordsIn  int64      `json:"records_in"`
+	RecordsOut int64      `json:"records_out"`
+	Error      string     `json:"error,omitempty"`
+	Started    *time.Time `json:"started_at,omitempty"`
+	Finished   *time.Time `json:"finished_at,omitempty"`
+}
+
+// ReportExecution tells the hub about a direct execution (fleet load +
+// history). Best-effort: callers log and move on.
+func (c *Client) ReportExecution(ctx context.Context, rep ExecutionReport) error {
+	raw, err := json.Marshal(rep)
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(ctx, http.MethodPost, "/api/v1/executions", string(raw))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("hubclient: report execution: %s", readErr(resp))
+	}
+	return nil
+}
+
 // Fail reports a failed attempt; the hub decides requeue vs terminal.
 func (c *Client) Fail(ctx context.Context, taskID, msg string) error {
 	raw, _ := json.Marshal(map[string]string{"error": msg})

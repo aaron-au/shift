@@ -154,6 +154,16 @@ return 404 on resolve — cloud hubs hide dangerous connectors "not even
 visible." Empty (self-hosted default) allows everything. Name-based and
 hub-wide today; capability metadata and per-tenant scope are later adds.
 
+## Direct executions (M5d-2, ADR-0016)
+
+Push-triggered runs (webhook / direct API) execute entirely on a runner and
+never enter the queue, so the runner reports their **metadata** afterwards —
+`POST /api/v1/executions` (runner realm) → the `direct_executions` table
+(account, runner, flow name, trigger, state, record counts, timing; **no
+document, no payload**). `GET /api/v1/executions` (admin) lists them. This
+gives the hub fleet load + history for work it never queued, without ever
+touching payload.
+
 ## Dashboard
 
 `GET /` serves the embedded single-file page (runner pattern): overview

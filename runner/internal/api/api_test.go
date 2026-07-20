@@ -13,6 +13,7 @@ import (
 
 	"github.com/aaron-au/shift/runner/internal/auth"
 	"github.com/aaron-au/shift/runner/internal/service"
+	"github.com/aaron-au/shift/runner/internal/task"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -27,7 +28,7 @@ func testHandler(t *testing.T) http.Handler {
 	}
 	svc := service.New(service.Options{ConnectorDir: dir})
 	t.Cleanup(func() { _ = svc.Close(30 * time.Second) })
-	return Handler(svc, "test-runner", "0.0.0", time.Now(), nil, auth.NewGuard(nil))
+	return Handler(svc, "test-runner", "0.0.0", time.Now(), nil, auth.NewGuard(nil), nil)
 }
 
 func TestAPISurface(t *testing.T) {
@@ -210,7 +211,7 @@ func TestAuthEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := Handler(svc, "r", "0", time.Now(), nil, auth.NewGuard(basic))
+	h := Handler(svc, "r", "0", time.Now(), nil, auth.NewGuard(basic), nil)
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
@@ -246,6 +247,50 @@ func TestAuthEnforced(t *testing.T) {
 	// Hook endpoints bypass user auth (own token); unknown hook → 404, not 401.
 	if c := req("POST", "/hooks/none", "", ""); c != 404 {
 		t.Errorf("hook no-creds = %d, want 404 (unguarded by user auth)", c)
+	}
+}
+
+// TestDirectExecutionReported: a direct (local execute) task fires the
+// ExecReporter once it finishes, tagged with the trigger.
+func TestDirectExecutionReported(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns connector subprocesses")
+	}
+	dir := t.TempDir()
+	cmd := exec.CommandContext(t.Context(), "go", "build", //nolint:gosec // G204: our own package
+		"-o", filepath.Join(dir, "shift-connector-gen"),
+		"github.com/aaron-au/shift/connectors/cmd/shift-connector-gen")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	svc := service.New(service.Options{ConnectorDir: dir})
+	t.Cleanup(func() { _ = svc.Close(30 * time.Second) })
+
+	reported := make(chan struct {
+		flow, trigger, state string
+	}, 1)
+	report := func(tk task.Task, trigger string) {
+		reported <- struct{ flow, trigger, state string }{tk.Flow, trigger, string(tk.State)}
+	}
+	srv := httptest.NewServer(Handler(svc, "r", "0", time.Now(), nil, auth.NewGuard(nil), report))
+	defer srv.Close()
+
+	flowDoc := `{"name":"direct-test",
+	  "source":{"connector":"gen","action":"gen","config":{"records":100}},
+	  "sink":{"connector":"gen","action":"discard"}}`
+	r := do(t, http.MethodPost, srv.URL+"/api/flows/execute", flowDoc)
+	_ = r.Body.Close()
+	if r.StatusCode != http.StatusAccepted {
+		t.Fatalf("execute = %d", r.StatusCode)
+	}
+
+	select {
+	case got := <-reported:
+		if got.flow != "direct-test" || got.trigger != "api" || got.state != "completed" {
+			t.Fatalf("report = %+v", got)
+		}
+	case <-time.After(time.Minute):
+		t.Fatal("execution not reported")
 	}
 }
 
