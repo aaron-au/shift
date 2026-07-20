@@ -42,13 +42,16 @@ var uiHTML []byte
 // hub lease intake is running it supplies the intake snapshot for
 // /api/status (nil = local-only runner). guard authenticates the control
 // surface; a nil/open guard leaves it unauthenticated (loopback dev).
-func Handler(svc *service.Service, runnerName, version string, started time.Time, hubStatus func() any, guard *auth.Guard, report ExecReporter, hooks *webhook.Registry) http.Handler {
+func Handler(svc *service.Service, runnerName, version string, started time.Time, hubStatus func() any, guard *auth.Guard, report ExecReporter, hooks *webhook.Registry, metricsHandler http.Handler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	if metricsHandler != nil {
+		mux.Handle("GET /metrics", metricsHandler) // Prometheus scrape (M6a, ADR-0020)
+	}
 
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, _ *http.Request) {
 		body := map[string]any{
@@ -243,7 +246,7 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 // need PermManage; other writes (execute, benchmarks) need PermExecute.
 func permFor(r *http.Request) (auth.Permission, bool) {
 	p := r.URL.Path
-	if p == "/healthz" || strings.HasPrefix(p, "/hooks/") {
+	if p == "/healthz" || p == "/metrics" || strings.HasPrefix(p, "/hooks/") {
 		return "", false
 	}
 	switch r.Method {

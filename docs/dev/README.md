@@ -25,6 +25,9 @@ is wrong in the same PR.
 6. [06-hub.md](06-hub.md) — the hub: Postgres schema, the queue/lease
    lifecycle, auth realms, the runner lease intake, and the kill -9
    crash-recovery guarantee.
+7. [07-observability.md](07-observability.md) — telemetry (M6a): the
+   OpenTelemetry/Prometheus `/metrics` endpoints, the metric catalog +
+   naming convention, and the (pending) OTLP tracing.
 
 ## Where decisions live
 

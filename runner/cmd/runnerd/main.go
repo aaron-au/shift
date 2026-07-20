@@ -27,6 +27,7 @@ import (
 	"github.com/aaron-au/shift/runner/internal/leaseloop"
 	"github.com/aaron-au/shift/runner/internal/service"
 	"github.com/aaron-au/shift/runner/internal/task"
+	"github.com/aaron-au/shift/runner/internal/telemetry"
 	"github.com/aaron-au/shift/runner/internal/webhook"
 )
 
@@ -181,9 +182,28 @@ func main() {
 		go syncWebhooks(loopCtx, client, hooks)
 	}
 
+	// Prometheus /metrics (M6a, ADR-0020) — sourced from the in-memory
+	// service snapshot (governor, task totals, connector pool).
+	metricsH, err := telemetry.NewRunner(func() telemetry.Snapshot {
+		st := svc.Status()
+		snap := telemetry.Snapshot{
+			GovBudget: st.Governor.Budget, GovUsed: st.Governor.Used, GovPeak: st.Governor.Peak,
+			MaxByMem:  st.MaxByMem,
+			Submitted: st.Totals.Submitted, Completed: st.Totals.Completed, Failed: st.Totals.Failed,
+			Waiting: st.Totals.Waiting, Running: st.Totals.Running, RecordsIn: st.Totals.RecordsIn,
+		}
+		for _, c := range st.Connectors {
+			snap.Conns = append(snap.Conns, telemetry.ConnUse{Name: c.Name, InUse: int64(c.InUse)})
+		}
+		return snap
+	})
+	if err != nil {
+		log.Fatalf("runnerd: metrics: %v", err)
+	}
+
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           api.Handler(svc, *name, version, time.Now(), hubStatus, guard, report, hooks),
+		Handler:           api.Handler(svc, *name, version, time.Now(), hubStatus, guard, report, hooks, metricsH),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {

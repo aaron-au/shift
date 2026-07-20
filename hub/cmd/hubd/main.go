@@ -25,6 +25,7 @@ import (
 	"github.com/aaron-au/shift/hub/internal/scheduler"
 	"github.com/aaron-au/shift/hub/internal/secrets"
 	"github.com/aaron-au/shift/hub/internal/store"
+	"github.com/aaron-au/shift/hub/internal/telemetry"
 )
 
 // version is stamped via -ldflags at release build time.
@@ -112,6 +113,28 @@ func main() {
 		sched.Run(schedCtx)
 	}()
 	opts.SchedStatus = sched.Status
+
+	// Prometheus /metrics (M6a, ADR-0020). Sources platform-wide stats per
+	// scrape via a background context (no tenant scope — operational metrics).
+	metricsH, err := telemetry.NewHub(func(ctx context.Context) (telemetry.Snapshot, error) {
+		s, err := st.PlatformStats(ctx)
+		if err != nil {
+			return telemetry.Snapshot{}, err
+		}
+		tasks := make(map[string]int64, len(s.Tasks))
+		for k, v := range s.Tasks {
+			tasks[k] = int64(v)
+		}
+		return telemetry.Snapshot{
+			Tasks: tasks, OldestQueuedSec: s.OldestQueuedSec,
+			RunnersActive: int64(s.RunnersActive), RunnersTotal: int64(s.RunnersTotal),
+			SchedulesDue: int64(s.SchedulesDue), Schedules: int64(s.Schedules), Flows: int64(s.Flows),
+		}, nil
+	})
+	if err != nil {
+		log.Fatalf("hubd: metrics: %v", err)
+	}
+	opts.MetricsHandler = metricsH
 
 	h, err := api.Handler(st, opts)
 	if err != nil {

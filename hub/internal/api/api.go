@@ -53,6 +53,9 @@ type Options struct {
 	LeasePoll time.Duration
 	// MaxLeaseWait caps a lease request's long-poll (default 30s).
 	MaxLeaseWait time.Duration
+	// MetricsHandler serves GET /metrics (Prometheus scrape, M6a). Optional;
+	// unauthenticated like the dashboard root — gate by network posture.
+	MetricsHandler http.Handler
 }
 
 func (o *Options) defaults() error {
@@ -102,6 +105,9 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	})
 	mux.Handle("GET /api/v1/stats", a.admin(a.stats))
 
+	if opts.MetricsHandler != nil {
+		mux.Handle("GET /metrics", opts.MetricsHandler) // Prometheus scrape (M6a, ADR-0020)
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
