@@ -111,6 +111,11 @@ type SubmitOpts struct {
 	// are used only to redact any value that leaks into an error string or
 	// error-handler record (ADR-0010: secrets never in logs). Never stored.
 	SecretValues []string
+	// Capture turns on per-step INPUT/OUTPUT data capture (test mode). The
+	// sample stays runner-side, redacted, and ephemeral.
+	Capture bool
+	// CaptureMax bounds the sampled records per step (default 20).
+	CaptureMax int
 }
 
 // SubmitWith registers and runs a task with explicit options.
@@ -166,10 +171,15 @@ func (s *Service) run(id string, doc *flow.Document, o SubmitOpts) {
 	})
 
 	redact := newRedactor(o.SecretValues)
-	res, err := s.execute(ctx, doc, redact)
+	var sampler *captureSampler
+	if o.Capture {
+		sampler = newCaptureSampler(o.CaptureMax, redact)
+	}
+	res, err := s.execute(ctx, doc, redact, sampler)
 	end := time.Now()
 	s.store.Update(id, func(t *task.Task) {
 		t.Finished = &end
+		t.Captured = res.captured // useful on success and failure alike
 		if err != nil {
 			t.State = task.StateFailed
 			t.Error = redact(err.Error())
@@ -204,11 +214,13 @@ type execResult struct {
 	handled     bool
 	handlerStep string
 	handlerErr  string
+	captured    []task.StepCapture
 }
 
 // execute binds connectors, runs the compiled pipeline, and on failure
-// routes to the failing step's error handler (v2 onFailure), if any.
-func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(string) string) (execResult, error) {
+// routes to the failing step's error handler (v2 onFailure), if any. When
+// sampler is non-nil, per-step INPUT/OUTPUT samples are collected.
+func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(string) string, sampler *captureSampler) (execResult, error) {
 	plan, err := doc.Plan()
 	if err != nil {
 		return execResult{}, err
@@ -231,15 +243,19 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 	sink := sinkProc.Sink(sinkStep.Action, sinkStep.Config)
 
 	taskGov := mem.New(s.opts.TaskWatermark)
-	p, err := flow.Apply(doc,
-		stream.New(src, srcStep.ID),
-		flow.CompileOptions{Gov: taskGov, SpillDir: s.opts.SpillDir},
-	)
+	base := stream.New(src, srcStep.ID)
+	if sampler != nil {
+		base = base.WithSampler(sampler) // wire before ops are appended
+	}
+	p, err := flow.Apply(doc, base, flow.CompileOptions{Gov: taskGov, SpillDir: s.opts.SpillDir})
 	if err != nil {
 		return execResult{}, err
 	}
 	rep, runErr := p.Run(ctx, sink, sinkStep.ID)
 	res := execResult{rep: rep, confirmed: sink.Records}
+	if sampler != nil {
+		res.captured = sampler.result()
+	}
 	if runErr == nil {
 		return res, nil
 	}

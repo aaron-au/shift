@@ -35,6 +35,10 @@
   .ops{background:#10141b;border-radius:8px;margin:.3rem 0 .6rem;padding:.5rem .7rem;font-size:.78rem}
   .ops td{border:0;padding:.15rem .5rem;color:var(--dim)} .ops td:first-child{color:var(--text)}
   .err{color:var(--bad);font-size:.78rem}
+  .capture{margin-top:.5rem;border-top:1px solid #222b38;padding-top:.4rem}
+  .caplabel{color:var(--dim);font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.3rem}
+  .capstep{margin:.25rem 0;font-size:.76rem} .capstep b{color:#b79bff}
+  .caprec{color:var(--dim);font-size:.72rem;padding:.1rem .5rem;overflow-x:auto;white-space:pre}
   .mono{font-family:ui-monospace,Menlo,monospace;font-size:.78rem;color:var(--dim)}
 </style>
 </head>
@@ -84,6 +88,7 @@
 </main>
 <script>
 const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const fmt=n=>n>=1e6?(n/1e6).toFixed(2)+'M':n>=1e3?(n/1e3).toFixed(1)+'k':String(Math.round(n));
 const fmtB=n=>n>=2**30?(n/2**30).toFixed(1)+' GiB':n>=2**20?(n/2**20).toFixed(0)+' MiB':fmt(n)+' B';
 const dur=(a,b)=>a&&b?((new Date(b)-new Date(a))/1000).toFixed(2)+'s':'—';
@@ -156,7 +161,12 @@ function render(s,tasks){
     if(!open.has(t.id)) return rows;
     const ops=(t.ops||[]).map(o=>`<tr><td>${o.name}</td><td>${fmt(o.records_in)} → ${fmt(o.records_out)}</td><td>${o.seconds.toFixed(3)}s</td></tr>`).join('');
     const err=t.error?`<div class="err">${t.error}</div>`:'';
-    return rows+`<tr><td colspan=6><div class="ops">${err}<table>${ops||'<tr><td>no op stats</td></tr>'}</table></div></td></tr>`;
+    const cap=(t.captured||[]).map(c=>{
+      const recs=(c.records||[]).map(r=>`<div class="mono caprec">${esc(JSON.stringify(r))}</div>`).join('');
+      return `<div class="capstep"><b>${esc(c.step_id)}</b> · ${(c.records||[]).length} sampled${c.more?' (+more)':''}${recs}</div>`;
+    }).join('');
+    const capblock=cap?`<div class="capture"><div class="caplabel">per-step data capture (test mode)</div>${cap}</div>`:'';
+    return rows+`<tr><td colspan=6><div class="ops">${err}<table>${ops||'<tr><td>no op stats</td></tr>'}</table>${capblock}</div></td></tr>`;
   }).join('')||'<tr><td colspan=6 class="mono">no tasks yet — POST /api/flows/execute or run a benchmark</td></tr>';
 }
 const stat=(v,l)=>`<div class="stat"><b>${v}</b><span>${l}</span></div>`;

@@ -6,9 +6,20 @@ package task
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"sync"
 	"time"
 )
+
+// StepCapture is a bounded, secret-redacted sample of the records leaving
+// one flow step, collected in test mode for post-run inspection (M5c). It
+// is payload data, so it lives only on the runner (never the hub) and only
+// as long as the task stays in the in-memory ring.
+type StepCapture struct {
+	StepID  string            `json:"step_id"`
+	Records []json.RawMessage `json:"records"`
+	More    bool              `json:"more,omitempty"` // the step produced more than the sample
+}
 
 // State is a task's lifecycle phase.
 type State string
@@ -54,6 +65,10 @@ type Task struct {
 	Handled      bool   `json:"handled,omitempty"`
 	HandlerStep  string `json:"handler_step,omitempty"`
 	HandlerError string `json:"handler_error,omitempty"`
+
+	// Captured holds per-step INPUT/OUTPUT samples when capture is enabled
+	// (test mode). Runner-only, redacted, ephemeral (evicted with the task).
+	Captured []StepCapture `json:"captured,omitempty"`
 }
 
 // NewID returns a 16-byte random hex task id.

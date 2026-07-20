@@ -112,7 +112,7 @@ the runner and hub result).
 - **Deferred, to be superseded by later ADRs:** parallel fan-out + merge +
   multi-sink data DAG; per-record content routing; sub-flows; multi-step
   handler sub-pipelines (M5a handler = one sink action); custom-code step
-  types (`wasm`/`python`, reserved here, decided in ADR-0014).
+  types (`wasm`/`python`, reserved here, decided in a later ADR).
 
 ## Proof
 

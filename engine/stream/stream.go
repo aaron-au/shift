@@ -61,11 +61,22 @@ type OpError struct {
 func (e *OpError) Error() string { return e.Op + ": " + e.Err.Error() }
 func (e *OpError) Unwrap() error { return e.Err }
 
+// Sampler observes a bounded copy of the records leaving each pipeline
+// stage (the source and every operator), for post-run inspection — e.g.
+// test-mode data capture. It is called synchronously on the hot path with
+// the stage's step name and its output batch, so implementations must be
+// cheap and must NOT retain the batch (copy what they keep; batches are
+// reused). nil disables sampling at zero cost.
+type Sampler interface {
+	Sample(step string, b *record.Batch)
+}
+
 // Pipeline chains a source through operators into a sink.
 type Pipeline struct {
-	src   Source
-	stats []*OpStats
-	err   error
+	src     Source
+	stats   []*OpStats
+	err     error
+	sampler Sampler
 }
 
 // New starts a pipeline from src; name labels the source in the report.
@@ -74,6 +85,17 @@ func New(src Source, name string) *Pipeline {
 	st := &OpStats{Name: name}
 	p.stats = append(p.stats, st)
 	p.src = &measuredSource{up: src, stats: st}
+	return p
+}
+
+// WithSampler attaches a Sampler that observes every stage's output. Call
+// it right after New (before appending operators): it wires the source
+// stage immediately and every later Apply picks it up.
+func (p *Pipeline) WithSampler(s Sampler) *Pipeline {
+	p.sampler = s
+	if ms, ok := p.src.(*measuredSource); ok {
+		ms.sampler = s
+	}
 	return p
 }
 
@@ -86,7 +108,7 @@ type Transform func(ctx context.Context, b *record.Batch) (*record.Batch, error)
 func (p *Pipeline) Apply(name string, fn Transform) *Pipeline {
 	st := &OpStats{Name: name}
 	p.stats = append(p.stats, st)
-	p.src = &opSource{up: p.src, fn: fn, stats: st}
+	p.src = &opSource{up: p.src, fn: fn, stats: st, sampler: p.sampler}
 	return p
 }
 
@@ -160,8 +182,9 @@ func (p *Pipeline) Run(ctx context.Context, sink Sink, sinkName string) (Report,
 
 // measuredSource attributes time spent producing batches to the source.
 type measuredSource struct {
-	up    Source
-	stats *OpStats
+	up      Source
+	stats   *OpStats
+	sampler Sampler
 }
 
 func (m *measuredSource) Next(ctx context.Context) (*record.Batch, error) {
@@ -175,6 +198,9 @@ func (m *measuredSource) Next(ctx context.Context) (*record.Batch, error) {
 	n := int64(b.Len())
 	m.stats.RecordsIn += n
 	m.stats.RecordsOut += n
+	if m.sampler != nil {
+		m.sampler.Sample(m.stats.Name, b)
+	}
 	return b, nil
 }
 
@@ -183,9 +209,10 @@ func (m *measuredSource) Close() error { return m.up.Close() }
 // opSource applies a transform to each upstream batch, timing only its own
 // work.
 type opSource struct {
-	up    Source
-	fn    Transform
-	stats *OpStats
+	up      Source
+	fn      Transform
+	stats   *OpStats
+	sampler Sampler
 }
 
 func (o *opSource) Next(ctx context.Context) (*record.Batch, error) {
@@ -206,6 +233,9 @@ func (o *opSource) Next(ctx context.Context) (*record.Batch, error) {
 		o.stats.RecordsOut += int64(nb.Len())
 		if nb.Len() == 0 {
 			continue // fully filtered batch; pull the next one
+		}
+		if o.sampler != nil {
+			o.sampler.Sample(o.stats.Name, nb)
 		}
 		return nb, nil
 	}

@@ -49,7 +49,16 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		id, err := svc.Submit(doc, false)
+		// Test-mode data capture: ?capture=1[&capture_max=N]. The sample
+		// stays runner-side, redacted, and ephemeral (GET .../capture).
+		opts := service.SubmitOpts{}
+		if r.URL.Query().Get("capture") == "1" {
+			opts.Capture = true
+			if n, err := strconv.Atoi(r.URL.Query().Get("capture_max")); err == nil && n > 0 {
+				opts.CaptureMax = n
+			}
+		}
+		id, err := svc.SubmitWith(doc, opts)
 		if err != nil {
 			writeErr(w, http.StatusUnprocessableEntity, err)
 			return
@@ -74,6 +83,17 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 			return
 		}
 		writeJSON(w, http.StatusOK, t)
+	})
+
+	// Per-step INPUT/OUTPUT capture for a task (test mode). Payload data —
+	// runner-only, redacted, ephemeral. Empty unless the run had capture on.
+	mux.HandleFunc("GET /api/tasks/{id}/capture", func(w http.ResponseWriter, r *http.Request) {
+		t, ok := svc.Task(r.PathValue("id"))
+		if !ok {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("unknown task"))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"task_id": t.ID, "captured": t.Captured})
 	})
 
 	mux.HandleFunc("POST /api/benchmark", func(w http.ResponseWriter, r *http.Request) {

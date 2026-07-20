@@ -163,6 +163,26 @@ comparison (M6 collateral). An http-sink "extreme" profile is deferred: a
 live endpoint under load would couple the figures to an unrelated network
 target.
 
+## Test-mode data capture (M5c, ADR-0014)
+
+When a task is submitted with capture on (`POST /api/flows/execute?capture=1
+[&capture_max=N]`, or `SubmitOpts.Capture`), the engine's `Sampler` hook
+records a **bounded sample** (default 20 records) of **each stage's output**
+— the source and every operator, keyed by step id. It is:
+
+- **payload, so runner-only** — held on the in-memory task, read back via
+  `GET /api/tasks/{id}/capture`; the hub never sees it;
+- **redacted** — serialized to NDJSON and passed through the same secret
+  redactor as error text (ADR-0010), at the text layer so all values mask;
+- **ephemeral** — evicted with the task from the ring; no store, no TTL, no
+  encryption (nothing at rest);
+- **best-effort** — never fails or stalls a task; stops at the bound.
+
+Off by default; the lease path leaves it off (hub-driven test runs land with
+the studio, M5d). The dashboard shows samples inline in the task detail.
+Durable/encrypted payload storage + TTL + erasure + OTel/Splunk push is a
+deferred enterprise layer (ADR-0014 Consequences).
+
 ## HTTP surface
 
 | Route | Purpose |
@@ -172,6 +192,7 @@ target.
 | `GET /api/status` | governor, totals, pool, latest capacity report, hub intake stats |
 | `POST /api/flows/execute` | submit a flow document → `{task_id}` (202) |
 | `GET /api/tasks[?limit=]`, `GET /api/tasks/{id}` | results + per-op stats |
+| `GET /api/tasks/{id}/capture` | per-step INPUT/OUTPUT samples (test mode; runner-only, redacted) |
 | `POST /api/benchmark`, `GET /api/benchmark` | run/read capacity reports |
 | `POST /api/benchmark/tiers`, `GET /api/benchmark/tiers` | run/read tiered workload reports (M5e) |
 
