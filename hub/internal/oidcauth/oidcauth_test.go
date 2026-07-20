@@ -62,3 +62,14 @@ func TestNewRequiresConfig(t *testing.T) {
 		t.Fatalf("empty config err = %v", err)
 	}
 }
+
+func TestNewDiscoveryFails(t *testing.T) {
+	// Config is complete but the issuer serves no OIDC discovery document,
+	// so provider construction (a network call) must fail closed.
+	_, err := oidcauth.New(t.Context(), oidcauth.Config{
+		IssuerURL: "https://127.0.0.1:1/not-an-idp", ClientID: clientID,
+	})
+	if err == nil || !strings.Contains(err.Error(), "discovering") {
+		t.Fatalf("bad-issuer discovery err = %v", err)
+	}
+}

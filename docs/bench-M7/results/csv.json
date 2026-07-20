@@ -1,0 +1,45 @@
+{
+  "scenario": "csv",
+  "runs": [
+    {
+      "scenario": "csv",
+      "input_bytes": 16777216,
+      "records_in": 211657,
+      "records_out": 105829,
+      "wall_nanos": 225810291,
+      "wall_seconds": 0.225810291,
+      "mib_per_sec": 70.85593809362746,
+      "records_per_sec": 937322.2055676816,
+      "peak_rss_bytes": 14090240,
+      "heap_total_bytes": 33344016,
+      "bytes_per_record": 157,
+      "allocs_per_record": 7.996702211597065,
+      "gc_cycles": 12,
+      "spill_bytes": 0
+    },
+    {
+      "scenario": "csv",
+      "input_bytes": 16777216,
+      "records_in": 211657,
+      "records_out": 105829,
+      "wall_nanos": 222730500,
+      "wall_seconds": 0.2227305,
+      "mib_per_sec": 71.8356938093346,
+      "records_per_sec": 950282.9652876458,
+      "peak_rss_bytes": 14188544,
+      "heap_total_bytes": 33343880,
+      "bytes_per_record": 157,
+      "allocs_per_record": 7.996740008598818,
+      "gc_cycles": 14,
+      "spill_bytes": 0
+    }
+  ],
+  "summary": {
+    "count": 2,
+    "median_wall_nanos": 224270395,
+    "median_mib_per_sec": 71.34581595148103,
+    "worst_peak_rss_bytes": 14188544
+  },
+  "rss_limit_bytes": 104857600,
+  "rss_limited": true
+}

@@ -242,17 +242,25 @@ func ExtractDescriptor(ctx context.Context, binary string) ([]byte, sdk.Descript
 
 // Close shuts the connector down: graceful Shutdown RPC, then SIGKILL
 // after a grace period, then reaps the process and socket directory.
+//
+// Close is idempotent: each resource is released once and its handle cleared,
+// so a second Close is a genuine no-op. Without this, a second call would
+// re-await the already-drained (never-closed) waitCh and block the caller
+// forever — a nasty footgun for defer p.Close() plus an explicit close.
+// Not safe for concurrent callers (Close is a single-owner operation).
 func (p *Process) Close() error {
 	var errs []error
 	if p.client != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_, _ = p.client.Shutdown(p.withToken(ctx), &connectorpb.ShutdownRequest{})
 		cancel()
+		p.client = nil
 	}
 	if p.conn != nil {
 		if err := p.conn.Close(); err != nil {
 			errs = append(errs, err)
 		}
+		p.conn = nil
 	}
 	if p.waitCh != nil {
 		select {
@@ -261,11 +269,13 @@ func (p *Process) Close() error {
 			errs = append(errs, p.kill())
 			<-p.waitCh
 		}
+		p.waitCh = nil
 	}
 	if p.dir != "" {
-		if err := os.RemoveAll(p.dir); err != nil {
+		if err := os.RemoveAll(p.dir); err != nil { //nolint:gosec // G703: p.dir is our own os.MkdirTemp path (set in Launch), never external input
 			errs = append(errs, err)
 		}
+		p.dir = ""
 	}
 	return errors.Join(errs...)
 }

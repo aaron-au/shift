@@ -1,0 +1,18 @@
+# coverage.thresholds — per-package minimum statement coverage (percent).
+#
+# Format:  <import-path> <min-pct>     (per-package override)
+#          default <min-pct>            (floor for any gated package not listed)
+#          # comment / blank lines ignored
+#
+# Gate lives in scripts/coverage.sh (`make cover`). Packages matching the
+# exclusion regex there (cmd/*, telemetry, connectorpb, pgtest/oidctest/
+# sdktest, e2e) are measured but never gated — no entry needed.
+#
+# RATCHET: floors only ever rise. After raising coverage, run `make cover-bump`
+# to rewrite this file to achieved-minus-epsilon, then commit.
+#
+# NOTE: seeded during M7 Workstream A with a permissive default so the gate can
+# land green; Workstream B raises the weak packages, then `make cover-bump`
+# tightens these floors. See docs/adr/0022-testing-and-benchmark-policy.md.
+
+default 0

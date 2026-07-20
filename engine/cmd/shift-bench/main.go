@@ -29,6 +29,9 @@ func main() {
 		groups    = flag.Int64("groups", 500_000, "distinct group keys (aggregate scenario)")
 		maxRSS    = flag.String("max-rss", "", "fail if peak RSS exceeds this (e.g. 100MiB)")
 		spillDir  = flag.String("spill-dir", "", "scratch store directory (default: OS temp)")
+		runs      = flag.Int("runs", 1, "repeat the scenario N times (reports each + a summary)")
+		warmup    = flag.Bool("warmup", false, "run one untimed warmup before measuring (steady-state, warm caches)")
+		jsonOut   = flag.Bool("json", false, "emit machine-readable JSON instead of the human report")
 	)
 	flag.Parse()
 
@@ -39,28 +42,66 @@ func main() {
 	if *groups < 1 {
 		fatal(fmt.Errorf("-groups must be >= 1"))
 	}
+	if *runs < 1 {
+		fatal(fmt.Errorf("-runs must be >= 1"))
+	}
 	wm, err := parseSize(*watermark)
 	if err != nil {
 		fatal(err)
 	}
-
-	r := runner{size: size, watermark: wm, groups: *groups, spillDir: *spillDir}
-	res, err := r.run(*scenario)
-	if err != nil {
-		fatal(err)
-	}
-	res.print()
-
+	var rssLimit int64 = -1
 	if *maxRSS != "" {
-		limit, err := parseSize(*maxRSS)
+		rssLimit, err = parseSize(*maxRSS)
 		if err != nil {
 			fatal(err)
 		}
-		if res.peakRSS > limit {
-			fmt.Fprintf(os.Stderr, "FAIL: peak RSS %s exceeds limit %s\n", fmtBytes(res.peakRSS), fmtBytes(limit))
+	}
+
+	r := runner{size: size, watermark: wm, groups: *groups, spillDir: *spillDir}
+
+	if *warmup {
+		if _, err := r.run(*scenario); err != nil {
+			fatal(err)
+		}
+	}
+
+	results := make([]result, 0, *runs)
+	for i := 0; i < *runs; i++ {
+		res, err := r.run(*scenario)
+		if err != nil {
+			fatal(err)
+		}
+		results = append(results, res)
+	}
+
+	if *jsonOut {
+		emitJSON(results, rssLimit)
+	} else {
+		for i, res := range results {
+			if *runs > 1 {
+				fmt.Printf("=== run %d/%d ===\n", i+1, *runs)
+			}
+			res.print()
+		}
+		if *runs > 1 {
+			printSummary(results)
+		}
+	}
+
+	// Gate on the worst (highest) peak RSS across all runs.
+	if rssLimit >= 0 {
+		worst := int64(0)
+		for _, res := range results {
+			if res.peakRSS > worst {
+				worst = res.peakRSS
+			}
+		}
+		if worst > rssLimit {
+			fmt.Fprintf(os.Stderr, "FAIL: peak RSS %s exceeds limit %s\n", fmtBytes(worst), fmtBytes(rssLimit))
 			os.Exit(1)
 		}
-		fmt.Printf("PASS: peak RSS %s within limit %s\n", fmtBytes(res.peakRSS), fmtBytes(limit))
+		// Gate status goes to stderr so -json stdout stays pure JSON.
+		fmt.Fprintf(os.Stderr, "PASS: peak RSS %s within limit %s\n", fmtBytes(worst), fmtBytes(rssLimit))
 	}
 }
 

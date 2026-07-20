@@ -1,5 +1,8 @@
 # SHIFT
 
+[![ci](https://github.com/aaron-au/shift/actions/workflows/ci.yml/badge.svg)](https://github.com/aaron-au/shift/actions/workflows/ci.yml)
+[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/aaron-au/shift/main/badges/coverage.json)](https://github.com/aaron-au/shift/actions/workflows/ci.yml)
+
 A hub-and-spoke Integration Platform as a Service (iPaaS) in Go, built for
 **performance**: streaming, memory-efficient, disk-light transformations —
 where the incumbents buffer and hit the disk.

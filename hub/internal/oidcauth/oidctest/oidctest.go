@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +22,9 @@ type IdP struct {
 	Server   *httptest.Server
 	ClientID string
 	key      *rsa.PrivateKey
+
+	mu    sync.Mutex
+	codes map[string]map[string]any // authorization code -> token-endpoint response body
 }
 
 // New starts a fake IdP. It shuts down with the test.
@@ -30,7 +34,7 @@ func New(t *testing.T, clientID string) *IdP {
 	if err != nil {
 		t.Fatal(err)
 	}
-	idp := &IdP{ClientID: clientID, key: key}
+	idp := &IdP{ClientID: clientID, key: key, codes: map[string]map[string]any{}}
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
@@ -53,11 +57,49 @@ func New(t *testing.T, clientID string) *IdP {
 			Key: key.Public(), KeyID: "test-key", Algorithm: "RS256", Use: "sig",
 		}}})
 	})
+	// Token endpoint for the authorization-code flow: exchanges a code
+	// registered via Authorize/AuthorizeRaw for its token response.
+	mux.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		idp.mu.Lock()
+		body, ok := idp.codes[r.Form.Get("code")]
+		idp.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid_grant"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(body)
+	})
 	return idp
 }
 
 // Issuer returns the IdP's issuer URL.
 func (i *IdP) Issuer() string { return i.Server.URL }
+
+// Authorize registers an authorization code whose token exchange returns a
+// standard response carrying an id_token minted from the given claims.
+func (i *IdP) Authorize(t *testing.T, code string, c Claims) {
+	t.Helper()
+	i.AuthorizeRaw(code, map[string]any{
+		"access_token": "access-" + code,
+		"token_type":   "Bearer",
+		"expires_in":   3600,
+		"id_token":     i.Mint(t, c),
+	})
+}
+
+// AuthorizeRaw registers an authorization code with a verbatim token-endpoint
+// response body — used to exercise malformed responses (e.g. no id_token).
+func (i *IdP) AuthorizeRaw(code string, body map[string]any) {
+	i.mu.Lock()
+	i.codes[code] = body
+	i.mu.Unlock()
+}
 
 // Claims are the mutable parts of a minted token.
 type Claims struct {

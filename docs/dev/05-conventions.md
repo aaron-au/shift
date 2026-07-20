@@ -10,9 +10,12 @@ across every module. Rules:
 
 - Findings are **fixed or suppressed inline** with
   `//nolint:<linter> // reason`. Blanket config exclusions need an ADR.
-- `-race` is never optional. Benchmarks (`make bench`) are a separate,
-  currently non-blocking CI job that *does* hard-enforce RSS bounds
-  (`shift-bench -max-rss`) and transport parity (`-max-ratio`).
+- `-race` is never optional. `check` runs **`make cover`** as its test pass
+  (race-enabled coverage), so the coverage gate runs on every push — see
+  "Coverage gate" below. `make test` remains for a quick standalone run.
+- Benchmarks (`make bench`) are a separate, currently non-blocking CI job that
+  *does* hard-enforce RSS bounds (`shift-bench -max-rss`) and transport parity
+  (`-max-ratio`). `make bench-report` renders the visible scenario table.
 - When govulncheck flags a reachable stdlib CVE, bump `toolchain` in
   `go.work` (this has already happened once: 1.26.2 → 1.26.5).
 - One-time per clone: `make setup` (enables the pre-push hook).
@@ -41,6 +44,26 @@ across every module. Rules:
   `docs/dev/*` page, and `CLAUDE.md` if contracts/layout changed.
 - Deliberate scope cuts are written down where they'll be found (PLAN
   "Deferred", or a GitHub issue) — silent truncation reads as "done".
+
+## Coverage gate (ADR-0022)
+
+- `make cover` (`scripts/coverage.sh`) runs race-enabled tests with
+  `-coverpkg=./...` per module, correctly count-merges the profiles, and
+  aggregates **per-package** statement coverage. `check` depends on it.
+- **Hard per-package gate.** Floors live in `coverage.thresholds`
+  (per-package override, else `default`); any gated package below its floor
+  fails the build. **Excluded** (measured, not gated): `cmd/*`, `*/telemetry`,
+  generated `connectorpb`, and test helpers (`pgtest`/`oidctest`/`sdktest`/
+  `e2e`).
+- **Ratchet:** after adding tests, `make cover-bump` rewrites the thresholds to
+  achieved-minus-2pp (floors only ever rise); review + commit the diff.
+- Artifacts land in `coverage/` (gitignored): `coverage.html` (browsable),
+  `coverage.md` (the CI job-summary table), `coverage.json` (feeds the README
+  badge via `scripts/badge.py` → `badges/coverage.json`).
+- `-coverpkg=./...` matters: it counts coverage a package gets from *other*
+  packages' tests (e.g. `runner/internal/task` is exercised largely through
+  `service`/`e2e`), so the number reflects real integrated coverage, not just
+  in-package tests.
 
 ## Testing idioms used here
 

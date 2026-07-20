@@ -52,18 +52,112 @@ jobs:
           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
             | sh -s -- -b "$(go env GOPATH)/bin" ${GOLANGCI_LINT_VERSION}
 
+      # make check runs `cover` as its (race-enabled) test pass, so this both
+      # enforces the coverage gate (coverage.thresholds) and produces the
+      # coverage/ artifacts consumed below.
       - name: make check
         run: make check
 
+      - name: Coverage summary (PR / job summary)
+        if: always()
+        run: |
+          if [ -f coverage/coverage.md ]; then
+            cat coverage/coverage.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage
+          path: |
+            coverage/coverage.html
+            coverage/coverage.json
+            coverage/coverage.md
+          if-no-files-found: warn
+          retention-days: 14
+
+  badge:
+    # Update the README coverage badge JSON on main only. Isolated job so the
+    # broad `check` job keeps contents:read.
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Download coverage report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: coverage
+          path: coverage
+
+      - name: Render + commit badge JSON (if changed)
+        run: |
+          python3 scripts/badge.py coverage/coverage.json badges/coverage.json
+          if ! git diff --quiet -- badges/coverage.json; then
+            git config user.name  "shift-ci"
+            git config user.email "ci@shift.local"
+            git add badges/coverage.json
+            git commit -m "ci: update coverage badge [skip ci]"
+            git push
+          else
+            echo "badge unchanged"
+          fi
+
   bench:
-    # Non-blocking visibility job; becomes a regression gate in M1 (ADR-0003).
+    # Non-blocking visibility job; RSS ceilings inside shift-bench stay hard
+    # (they exit non-zero), but bench-vs-base regressions are informational.
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0 # base ref needed for the benchstat comparison
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.x"
           cache-dependency-path: "**/go.sum"
+
+      # micro-benchmarks + shift-bench RSS regression checks (ADR-0003).
       - name: make bench
         run: make bench
+
+      # Visible scenario table (docs/bench-M7/results.md), regenerated fresh.
+      - name: make bench-report
+        run: |
+          make bench-report
+          {
+            echo "## Benchmark results";
+            cat docs/bench-M7/results.md;
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Engine micro-benchmark regression vs the PR base (perf-critical module,
+      # no Postgres needed). Informational — the job is continue-on-error.
+      - name: benchstat engine (base vs PR)
+        if: github.event_name == 'pull_request'
+        run: |
+          go install golang.org/x/perf/cmd/benchstat@latest
+          (cd engine && go test -bench=. -benchmem -run='^$' -count=6 ./... | tee "$RUNNER_TEMP/new.txt")
+          git worktree add "$RUNNER_TEMP/base" ${{ github.event.pull_request.base.sha }}
+          (cd "$RUNNER_TEMP/base/engine" && go test -bench=. -benchmem -run='^$' -count=6 ./... | tee "$RUNNER_TEMP/old.txt")
+          benchstat "$RUNNER_TEMP/old.txt" "$RUNNER_TEMP/new.txt" | tee "$RUNNER_TEMP/diff.txt"
+          {
+            echo "## benchstat — engine (base vs PR)";
+            echo '```';
+            cat "$RUNNER_TEMP/diff.txt";
+            echo '```';
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: benchmarks
+          path: |
+            docs/bench-M7/results.md
+            docs/bench-M7/results/*.json
+          if-no-files-found: warn
+          retention-days: 14

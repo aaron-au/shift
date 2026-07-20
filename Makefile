@@ -1,4 +1,4 @@
-.PHONY: setup build test bench fmt fmt-check vet lint vuln leaks check tidy clean
+.PHONY: setup build test bench bench-report cover cover-bump fmt fmt-check vet lint vuln leaks check tidy clean
 
 MODULES := engine sdk pkg runner hub connectors
 VERSION ?= dev
@@ -29,6 +29,17 @@ proto:
 test:
 	@for m in $(MODULES); do echo "--- test $$m"; (cd $$m && go test -race ./...) || exit 1; done
 
+## cover: race tests + per-package coverage gate (coverage.thresholds). This is
+## the test pass used by `check` (race is on), and emits coverage/ artifacts:
+## coverage.html (browsable), coverage.md (job summary), coverage.json (badge).
+cover:
+	./scripts/coverage.sh
+
+## cover-bump: ratchet coverage.thresholds up to achieved-minus-epsilon (floors
+## only rise). Run after adding tests; review the diff; commit the thresholds.
+cover-bump:
+	./scripts/cover-bump.sh
+
 ## bench: micro-benchmarks + shift-bench RSS regression checks (ADR-0003)
 bench:
 	@for m in $(MODULES); do echo "--- bench $$m"; (cd $$m && go test -bench=. -benchmem -run='^$$' ./...) || exit 1; done
@@ -40,6 +51,11 @@ bench:
 	@echo "--- connector transport parity (ADR-0007)"
 	@cd connectors && go build -o ../bin/shift-connector-gen ./cmd/shift-connector-gen && go build -o ../bin/shift-bench-remote ./cmd/shift-bench-remote
 	bin/shift-bench-remote -records 500000 -connector bin/shift-connector-gen -max-ratio 3.0
+
+## bench-report: run the shift-bench scenario matrix and render the visible
+## results table (docs/bench-M7/results.md). RSS ceilings stay hard gates.
+bench-report:
+	./scripts/bench.sh
 
 fmt:
 	@for m in $(MODULES); do (cd $$m && gofmt -w .); done
@@ -63,8 +79,9 @@ vuln:
 leaks:
 	gitleaks git --no-banner --redact . 2>/dev/null || gitleaks detect --no-banner --redact -s .
 
-## check: THE gate (ADR-0006) — identical locally, pre-push, and in CI
-check: fmt-check vet lint vuln leaks test
+## check: THE gate (ADR-0006) — identical locally, pre-push, and in CI.
+## Uses `cover` as the single race-enabled test pass (coverage gate included).
+check: fmt-check vet lint vuln leaks cover
 	@echo "check: all gates green"
 
 tidy:
