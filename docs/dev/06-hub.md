@@ -164,6 +164,18 @@ document, no payload**). `GET /api/v1/executions` (admin) lists them. This
 gives the hub fleet load + history for work it never queued, without ever
 touching payload.
 
+## Webhook config (M5d-2 s3, ADR-0016)
+
+Webhooks are authored on the hub and synced to runners. Admin CRUD:
+`PUT /api/v1/webhooks/{name}` (`{flow_name, token, enabled}` — the token is
+accepted in plaintext and stored only as a **SHA-256 hash**), `GET`/`DELETE`.
+Runner realm: `GET /api/v1/webhooks/sync` returns each enabled hook on a
+**published** flow with its token hash + the flow document; the runner
+replaces its local registry from this (the hub is authoritative for attached
+runners). The runner hashes an incoming hook token the same way to verify —
+one path for hub-synced and locally-registered hooks. The `webhooks` table
+holds metadata only; the hook payload never reaches the hub.
+
 ## Studio: flow graph view (M5d-3)
 
 `GET /api/v1/flows/{name}/graph` (admin) returns the published flow's render

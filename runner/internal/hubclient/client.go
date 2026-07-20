@@ -324,6 +324,33 @@ func (c *Client) ResolveSecrets(ctx context.Context, names []string) (map[string
 	return out.Secrets, nil
 }
 
+// WebhookConfig is a hub-authored hook the runner should serve: the name,
+// the token hash to check, and the published flow document to run.
+type WebhookConfig struct {
+	Name      string          `json:"name"`
+	TokenHash string          `json:"token_hash,omitempty"`
+	Document  json.RawMessage `json:"document"`
+}
+
+// SyncWebhooks fetches the runner's webhook configs from the hub.
+func (c *Client) SyncWebhooks(ctx context.Context) ([]WebhookConfig, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/v1/webhooks/sync", "")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("hubclient: sync webhooks: %s", readErr(resp))
+	}
+	var out struct {
+		Webhooks []WebhookConfig `json:"webhooks"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("hubclient: sync webhooks: %w", err)
+	}
+	return out.Webhooks, nil
+}
+
 func (c *Client) do(ctx context.Context, method, path, body string) (*http.Response, error) {
 	var rd io.Reader
 	if body != "" {

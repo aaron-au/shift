@@ -201,9 +201,12 @@ never reaches the hub (the whole point: the hub holds no payload).
   (`X-Webhook-Token` or `Authorization: Bearer`, constant-time). The
   **control surface** (`/api/*`, dashboard) is guarded separately —
   see below.
-- **Registration:** stage 1 registers hooks on the runner
-  (`PUT /api/webhooks/{name}` with `{document, token}`), in memory. A later
-  stage authors them on the hub and syncs to runners.
+- **Registration:** two sources into one in-memory registry. Hub-attached
+  runners **sync** their hooks from the hub every 30s (`GET
+  /api/v1/webhooks/sync` → name + token hash + published document), replacing
+  the registry — the hub is authoritative. Standalone runners register hooks
+  locally (`PUT /api/webhooks/{name}` with `{document, token}`). Tokens are
+  held only as SHA-256 hashes and an incoming token is hashed to verify.
 - **Hub load visibility:** direct executions (webhook and local
   `/api/flows/execute`) never enter the hub queue, so when attached to a hub
   the runner reports each finished one as **metadata** — flow, outcome,

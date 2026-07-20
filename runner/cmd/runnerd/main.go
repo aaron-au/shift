@@ -27,6 +27,7 @@ import (
 	"github.com/aaron-au/shift/runner/internal/leaseloop"
 	"github.com/aaron-au/shift/runner/internal/service"
 	"github.com/aaron-au/shift/runner/internal/task"
+	"github.com/aaron-au/shift/runner/internal/webhook"
 )
 
 // version is stamped via -ldflags at release build time.
@@ -172,9 +173,17 @@ func main() {
 		}
 	}
 
+	// Webhook registry (ADR-0016). Hub-attached runners have it filled by a
+	// periodic sync (the hub is authoritative for config); standalone
+	// runners populate it via the local PUT /api/webhooks endpoint.
+	hooks := webhook.NewRegistry()
+	if client != nil {
+		go syncWebhooks(loopCtx, client, hooks)
+	}
+
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           api.Handler(svc, *name, version, time.Now(), hubStatus, guard, report),
+		Handler:           api.Handler(svc, *name, version, time.Now(), hubStatus, guard, report, hooks),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {
@@ -240,4 +249,31 @@ func parseSize(s string) (int64, error) {
 		return 0, fmt.Errorf("bad size %q", s)
 	}
 	return int64(n * float64(mult)), nil
+}
+
+// syncWebhooks periodically pulls the runner's webhook configs from the hub
+// and replaces the local registry (the hub is authoritative for attached
+// runners). Best-effort: errors are logged and retried next tick.
+func syncWebhooks(ctx context.Context, client *hubclient.Client, hooks *webhook.Registry) {
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for {
+		sctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		cfgs, err := client.SyncWebhooks(sctx)
+		cancel()
+		if err != nil {
+			log.Printf("runnerd: webhook sync: %v", err)
+		} else {
+			hs := make([]webhook.Hook, 0, len(cfgs))
+			for _, c := range cfgs {
+				hs = append(hs, webhook.Hook{Name: c.Name, Doc: c.Document, TokenHash: c.TokenHash})
+			}
+			hooks.Replace(hs)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }

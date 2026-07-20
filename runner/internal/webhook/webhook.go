@@ -8,12 +8,14 @@ package webhook
 import "sync"
 
 // Hook is one registered webhook: an inbound POST to /hooks/{Name} runs Doc
-// with the request body as the flow's @webhook source. Token, when set, is
-// the per-hook credential the caller must present.
+// with the request body as the flow's @webhook source. TokenHash, when set,
+// is the hex SHA-256 of the per-hook credential the caller must present
+// (never the plaintext) — so hub-synced and locally-registered hooks share
+// one verification path.
 type Hook struct {
-	Name  string
-	Doc   []byte // raw, validated flow document
-	Token string // optional per-hook credential ("" = open)
+	Name      string
+	Doc       []byte // raw, validated flow document
+	TokenHash string // hex sha256 of the token ("" = open)
 }
 
 // Registry is a concurrency-safe map of hooks by name.
@@ -49,6 +51,18 @@ func (r *Registry) Delete(name string) bool {
 	_, ok := r.hooks[name]
 	delete(r.hooks, name)
 	return ok
+}
+
+// Replace swaps the entire hook set atomically — used by the hub sync loop,
+// where the hub is authoritative for an attached runner.
+func (r *Registry) Replace(hooks []Hook) {
+	m := make(map[string]Hook, len(hooks))
+	for _, h := range hooks {
+		m[h.Name] = h
+	}
+	r.mu.Lock()
+	r.hooks = m
+	r.mu.Unlock()
 }
 
 // Names returns the registered hook names (unordered).

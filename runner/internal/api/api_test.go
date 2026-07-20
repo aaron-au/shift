@@ -14,6 +14,7 @@ import (
 	"github.com/aaron-au/shift/runner/internal/auth"
 	"github.com/aaron-au/shift/runner/internal/service"
 	"github.com/aaron-au/shift/runner/internal/task"
+	"github.com/aaron-au/shift/runner/internal/webhook"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -28,7 +29,7 @@ func testHandler(t *testing.T) http.Handler {
 	}
 	svc := service.New(service.Options{ConnectorDir: dir})
 	t.Cleanup(func() { _ = svc.Close(30 * time.Second) })
-	return Handler(svc, "test-runner", "0.0.0", time.Now(), nil, auth.NewGuard(nil), nil)
+	return Handler(svc, "test-runner", "0.0.0", time.Now(), nil, auth.NewGuard(nil), nil, webhook.NewRegistry())
 }
 
 func TestAPISurface(t *testing.T) {
@@ -211,7 +212,7 @@ func TestAuthEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := Handler(svc, "r", "0", time.Now(), nil, auth.NewGuard(basic), nil)
+	h := Handler(svc, "r", "0", time.Now(), nil, auth.NewGuard(basic), nil, webhook.NewRegistry())
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
@@ -272,7 +273,7 @@ func TestDirectExecutionReported(t *testing.T) {
 	report := func(tk task.Task, trigger string) {
 		reported <- struct{ flow, trigger, state string }{tk.Flow, trigger, string(tk.State)}
 	}
-	srv := httptest.NewServer(Handler(svc, "r", "0", time.Now(), nil, auth.NewGuard(nil), report))
+	srv := httptest.NewServer(Handler(svc, "r", "0", time.Now(), nil, auth.NewGuard(nil), report, webhook.NewRegistry()))
 	defer srv.Close()
 
 	flowDoc := `{"name":"direct-test",

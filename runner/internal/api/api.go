@@ -8,8 +8,10 @@
 package api
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -40,7 +42,7 @@ var uiHTML []byte
 // hub lease intake is running it supplies the intake snapshot for
 // /api/status (nil = local-only runner). guard authenticates the control
 // surface; a nil/open guard leaves it unauthenticated (loopback dev).
-func Handler(svc *service.Service, runnerName, version string, started time.Time, hubStatus func() any, guard *auth.Guard, report ExecReporter) http.Handler {
+func Handler(svc *service.Service, runnerName, version string, started time.Time, hubStatus func() any, guard *auth.Guard, report ExecReporter, hooks *webhook.Registry) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -116,8 +118,8 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 	})
 
 	// --- webhooks / direct execution (ADR-0016) ---
-	// Runner-local registry for now; a later stage syncs it from the hub.
-	hooks := webhook.NewRegistry()
+	// The registry is owned by the caller: hub-attached runners have it
+	// filled by the sync loop; standalone runners use the local PUT below.
 
 	// Register/replace a webhook: PUT /api/webhooks/{name} with
 	// {"document": <flow>, "token": "<optional per-hook credential>"}.
@@ -135,7 +137,7 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 			return
 		}
 		name := r.PathValue("name")
-		hooks.Put(webhook.Hook{Name: name, Doc: req.Document, Token: req.Token})
+		hooks.Put(webhook.Hook{Name: name, Doc: req.Document, TokenHash: hashHookToken(req.Token)})
 		writeJSON(w, http.StatusOK, map[string]any{"name": name, "protected": req.Token != ""})
 	})
 
@@ -160,7 +162,7 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 			writeErr(w, http.StatusNotFound, fmt.Errorf("unknown webhook"))
 			return
 		}
-		if h.Token != "" && !validHookToken(r, h.Token) {
+		if h.TokenHash != "" && !validHookToken(r, h.TokenHash) {
 			writeErr(w, http.StatusUnauthorized, fmt.Errorf("invalid webhook token"))
 			return
 		}
@@ -289,16 +291,26 @@ func decodeFlow(r *http.Request) (*flow.Document, error) {
 	return flow.Parse(raw)
 }
 
-// validHookToken checks the per-webhook credential from the X-Webhook-Token
-// header or an Authorization: Bearer value, in constant time.
-func validHookToken(r *http.Request, want string) bool {
+// hashHookToken returns the hex SHA-256 of a hook token (the stored form),
+// matching the hub's hashing so local and synced hooks verify identically.
+func hashHookToken(tok string) string {
+	if tok == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(tok))
+	return hex.EncodeToString(sum[:])
+}
+
+// validHookToken checks the per-webhook credential (X-Webhook-Token header
+// or Authorization: Bearer) against the stored hash, in constant time.
+func validHookToken(r *http.Request, wantHash string) bool {
 	got := r.Header.Get("X-Webhook-Token")
 	if got == "" {
 		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 			got = strings.TrimSpace(h[len("Bearer "):])
 		}
 	}
-	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+	return subtle.ConstantTimeCompare([]byte(hashHookToken(got)), []byte(wantHash)) == 1
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
