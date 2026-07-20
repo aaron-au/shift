@@ -171,8 +171,14 @@ rate limiting lean on):
     work. Design retained in ADR-0020; revisit triggers documented there.
 - **M6b — Audit log completion.** `Audit()` + table already exist; round out
   coverage of every mutating action, a query/export API, and a studio window.
-- **M6c — Rate limiting.** Hub control API + public runner webhook surface
-  (ADR-0016); per-realm/token limits. Needs an ADR (algorithm, storage, scope).
+- **M6c — Rate limiting ✅ 2026-07-20 (ADR-0021).** Token-bucket
+  (`golang.org/x/time/rate`), per-process/per-key. Hub control API: keyed by
+  identity (admin/runner class) in the auth wrappers + by client IP (public
+  class) on unauthenticated routes. Runner ingress: `POST /hooks/{name}` keyed
+  by `{hook, source IP}`. Over limit → 429 + Retry-After; `/healthz`/`/readyz`/
+  `/metrics` exempt; idle buckets swept. Per-replica by design (overload/abuse
+  protection, not global quota). Off by default (rps<=0). Rejections exported
+  as `shift_{hub,runner}_ratelimited_total{class}`.
 - **M6d — Billing aggregation** from the telemetry substrate (M6a).
 - **M6e — Connector marketplace plumbing.**
 - **M6f — Migration tooling** (OpenAPI importer) + **benchmark-vs-incumbent**

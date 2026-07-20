@@ -1,7 +1,10 @@
 # ADR-0021: Rate limiting — hub control API + runner ingress
 
 Date: 2026-07-20
-Status: Accepted (design); implementation in M6c
+Status: Accepted; implemented (M6c). Note: the reject metric is labelled by
+**class** (`shift_{hub,runner}_ratelimited_total{class}`), not per-hook — a
+bounded, low-cardinality label consistent with the M6a metric discipline;
+per-hook attribution, if ever needed, belongs on a trace.
 
 ## Context
 

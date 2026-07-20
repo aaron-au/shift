@@ -37,7 +37,10 @@ Hub (`shift_hub_*`): `tasks{state}`, `oldest_queued_seconds`,
 Runner (`shift_runner_*`): `governor_budget_bytes`, `governor_used_bytes`,
 `governor_peak_bytes`, `max_concurrent_by_mem`, `tasks_running`,
 `tasks_waiting`, `tasks_submitted_total`, `tasks_completed_total`,
-`tasks_failed_total`, `records_in_total`, `connector_in_use{connector}`.
+`tasks_failed_total`, `records_in_total`, `connector_in_use{connector}`,
+`ratelimited_total{class}` (M6c).
+
+Hub also exports `shift_hub_ratelimited_total{class}` (M6c, ADR-0021).
 
 ## Traces — OTLP (deferred)
 

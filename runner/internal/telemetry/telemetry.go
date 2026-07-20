@@ -41,7 +41,9 @@ type Snapshot struct {
 
 // NewRunner builds the Prometheus /metrics handler. snapFn is invoked once
 // per scrape; it reads in-memory state only (no I/O), so it is cheap.
-func NewRunner(snapFn func() Snapshot) (http.Handler, error) {
+// rejectedFn returns cumulative webhook rate-limit rejections by class
+// (M6c); may be nil.
+func NewRunner(snapFn func() Snapshot, rejectedFn func() map[string]int64) (http.Handler, error) {
 	reg := prometheus.NewRegistry()
 	exp, err := otelprom.New(otelprom.WithRegisterer(reg))
 	if err != nil {
@@ -74,6 +76,7 @@ func NewRunner(snapFn func() Snapshot) (http.Handler, error) {
 	failed := c("shift_runner_tasks_failed_total", "Tasks failed since start.")
 	recordsIn := c("shift_runner_records_in_total", "Records read from sources since start.")
 	connInUse := g("shift_runner_connector_in_use", "Connector processes in use, by connector.")
+	ratelimited := c("shift_runner_ratelimited_total", "Webhook requests rejected by the rate limiter, by class.")
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: instruments: %w", err)
 	}
@@ -93,8 +96,13 @@ func NewRunner(snapFn func() Snapshot) (http.Handler, error) {
 		for _, cu := range s.Conns {
 			o.ObserveInt64(connInUse, cu.InUse, metric.WithAttributes(attribute.String("connector", cu.Name)))
 		}
+		if rejectedFn != nil {
+			for class, n := range rejectedFn() {
+				o.ObserveInt64(ratelimited, n, metric.WithAttributes(attribute.String("class", class)))
+			}
+		}
 		return nil
-	}, govBudget, govUsed, govPeak, maxByMem, running, waiting, submitted, completed, failed, recordsIn, connInUse)
+	}, govBudget, govUsed, govPeak, maxByMem, running, waiting, submitted, completed, failed, recordsIn, connInUse, ratelimited)
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: register callback: %w", err)
 	}

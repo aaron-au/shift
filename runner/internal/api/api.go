@@ -22,6 +22,7 @@ import (
 
 	"github.com/aaron-au/shift/runner/internal/auth"
 	"github.com/aaron-au/shift/runner/internal/flow"
+	"github.com/aaron-au/shift/runner/internal/ratelimit"
 	"github.com/aaron-au/shift/runner/internal/service"
 	"github.com/aaron-au/shift/runner/internal/task"
 	"github.com/aaron-au/shift/runner/internal/webhook"
@@ -42,7 +43,7 @@ var uiHTML []byte
 // hub lease intake is running it supplies the intake snapshot for
 // /api/status (nil = local-only runner). guard authenticates the control
 // surface; a nil/open guard leaves it unauthenticated (loopback dev).
-func Handler(svc *service.Service, runnerName, version string, started time.Time, hubStatus func() any, guard *auth.Guard, report ExecReporter, hooks *webhook.Registry, metricsHandler http.Handler) http.Handler {
+func Handler(svc *service.Service, runnerName, version string, started time.Time, hubStatus func() any, guard *auth.Guard, report ExecReporter, hooks *webhook.Registry, metricsHandler http.Handler, webhookLimit *ratelimit.Limiter) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -160,7 +161,15 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 	// @webhook source. Async — returns 202 + task_id; poll /api/tasks/{id}
 	// (and .../capture) for status/results. Payload never leaves the runner.
 	mux.HandleFunc("POST /hooks/{name}", func(w http.ResponseWriter, r *http.Request) {
-		h, ok := hooks.Get(r.PathValue("name"))
+		name := r.PathValue("name")
+		// Rate limit the public ingress by {hook, source IP} before any work
+		// (M6c, ADR-0021) — a per-hook ceiling stops one flow flooding
+		// admission. Keyed pre-auth so a token isn't needed to be throttled.
+		if !webhookLimit.Allow("webhook", name+"|"+ratelimit.ClientIP(r)) {
+			ratelimit.Reject(w)
+			return
+		}
+		h, ok := hooks.Get(name)
 		if !ok {
 			writeErr(w, http.StatusNotFound, fmt.Errorf("unknown webhook"))
 			return

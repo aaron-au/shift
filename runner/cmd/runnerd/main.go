@@ -25,6 +25,7 @@ import (
 	"github.com/aaron-au/shift/runner/internal/connstore"
 	"github.com/aaron-au/shift/runner/internal/hubclient"
 	"github.com/aaron-au/shift/runner/internal/leaseloop"
+	"github.com/aaron-au/shift/runner/internal/ratelimit"
 	"github.com/aaron-au/shift/runner/internal/service"
 	"github.com/aaron-au/shift/runner/internal/task"
 	"github.com/aaron-au/shift/runner/internal/telemetry"
@@ -48,6 +49,7 @@ func main() {
 		connCache     = flag.String("connector-cache", envOr("SHIFT_CONNECTOR_CACHE", ""), "cache dir for registry-fetched connectors (default <spill-dir or temp>/shift-connectors)")
 		requireSigned = flag.Bool("require-signed", os.Getenv("SHIFT_REQUIRE_SIGNED") == "1", "refuse local connector binaries; registry-verified artifacts only")
 		users         = flag.String("users", os.Getenv("SHIFT_RUNNER_USERS"), "control-surface users \"user:bcrypt-hash:role;...\" (role: admin|operator|viewer); empty = open (loopback only)")
+		webhookRPS    = flag.Float64("rl-webhook-rps", envFloat("SHIFT_RUNNER_RL_WEBHOOK_RPS", 0), "per-{hook,IP} webhook ingress request/sec limit (0=off; M6c)")
 	)
 	flag.Parse()
 	// Env only — a flag would leak the token into process listings. The
@@ -182,6 +184,14 @@ func main() {
 		go syncWebhooks(loopCtx, client, hooks)
 	}
 
+	// Webhook ingress rate limit (M6c, ADR-0021), keyed {hook, source IP}.
+	// 0 = off (loopback/dev). Burst ~2x rps (min 1).
+	wlBurst := int(*webhookRPS * 2)
+	if wlBurst < 1 {
+		wlBurst = 1
+	}
+	webhookLimit := ratelimit.New(map[string]ratelimit.Cfg{"webhook": {RPS: *webhookRPS, Burst: wlBurst}})
+
 	// Prometheus /metrics (M6a, ADR-0020) — sourced from the in-memory
 	// service snapshot (governor, task totals, connector pool).
 	metricsH, err := telemetry.NewRunner(func() telemetry.Snapshot {
@@ -196,6 +206,8 @@ func main() {
 			snap.Conns = append(snap.Conns, telemetry.ConnUse{Name: c.Name, InUse: int64(c.InUse)})
 		}
 		return snap
+	}, func() map[string]int64 {
+		return map[string]int64{"webhook": webhookLimit.Rejected("webhook")}
 	})
 	if err != nil {
 		log.Fatalf("runnerd: metrics: %v", err)
@@ -203,7 +215,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           api.Handler(svc, *name, version, time.Now(), hubStatus, guard, report, hooks, metricsH),
+		Handler:           api.Handler(svc, *name, version, time.Now(), hubStatus, guard, report, hooks, metricsH, webhookLimit),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {
@@ -243,6 +255,15 @@ func hostname() string {
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+func envFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
 	}
 	return def
 }
