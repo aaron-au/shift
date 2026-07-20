@@ -13,9 +13,65 @@ linters:
     - rowserrcheck # sql.Rows.Err() checked (v0 swallowed row errors)
     - misspell
     - copyloopvar
+    - depguard     # enforce the module-boundary doctrine (CLAUDE.md)
   settings:
     gosec:
       excludes: [] # no blanket exclusions — suppress inline with justification (ADR-0006)
+    # depguard turns the doctrine's dependency direction into a build gate:
+    # connectors → sdk → engine; hub/runner import pkg (+ engine/record) but
+    # NEVER the payload plane (engine/stream, sdk). Rules are scoped by the
+    # file's absolute path (contains the module dir), so one root config drives
+    # the per-module `make lint` runs. See CLAUDE.md "Layout" / doctrine.
+    depguard:
+      rules:
+        engine: # the leaf: stdlib + its own subpackages only
+          files: ["**/engine/**"]
+          deny:
+            - pkg: github.com/aaron-au/shift/sdk
+              desc: "engine is stdlib-only; no other shift module may leak in"
+            - pkg: github.com/aaron-au/shift/pkg
+              desc: "engine is a leaf — pkg depends on engine, not the reverse"
+            - pkg: github.com/aaron-au/shift/hub
+            - pkg: github.com/aaron-au/shift/runner
+            - pkg: github.com/aaron-au/shift/connectors
+        pkg: # shared flow model: engine/record for path validation, nothing else
+          files: ["**/pkg/**"]
+          deny:
+            - pkg: github.com/aaron-au/shift/engine/stream
+              desc: "pkg validates flow docs; it must never touch the payload stream"
+            - pkg: github.com/aaron-au/shift/sdk
+            - pkg: github.com/aaron-au/shift/hub
+            - pkg: github.com/aaron-au/shift/runner
+            - pkg: github.com/aaron-au/shift/connectors
+        hub: # control plane: never the connector/payload plane
+          files: ["**/hub/**"]
+          deny:
+            - pkg: github.com/aaron-au/shift/sdk
+              desc: "hub is control-plane only — importing sdk pulls in the connector/payload plane (doctrine)"
+            - pkg: github.com/aaron-au/shift/engine/stream
+              desc: "hub never touches payload data"
+            - pkg: github.com/aaron-au/shift/engine/spill
+            - pkg: github.com/aaron-au/shift/engine/mem
+            - pkg: github.com/aaron-au/shift/engine/format
+            - pkg: github.com/aaron-au/shift/runner
+            - pkg: github.com/aaron-au/shift/connectors
+        sdk: # author/host side: composes over engine, not the services
+          files: ["**/sdk/**"]
+          deny:
+            - pkg: github.com/aaron-au/shift/hub
+            - pkg: github.com/aaron-au/shift/runner
+            - pkg: github.com/aaron-au/shift/connectors
+        connectors: # connector binaries: connectors → sdk → engine
+          files: ["**/connectors/**"]
+          deny:
+            - pkg: github.com/aaron-au/shift/hub
+            - pkg: github.com/aaron-au/shift/runner
+        runner: # spoke worker: imports engine/sdk/pkg, never the hub or connectors
+          files: ["**/runner/**"]
+          deny:
+            - pkg: github.com/aaron-au/shift/hub
+              desc: "runner leases from the hub over HTTP; it must not import hub code"
+            - pkg: github.com/aaron-au/shift/connectors
 
 formatters:
   enable:
