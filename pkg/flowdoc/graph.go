@@ -12,7 +12,7 @@ import (
 func (d *Document) Connectors() []string {
 	seen := map[string]bool{}
 	add := func(n string) {
-		if n != "" {
+		if n != "" && !IsBuiltinConnector(n) { // built-ins aren't registry connectors
 			seen[n] = true
 		}
 	}
@@ -204,6 +204,11 @@ func (s *Step) validate() error {
 	case isConnectorType(s.Type):
 		if s.Connector == "" || s.Action == "" {
 			return fmt.Errorf("%s step needs connector and action", s.Type)
+		}
+		if IsBuiltinConnector(s.Connector) {
+			if s.Connector != WebhookSource || s.Type != "source" {
+				return fmt.Errorf("built-in connector %q is only valid as a source", s.Connector)
+			}
 		}
 		return nil
 	case isTransformType(s.Type):

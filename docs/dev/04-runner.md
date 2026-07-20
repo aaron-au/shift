@@ -183,6 +183,28 @@ the studio, M5d). The dashboard shows samples inline in the task detail.
 Durable/encrypted payload storage + TTL + erasure + OTel/Splunk push is a
 deferred enterprise layer (ADR-0014 Consequences).
 
+## Webhooks / direct execution (M5d-2, ADR-0016)
+
+Beyond leased (pull) work, a runner accepts **direct** (push) execution: an
+inbound `POST /hooks/{name}` runs a registered flow with the **request body
+as its source**. The flow's source is the built-in `@webhook` connector
+(`pkg/flowdoc`, reserved, source-only, exempt from the registry/capability
+policy); at bind time the runner wraps the body as an NDJSON source instead
+of spawning a source subprocess. Payload stays entirely on the runner — it
+never reaches the hub (the whole point: the hub holds no payload).
+
+- **Async by default:** the body is buffered (bounded, 8 MiB), the flow is
+  submitted, and the caller gets `202 + task_id` — poll `/api/tasks/{id}`
+  (and `.../capture`) for status/results. A per-execution sync toggle rides
+  the same machinery (later stage).
+- **Auth:** hook endpoints authenticate by a per-webhook token
+  (`X-Webhook-Token` or `Authorization: Bearer`, constant-time). Control
+  endpoints get user auth in the next stage.
+- **Registration:** stage 1 registers hooks on the runner
+  (`PUT /api/webhooks/{name}` with `{document, token}`), in memory. A later
+  stage authors them on the hub and syncs to runners; the runner will also
+  report direct tasks to the hub as metadata so the hub sees fleet load.
+
 ## HTTP surface
 
 | Route | Purpose |
@@ -193,6 +215,8 @@ deferred enterprise layer (ADR-0014 Consequences).
 | `POST /api/flows/execute` | submit a flow document → `{task_id}` (202) |
 | `GET /api/tasks[?limit=]`, `GET /api/tasks/{id}` | results + per-op stats |
 | `GET /api/tasks/{id}/capture` | per-step INPUT/OUTPUT samples (test mode; runner-only, redacted) |
+| `PUT/GET/DELETE /api/webhooks[/{name}]` | register/list/remove direct-execution hooks (runner-local, this stage) |
+| `POST /hooks/{name}` | trigger a hook: request body → flow `@webhook` source; 202 + task_id (per-hook token) |
 | `POST /api/benchmark`, `GET /api/benchmark` | run/read capacity reports |
 | `POST /api/benchmark/tiers`, `GET /api/benchmark/tiers` | run/read tiered workload reports (M5e) |
 

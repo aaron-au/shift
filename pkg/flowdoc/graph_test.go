@@ -124,6 +124,33 @@ func TestGraphValidation(t *testing.T) {
 	}
 }
 
+func TestWebhookSource(t *testing.T) {
+	// Valid: @webhook as a source, real connector sink.
+	ok := `{"name":"h","source":{"connector":"@webhook","action":"ndjson"},
+	  "sink":{"connector":"http","action":"post"}}`
+	d, err := Parse([]byte(ok))
+	if err != nil {
+		t.Fatalf("valid @webhook source rejected: %v", err)
+	}
+	// Built-in is excluded from the registry connector set (policy/resolve skip it).
+	if got := d.Connectors(); len(got) != 1 || got[0] != "http" {
+		t.Fatalf("connectors = %v, want [http] (no @webhook)", got)
+	}
+
+	bad := []string{
+		`{"name":"h","source":{"connector":"http","action":"get"},"sink":{"connector":"@webhook","action":"ndjson"}}`, // builtin as sink
+		`{"name":"h","source":{"connector":"@other","action":"x"},"sink":{"connector":"http","action":"post"}}`,       // unknown builtin
+		`{"name":"h","start":"in","steps":[
+		  {"id":"in","type":"sink","connector":"@webhook","action":"ndjson","onComplete":"out"},
+		  {"id":"out","type":"sink","connector":"http","action":"post"}]}`, // @webhook on a non-source step
+	}
+	for i, doc := range bad {
+		if _, err := Parse([]byte(doc)); err == nil {
+			t.Errorf("bad @webhook doc %d accepted", i)
+		}
+	}
+}
+
 func TestConnectors(t *testing.T) {
 	// Graph form: source, sink, and a handler — deduped + sorted.
 	d, err := Parse([]byte(goodGraph))

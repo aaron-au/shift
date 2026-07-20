@@ -1,20 +1,31 @@
-// Package api exposes the runner's HTTP surface: the task/benchmark API
-// and the embedded dashboard. Local intake per ADR-0008 — unauthenticated
-// today because it binds loopback by default; hub-issued identity arrives
-// with M4 and MUST land before any non-local bind ships.
+// Package api exposes the runner's HTTP surface: the task/benchmark API,
+// the embedded dashboard, and the webhook / direct-execution endpoints
+// (ADR-0016). Hook endpoints (`POST /hooks/{name}`) authenticate by a
+// per-webhook token. The control/dashboard endpoints are still loopback and
+// unauthenticated in this stage; user auth (HTTP Basic + per-API
+// permissions) is the next M5d-2 stage and MUST land before a non-local
+// bind of the control surface ships (ADR-0008 deferral, now scheduled).
 package api
 
 import (
+	"crypto/subtle"
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aaron-au/shift/runner/internal/flow"
 	"github.com/aaron-au/shift/runner/internal/service"
+	"github.com/aaron-au/shift/runner/internal/webhook"
 )
+
+// maxWebhookBody bounds an inbound webhook payload (buffered before async
+// execution).
+const maxWebhookBody = 8 << 20
 
 //go:embed ui.html
 var uiHTML []byte
@@ -96,6 +107,73 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 		writeJSON(w, http.StatusOK, map[string]any{"task_id": t.ID, "captured": t.Captured})
 	})
 
+	// --- webhooks / direct execution (ADR-0016) ---
+	// Runner-local registry for now; a later stage syncs it from the hub.
+	hooks := webhook.NewRegistry()
+
+	// Register/replace a webhook: PUT /api/webhooks/{name} with
+	// {"document": <flow>, "token": "<optional per-hook credential>"}.
+	mux.HandleFunc("PUT /api/webhooks/{name}", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Document json.RawMessage `json:"document"`
+			Token    string          `json:"token"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if _, err := flow.Parse(req.Document); err != nil { // validate at registration
+			writeErr(w, http.StatusUnprocessableEntity, err)
+			return
+		}
+		name := r.PathValue("name")
+		hooks.Put(webhook.Hook{Name: name, Doc: req.Document, Token: req.Token})
+		writeJSON(w, http.StatusOK, map[string]any{"name": name, "protected": req.Token != ""})
+	})
+
+	mux.HandleFunc("GET /api/webhooks", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"webhooks": hooks.Names()})
+	})
+
+	mux.HandleFunc("DELETE /api/webhooks/{name}", func(w http.ResponseWriter, r *http.Request) {
+		if !hooks.Delete(r.PathValue("name")) {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("unknown webhook"))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// Trigger: POST /hooks/{name}. The request body becomes the flow's
+	// @webhook source. Async — returns 202 + task_id; poll /api/tasks/{id}
+	// (and .../capture) for status/results. Payload never leaves the runner.
+	mux.HandleFunc("POST /hooks/{name}", func(w http.ResponseWriter, r *http.Request) {
+		h, ok := hooks.Get(r.PathValue("name"))
+		if !ok {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("unknown webhook"))
+			return
+		}
+		if h.Token != "" && !validHookToken(r, h.Token) {
+			writeErr(w, http.StatusUnauthorized, fmt.Errorf("invalid webhook token"))
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBody))
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		doc, err := flow.Parse(h.Doc)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		id, err := svc.SubmitWith(doc, service.SubmitOpts{WebhookBody: body})
+		if err != nil {
+			writeErr(w, http.StatusUnprocessableEntity, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"task_id": id})
+	})
+
 	mux.HandleFunc("POST /api/benchmark", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Records int64 `json:"records"`
@@ -155,6 +233,18 @@ func decodeFlow(r *http.Request) (*flow.Document, error) {
 		return nil, fmt.Errorf("invalid JSON body: %w", err)
 	}
 	return flow.Parse(raw)
+}
+
+// validHookToken checks the per-webhook credential from the X-Webhook-Token
+// header or an Authorization: Bearer value, in constant time.
+func validHookToken(r *http.Request, want string) bool {
+	got := r.Header.Get("X-Webhook-Token")
+	if got == "" {
+		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+			got = strings.TrimSpace(h[len("Bearer "):])
+		}
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

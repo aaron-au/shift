@@ -114,6 +114,75 @@ func TestAPISurface(t *testing.T) {
 	}
 }
 
+// TestWebhookEndpoints: register a hook, enforce its token, trigger it, and
+// see the injected body execute (ADR-0016 direct execution).
+func TestWebhookEndpoints(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns connector subprocesses")
+	}
+	srv := httptest.NewServer(testHandler(t))
+	defer srv.Close()
+
+	reg := `{"document":{"name":"hook","source":{"connector":"@webhook","action":"ndjson"},
+	  "sink":{"connector":"gen","action":"discard"}},"token":"s3cret"}`
+	if r := do(t, http.MethodPut, srv.URL+"/api/webhooks/ingest", reg); r.StatusCode != 200 {
+		_ = r.Body.Close()
+		t.Fatalf("register = %d", r.StatusCode)
+	}
+
+	var list struct {
+		Webhooks []string `json:"webhooks"`
+	}
+	getJSON(t, srv.URL+"/api/webhooks", &list)
+	if len(list.Webhooks) != 1 || list.Webhooks[0] != "ingest" {
+		t.Fatalf("webhooks = %+v", list)
+	}
+
+	body := `{"n":1}` + "\n" + `{"n":2}` + "\n"
+
+	// Missing/wrong token → 401.
+	if r := do(t, http.MethodPost, srv.URL+"/hooks/ingest", body); r.StatusCode != http.StatusUnauthorized {
+		_ = r.Body.Close()
+		t.Fatalf("no token = %d, want 401", r.StatusCode)
+	}
+
+	// Correct token → 202 + task id.
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL+"/hooks/ingest", strings.NewReader(body))
+	req.Header.Set("X-Webhook-Token", "s3cret")
+	r, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.StatusCode != http.StatusAccepted {
+		_ = r.Body.Close()
+		t.Fatalf("trigger = %d, want 202", r.StatusCode)
+	}
+	var acc struct {
+		TaskID string `json:"task_id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&acc)
+	_ = r.Body.Close()
+
+	deadline := time.Now().Add(time.Minute)
+	for {
+		var tk struct {
+			State     string `json:"state"`
+			RecordsIn int64  `json:"records_in"`
+		}
+		getJSON(t, srv.URL+"/api/tasks/"+acc.TaskID, &tk)
+		if tk.State == "completed" {
+			if tk.RecordsIn != 2 {
+				t.Fatalf("records in = %d, want 2 (body)", tk.RecordsIn)
+			}
+			break
+		}
+		if tk.State == "failed" || time.Now().After(deadline) {
+			t.Fatalf("task state %q", tk.State)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
 // do issues a context-bound request and fails the test on transport error.
 func do(t *testing.T, method, url, body string) *http.Response {
 	t.Helper()

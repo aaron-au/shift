@@ -68,6 +68,20 @@ func (s *Step) Endpoint() Endpoint {
 	return Endpoint{Connector: s.Connector, Action: s.Action, Config: s.Config}
 }
 
+// WebhookSource is the reserved built-in source that binds an inbound
+// request body (a webhook / direct execution, ADR-0016) as the flow's
+// source instead of a connector subprocess. Its action names the body
+// format (e.g. "ndjson"). It is valid only on a source step; it is not a
+// registry connector, so it is exempt from the capability policy and from
+// signed-artifact resolution.
+const WebhookSource = "@webhook"
+
+// IsBuiltinConnector reports whether name is a reserved built-in (the
+// runner binds it directly) rather than a registry connector.
+func IsBuiltinConnector(name string) bool {
+	return len(name) > 0 && name[0] == '@'
+}
+
 // happyEdge returns the step's single happy-path successor id (OnSuccess
 // or OnComplete) and whether one is set.
 func (s *Step) happyEdge() (string, bool) {
@@ -180,6 +194,12 @@ func (d *Document) Validate() error {
 		if ep.Connector == "" || ep.Action == "" {
 			return fmt.Errorf("flow: %s needs connector and action", label)
 		}
+	}
+	if IsBuiltinConnector(d.Sink.Connector) {
+		return fmt.Errorf("flow: built-in connector %q cannot be a sink", d.Sink.Connector)
+	}
+	if IsBuiltinConnector(d.Source.Connector) && d.Source.Connector != WebhookSource {
+		return fmt.Errorf("flow: unknown built-in source %q", d.Source.Connector)
 	}
 	for i, op := range d.Ops {
 		if err := op.validate(); err != nil {

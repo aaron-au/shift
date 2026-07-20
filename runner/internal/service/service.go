@@ -5,6 +5,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,9 +13,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aaron-au/shift/engine/format/ndjson"
 	"github.com/aaron-au/shift/engine/mem"
 	"github.com/aaron-au/shift/engine/record"
 	"github.com/aaron-au/shift/engine/stream"
+	"github.com/aaron-au/shift/pkg/flowdoc"
 	"github.com/aaron-au/shift/runner/internal/connpool"
 	"github.com/aaron-au/shift/runner/internal/flow"
 	"github.com/aaron-au/shift/runner/internal/task"
@@ -116,6 +119,10 @@ type SubmitOpts struct {
 	Capture bool
 	// CaptureMax bounds the sampled records per step (default 20).
 	CaptureMax int
+	// WebhookBody is the inbound request body bound as the flow's source
+	// when its source is the built-in @webhook (ADR-0016 direct execution).
+	// Required for such flows; ignored otherwise.
+	WebhookBody []byte
 }
 
 // SubmitWith registers and runs a task with explicit options.
@@ -175,7 +182,7 @@ func (s *Service) run(id string, doc *flow.Document, o SubmitOpts) {
 	if o.Capture {
 		sampler = newCaptureSampler(o.CaptureMax, redact)
 	}
-	res, err := s.execute(ctx, doc, redact, sampler)
+	res, err := s.execute(ctx, doc, redact, sampler, o.WebhookBody)
 	end := time.Now()
 	s.store.Update(id, func(t *task.Task) {
 		t.Finished = &end
@@ -220,7 +227,7 @@ type execResult struct {
 // execute binds connectors, runs the compiled pipeline, and on failure
 // routes to the failing step's error handler (v2 onFailure), if any. When
 // sampler is non-nil, per-step INPUT/OUTPUT samples are collected.
-func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(string) string, sampler *captureSampler) (execResult, error) {
+func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(string) string, sampler *captureSampler, webhookBody []byte) (execResult, error) {
 	plan, err := doc.Plan()
 	if err != nil {
 		return execResult{}, err
@@ -228,18 +235,28 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 	srcStep := plan.Main[0]
 	sinkStep := plan.Main[len(plan.Main)-1]
 
-	srcProc, err := s.pool.Get(ctx, srcStep.Connector)
-	if err != nil {
-		return execResult{}, err
+	// Source: a connector subprocess, or the built-in @webhook body
+	// (direct execution, ADR-0016) bound as an in-runner ndjson source.
+	var src stream.Source
+	if srcStep.Connector == flowdoc.WebhookSource {
+		if webhookBody == nil {
+			return execResult{}, fmt.Errorf("service: @webhook flow requires a request body")
+		}
+		src = ndjson.NewReader(bytes.NewReader(webhookBody), ndjson.ReaderOptions{})
+	} else {
+		srcProc, err := s.pool.Get(ctx, srcStep.Connector)
+		if err != nil {
+			return execResult{}, err
+		}
+		defer s.pool.Put(srcStep.Connector)
+		src = srcProc.Source(srcStep.Action, srcStep.Config)
 	}
-	defer s.pool.Put(srcStep.Connector)
+
 	sinkProc, err := s.pool.Get(ctx, sinkStep.Connector)
 	if err != nil {
 		return execResult{}, err
 	}
 	defer s.pool.Put(sinkStep.Connector)
-
-	src := srcProc.Source(srcStep.Action, srcStep.Config)
 	sink := sinkProc.Sink(sinkStep.Action, sinkStep.Config)
 
 	taskGov := mem.New(s.opts.TaskWatermark)
