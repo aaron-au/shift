@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/aaron-au/shift/hub/internal/ratelimit"
 	"github.com/aaron-au/shift/hub/internal/store"
 )
 
@@ -79,8 +80,32 @@ func (a *api) admin(next http.HandlerFunc) http.Handler {
 			writeErr(w, http.StatusForbidden, fmt.Errorf("role %q may not modify", id.role))
 			return
 		}
+		if !a.opts.RateLimit.Allow("admin", rlKey(id)) {
+			ratelimit.Reject(w)
+			return
+		}
 		next(w, r.WithContext(withIdentity(r.Context(), id)))
 	})
+}
+
+// rlKey is the rate-limit key for an authenticated identity (ADR-0021).
+func rlKey(id identity) string {
+	if id.kind == "user" && id.email != "" {
+		return "user:" + id.email
+	}
+	return id.kind + ":" + id.id
+}
+
+// publicLimit rate-limits an unauthenticated route by client IP (the
+// credential-stuffing / anonymous-flood surface, ADR-0021).
+func (a *api) publicLimit(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !a.opts.RateLimit.Allow("public", ratelimit.ClientIP(r)) {
+			ratelimit.Reject(w)
+			return
+		}
+		next(w, r)
+	}
 }
 
 func (a *api) authenticateAdmin(r *http.Request) (identity, bool) {
@@ -115,6 +140,10 @@ func (a *api) authenticateAdmin(r *http.Request) (identity, bool) {
 func (a *api) adminOrRunner(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if id, account, err := a.st.AuthRunner(r.Context(), bearer(r)); err == nil {
+			if !a.opts.RateLimit.Allow("runner", id) {
+				ratelimit.Reject(w)
+				return
+			}
 			ctx := withIdentity(context.WithValue(r.Context(), runnerKey{}, id),
 				identity{kind: "runner", id: id, account: account})
 			next(w, r.WithContext(ctx))
@@ -135,6 +164,10 @@ func (a *api) runner(next http.HandlerFunc) http.Handler {
 		id, account, err := a.st.AuthRunner(r.Context(), bearer(r))
 		if err != nil {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		if !a.opts.RateLimit.Allow("runner", id) {
+			ratelimit.Reject(w)
 			return
 		}
 		ctx := withIdentity(context.WithValue(r.Context(), runnerKey{}, id),

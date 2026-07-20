@@ -18,6 +18,7 @@ import (
 
 	"github.com/aaron-au/shift/hub/internal/connpolicy"
 	"github.com/aaron-au/shift/hub/internal/oidcauth"
+	"github.com/aaron-au/shift/hub/internal/ratelimit"
 	"github.com/aaron-au/shift/hub/internal/scheduler"
 	"github.com/aaron-au/shift/hub/internal/secrets"
 	"github.com/aaron-au/shift/hub/internal/store"
@@ -56,6 +57,9 @@ type Options struct {
 	// MetricsHandler serves GET /metrics (Prometheus scrape, M6a). Optional;
 	// unauthenticated like the dashboard root — gate by network posture.
 	MetricsHandler http.Handler
+	// RateLimit throttles the control API per identity/IP (M6c, ADR-0021).
+	// Optional; nil (or a class with RPS<=0) disables limiting.
+	RateLimit *ratelimit.Limiter
 }
 
 func (o *Options) defaults() error {
@@ -96,13 +100,13 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	// Dashboard page (static; its data calls are authenticated). The
 	// authinfo probe is unauthenticated so the login page knows whether
 	// to offer OIDC — it reveals only which login methods exist.
-	mux.HandleFunc("GET /", a.dashboard)
-	mux.HandleFunc("GET /api/v1/authinfo", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /", a.publicLimit(a.dashboard))
+	mux.HandleFunc("GET /api/v1/authinfo", a.publicLimit(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{
 			"oidc_login":  opts.OIDCFlow != nil,
 			"break_glass": opts.AdminToken != "",
 		})
-	})
+	}))
 	mux.Handle("GET /api/v1/stats", a.admin(a.stats))
 	mux.Handle("GET /api/v1/audit", a.admin(a.listAudit)) // M6b
 
@@ -163,9 +167,9 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 
 	// Dashboard browser login.
 	if opts.OIDCFlow != nil {
-		mux.HandleFunc("GET /auth/login", a.login)
-		mux.HandleFunc("GET /auth/callback", a.callback)
-		mux.HandleFunc("GET /auth/logout", a.logout)
+		mux.HandleFunc("GET /auth/login", a.publicLimit(a.login))
+		mux.HandleFunc("GET /auth/callback", a.publicLimit(a.callback))
+		mux.HandleFunc("GET /auth/logout", a.publicLimit(a.logout))
 	}
 
 	// Runner realm. Registration authenticates by single-use token in the

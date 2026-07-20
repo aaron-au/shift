@@ -34,7 +34,9 @@ type Snapshot struct {
 // NewHub builds the Prometheus /metrics handler. statsFn is invoked once per
 // scrape (async observable callback) to source live values; it must be
 // cheap and safe to call from a background context (no tenant scope).
-func NewHub(statsFn func(context.Context) (Snapshot, error)) (http.Handler, error) {
+// rejectedFn returns cumulative rate-limit rejections by class (M6c); may
+// be nil (no limiter).
+func NewHub(statsFn func(context.Context) (Snapshot, error), rejectedFn func() map[string]int64) (http.Handler, error) {
 	reg := prometheus.NewRegistry()
 	exp, err := otelprom.New(otelprom.WithRegisterer(reg))
 	if err != nil {
@@ -77,6 +79,11 @@ func NewHub(statsFn func(context.Context) (Snapshot, error)) (http.Handler, erro
 	if err != nil {
 		return nil, err
 	}
+	ratelimited, err := m.Int64ObservableCounter("shift_hub_ratelimited_total",
+		metric.WithDescription("Requests rejected by the rate limiter, by class."))
+	if err != nil {
+		return nil, err
+	}
 
 	// One callback, one stats query per scrape — observes every instrument.
 	_, err = m.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
@@ -93,8 +100,13 @@ func NewHub(statsFn func(context.Context) (Snapshot, error)) (http.Handler, erro
 		o.ObserveInt64(schedulesDue, s.SchedulesDue)
 		o.ObserveInt64(schedules, s.Schedules)
 		o.ObserveInt64(flows, s.Flows)
+		if rejectedFn != nil {
+			for class, n := range rejectedFn() {
+				o.ObserveInt64(ratelimited, n, metric.WithAttributes(attribute.String("class", class)))
+			}
+		}
 		return nil
-	}, tasks, oldest, runnersActive, runnersTotal, schedulesDue, schedules, flows)
+	}, tasks, oldest, runnersActive, runnersTotal, schedulesDue, schedules, flows, ratelimited)
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: register callback: %w", err)
 	}

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/aaron-au/shift/hub/internal/connpolicy"
 	"github.com/aaron-au/shift/hub/internal/kek"
 	"github.com/aaron-au/shift/hub/internal/oidcauth"
+	"github.com/aaron-au/shift/hub/internal/ratelimit"
 	"github.com/aaron-au/shift/hub/internal/scheduler"
 	"github.com/aaron-au/shift/hub/internal/secrets"
 	"github.com/aaron-au/shift/hub/internal/store"
@@ -49,6 +51,13 @@ func main() {
 
 		connAllow = flag.String("connector-allow", os.Getenv("SHIFT_HUB_CONNECTOR_ALLOW"), "comma-separated connector allowlist (empty = all); cloud hubs restrict")
 		connDeny  = flag.String("connector-deny", os.Getenv("SHIFT_HUB_CONNECTOR_DENY"), "comma-separated connector denylist (hidden + blocked at deploy)")
+
+		// Rate limits per class, requests/sec (M6c, ADR-0021). 0 = disabled
+		// (the default) — loopback/dev/self-hosted stay frictionless; cloud
+		// deployments set real numbers. Burst defaults to ~2x rps.
+		rlAdminRPS  = flag.Float64("rl-admin-rps", envFloat("SHIFT_HUB_RL_ADMIN_RPS", 0), "per-admin-identity request/sec limit (0=off)")
+		rlRunnerRPS = flag.Float64("rl-runner-rps", envFloat("SHIFT_HUB_RL_RUNNER_RPS", 0), "per-runner request/sec limit (0=off)")
+		rlPublicRPS = flag.Float64("rl-public-rps", envFloat("SHIFT_HUB_RL_PUBLIC_RPS", 0), "per-client-IP request/sec limit on unauthenticated routes (0=off)")
 	)
 	flag.Parse()
 
@@ -114,6 +123,20 @@ func main() {
 	}()
 	opts.SchedStatus = sched.Status
 
+	// Rate limiting (M6c, ADR-0021). Burst ~2x rps (min 1). Disabled classes
+	// (rps<=0) are no-ops. Runners poll leases, so they get a higher ceiling.
+	burst := func(rps float64) int {
+		if b := int(rps * 2); b > 0 {
+			return b
+		}
+		return 1
+	}
+	opts.RateLimit = ratelimit.New(map[string]ratelimit.Cfg{
+		"admin":  {RPS: *rlAdminRPS, Burst: burst(*rlAdminRPS)},
+		"runner": {RPS: *rlRunnerRPS, Burst: burst(*rlRunnerRPS)},
+		"public": {RPS: *rlPublicRPS, Burst: burst(*rlPublicRPS)},
+	})
+
 	// Prometheus /metrics (M6a, ADR-0020). Sources platform-wide stats per
 	// scrape via a background context (no tenant scope — operational metrics).
 	metricsH, err := telemetry.NewHub(func(ctx context.Context) (telemetry.Snapshot, error) {
@@ -130,6 +153,12 @@ func main() {
 			RunnersActive: int64(s.RunnersActive), RunnersTotal: int64(s.RunnersTotal),
 			SchedulesDue: int64(s.SchedulesDue), Schedules: int64(s.Schedules), Flows: int64(s.Flows),
 		}, nil
+	}, func() map[string]int64 {
+		out := map[string]int64{}
+		for _, c := range opts.RateLimit.Classes() {
+			out[c] = opts.RateLimit.Rejected(c)
+		}
+		return out
 	})
 	if err != nil {
 		log.Fatalf("hubd: metrics: %v", err)
@@ -214,6 +243,15 @@ func envDuration(key string, def time.Duration) time.Duration {
 	if v := os.Getenv(key); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			return d
+		}
+	}
+	return def
+}
+
+func envFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
 		}
 	}
 	return def
