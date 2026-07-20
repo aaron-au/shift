@@ -184,10 +184,39 @@ rate limiting lean on):
 - **M6f — Migration tooling** (OpenAPI importer) + **benchmark-vs-incumbent**
   collateral.
 
+### M7 — Testing & benchmark hardening (ADR-0022) ✅ 2026-07-20
+
+Pivot (Aaron's call) from remaining M6 feature work to provable reliability —
+the artifacts a buyer trusts. Delivered:
+
+- **Hard per-package coverage gate.** `make cover` (`scripts/coverage.sh`):
+  race + `-coverpkg` per module, correct count-merge, per-package aggregation,
+  floors in `coverage.thresholds` (ratchet via `make cover-bump`, floors only
+  rise). `check` runs both `test` (full `-race`, incl. subprocess integration
+  for behavior) and `cover` (deterministic gate — SHIFT_COVERAGE skips the
+  timing-flaky connector-subprocess + e2e tests so coverage never flakes).
+  Total **68.5%** deterministic (was unmeasured); weak packages lifted:
+  scheduler, hub/api, oidcauth, ratelimit (both), webhook, sdk/host,
+  leaseloop, hubclient. Latent bug fixed: `sdk/host` `Process.Close` was not
+  idempotent (second call blocked forever).
+- **Visible results.** CI uploads coverage HTML/JSON + posts the per-package
+  table to the job summary; README coverage badge (`badges/coverage.json`);
+  engine benchstat base-vs-PR on PRs.
+- **Configurable benchmark suite.** `shift-bench` gained `-json`/`-runs`/
+  `-warmup`; `make bench-report` renders `docs/bench-M7/results.md`. RSS
+  ceilings stay hard gates.
+- **Full-stack e2e.** `hub/e2e` gained webhook ingress → runner exec →
+  metadata-only hub report, asserting the payload never reaches the hub
+  (ADR-0016), race-clean and repeatable.
+
 ## Standing rules
 
 - Every milestone lands with tests (`-race` mandatory) and updated docs/ADRs for decisions made in flight.
 - **Internal dev docs (`docs/dev/`) are part of every milestone's definition of done** — the behind-the-scenes "how it all operates" documentation for new developers, kept in lockstep with the code (public/user docs are a separate, later concern).
 - Any deviation from ADRs gets a superseding ADR, not a silent fork (v0's Kafka lesson).
-- Benchmarks run in CI from M1 onward; a perf regression fails the build.
+- Benchmarks run in CI from M1 onward; RSS ceilings are hard gates, benchstat
+  regressions are informational (ADR-0022).
+- **Coverage is gated per package (ADR-0022):** new code carries tests or it
+  drags a package under its floor and fails `make check`. After adding tests,
+  `make cover-bump` and commit the raised floors.
 - Developer & AI friendliness is a feature: declarative flow documents, schema'd APIs, one-command dev environment, CLAUDE.md kept current.

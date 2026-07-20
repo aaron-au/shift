@@ -24,7 +24,7 @@ const fastFlow = `{"name":"tick",
 // criterion: each schedule tick becomes exactly one task, no matter how
 // many replicas race, including across a mid-pass replica shutdown.
 func TestScheduleFiresExactlyOnce(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("needs postgres")
 	}
 	dsn := pgtest.DSN(t)

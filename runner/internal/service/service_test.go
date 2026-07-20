@@ -52,7 +52,7 @@ func newTestService(t *testing.T, opts Options) *Service {
 }
 
 func TestExecuteFlowEndToEnd(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("spawns connector subprocesses")
 	}
 	svc := newTestService(t, Options{})
@@ -82,7 +82,7 @@ func TestExecuteFlowEndToEnd(t *testing.T) {
 }
 
 func TestFailedFlowRecordsError(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("spawns connector subprocesses")
 	}
 	svc := newTestService(t, Options{})
@@ -111,7 +111,7 @@ func TestFailedFlowRecordsError(t *testing.T) {
 // TestConcurrentExecution: with ample budget, tasks run simultaneously
 // (goroutine-per-task, ADR-0005).
 func TestConcurrentExecution(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("spawns connector subprocesses")
 	}
 	svc := newTestService(t, Options{MemBudget: 8 << 30})
@@ -148,7 +148,7 @@ func TestConcurrentExecution(t *testing.T) {
 // TestAdmissionSerializesWhenBudgetIsOneTask: capacity-based waiting —
 // with budget for exactly one task, two submissions must not overlap.
 func TestAdmissionSerializesWhenBudgetIsOneTask(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("spawns connector subprocesses")
 	}
 	opts := Options{TaskWatermark: 32 << 20, TaskOverhead: 16 << 20}
@@ -178,7 +178,7 @@ func TestAdmissionSerializesWhenBudgetIsOneTask(t *testing.T) {
 }
 
 func TestBenchmarkEstablishesCapacity(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("spawns connector subprocesses")
 	}
 	svc := newTestService(t, Options{MemBudget: 8 << 30})

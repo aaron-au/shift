@@ -58,7 +58,7 @@ func coerceFailFlow(handler bool) *flow.Document {
 // failed-but-handled, and any resolved secret value is redacted from the
 // error text (the coerce error embeds the failing record's name).
 func TestErrorRoutingAndRedaction(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("spawns connector subprocesses")
 	}
 	svc := newTestService(t, Options{})
@@ -90,7 +90,7 @@ func TestErrorRoutingAndRedaction(t *testing.T) {
 // TestNoHandlerFailsAsBefore is the regression: without an onFailure edge,
 // a failing step fails the task exactly as it did pre-M5a (unhandled).
 func TestNoHandlerFailsAsBefore(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("spawns connector subprocesses")
 	}
 	svc := newTestService(t, Options{})

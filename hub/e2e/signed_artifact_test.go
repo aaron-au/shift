@@ -35,7 +35,7 @@ const genFlow = `{"name":"signed",
 // -require-signed fetches, verifies, and executes it. Then the DB blob
 // is tampered with and the same path fails closed.
 func TestSignedArtifactPath(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("needs postgres + real processes")
 	}
 

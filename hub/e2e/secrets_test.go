@@ -31,7 +31,7 @@ const sentinel = "s3ntinel-secret-value-e2e" //nolint:gosec // G101: test-only s
 // reaches the destination, and never appears in the stored document,
 // task API responses, or hub/runner log output.
 func TestSecretsNeverAtRest(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("needs postgres + real processes")
 	}
 

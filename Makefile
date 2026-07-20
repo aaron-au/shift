@@ -29,9 +29,10 @@ proto:
 test:
 	@for m in $(MODULES); do echo "--- test $$m"; (cd $$m && go test -race ./...) || exit 1; done
 
-## cover: race tests + per-package coverage gate (coverage.thresholds). This is
-## the test pass used by `check` (race is on), and emits coverage/ artifacts:
-## coverage.html (browsable), coverage.md (job summary), coverage.json (badge).
+## cover: `-race -short` per-package coverage gate (coverage.thresholds) +
+## coverage/ artifacts (coverage.html browsable, coverage.md job summary,
+## coverage.json badge). -short keeps it deterministic — the flaky subprocess
+## integration tests run for correctness in `make test`, not here.
 cover:
 	./scripts/coverage.sh
 
@@ -80,8 +81,9 @@ leaks:
 	gitleaks git --no-banner --redact . 2>/dev/null || gitleaks detect --no-banner --redact -s .
 
 ## check: THE gate (ADR-0006) — identical locally, pre-push, and in CI.
-## Uses `cover` as the single race-enabled test pass (coverage gate included).
-check: fmt-check vet lint vuln leaks cover
+## `test` = full `-race` suite incl. subprocess integration tests (behavior);
+## `cover` = `-race -short` deterministic per-package coverage gate.
+check: fmt-check vet lint vuln leaks test cover
 	@echo "check: all gates green"
 
 tidy:

@@ -43,7 +43,7 @@ func TestAPISurface(t *testing.T) {
 	// Dashboard serves.
 	resp := do(t, http.MethodGet, srv.URL+"/", "")
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != 200 || !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
 		t.Fatalf("dashboard: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
 
@@ -129,7 +129,7 @@ func TestWebhookEndpoints(t *testing.T) {
 
 	reg := `{"document":{"name":"hook","source":{"connector":"@webhook","action":"ndjson"},
 	  "sink":{"connector":"gen","action":"discard"}},"token":"s3cret"}`
-	if r := do(t, http.MethodPut, srv.URL+"/api/webhooks/ingest", reg); r.StatusCode != 200 {
+	if r := do(t, http.MethodPut, srv.URL+"/api/webhooks/ingest", reg); r.StatusCode != http.StatusOK {
 		_ = r.Body.Close()
 		t.Fatalf("register = %d", r.StatusCode)
 	}
@@ -320,7 +320,7 @@ func getJSON(t *testing.T, url string, into any) {
 	t.Helper()
 	resp := do(t, http.MethodGet, url, "")
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s = %d", url, resp.StatusCode)
 	}
 	if err := json.NewDecoder(resp.Body).Decode(into); err != nil {

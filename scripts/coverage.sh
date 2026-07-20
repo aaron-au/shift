@@ -13,9 +13,15 @@
 # pattern are measured and reported but never gated (thin main wiring,
 # generated code, telemetry wiring, test helpers). Exits non-zero on any breach.
 #
-# Coverage runs WITH -race (covermode=atomic): `make check` uses this as its
-# single test pass (check depends on `cover`, not `test`), so the race detector
-# still runs on every gate — no double test run.
+# Coverage runs full `-race` (NOT -short, so pg-backed tests count) but sets
+# SHIFT_COVERAGE=1, which makes the connector-SUBPROCESS tests (runner
+# leaseloop/service spawning real connectors) skip. Those are timing-dependent:
+# the exact lines they cover vary run to run — coverage from them measured
+# {0%,43%,85%} for leaseloop across runs, which can't back a hard gate. They
+# still run for CORRECTNESS in `make test` (full `-race`, no SHIFT_COVERAGE).
+# So `check` depends on BOTH `test` (behavior) and `cover` (coverage gate).
+# -short is deliberately NOT used — it would also drop deterministic pg tests
+# (e.g. the whole hub API surface), undercounting real coverage.
 #
 # Env:
 #   SHIFT_TEST_PG   Postgres DSN for hub/runner store tests (pgtest falls back
@@ -34,6 +40,10 @@ MODPATH="github.com/aaron-au/shift"
 # matched against the full import path.
 EXCLUDE_RE='/cmd/|/telemetry$|/connectorpb$|/pgtest$|/oidctest$|/sdktest$|/e2e$'
 
+# Skip the flaky connector-subprocess tests (see header). They still run in
+# `make test`. Deterministic pg/httptest/e2e tests run normally.
+export SHIFT_COVERAGE=1
+
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
@@ -45,7 +55,8 @@ for m in "${MODULES[@]}"; do
 	prof="$OUT/$m.cover"
 	# -coverpkg=./... instruments every package in the module (so 0%-covered
 	# packages still surface), not just the one under test. atomic mode is
-	# required with -race.
+	# required with -race. SHIFT_COVERAGE (exported above) skips the flaky
+	# connector-subprocess tests for deterministic coverage (see header).
 	(cd "$m" && go test -race -covermode=atomic -coverpkg=./... -coverprofile="$prof" ./... ) \
 		|| { echo "coverage: tests failed in module $m" >&2; exit 1; }
 	# Collect raw blocks (drop each profile's own "mode:" header line).

@@ -58,7 +58,7 @@ func (s *countSource) Open(_ context.Context, config []byte) error {
 		return err
 	}
 	if cfg.N <= 0 {
-		return fmt.Errorf("n must be positive")
+		return errors.New("n must be positive")
 	}
 	s.n, s.failAt = cfg.N, cfg.FailAt
 	s.batch = record.NewBatch()

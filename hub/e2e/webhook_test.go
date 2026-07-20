@@ -42,7 +42,7 @@ const webhookFlow = `{"name":"webhook-ingest",
 //  3. The distinctive request payload NEVER appears in anything the hub
 //     stored or serves — payload never crosses the control plane.
 func TestWebhookIngressReportedAsMetadataOnly(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("needs postgres + real processes")
 	}
 

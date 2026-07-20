@@ -417,7 +417,7 @@ func TestSecretMissingFromHub(t *testing.T) {
 // TestHeartbeatDuringRun: a task that outlives the heartbeat interval makes
 // the loop extend its lease at least once while it runs.
 func TestHeartbeatDuringRun(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("spawns connector subprocesses")
 	}
 	hub, client := newLeaseHub(t)
@@ -465,7 +465,7 @@ func TestReportLeaseLostNoRetry(t *testing.T) {
 // TestHappyPathCompletes: a real gen→discard task runs to completion and the
 // terminal Complete report carries the record counts.
 func TestHappyPathCompletes(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("spawns connector subprocesses")
 	}
 	hub, client := newLeaseHub(t)
@@ -501,7 +501,7 @@ func TestHappyPathCompletes(t *testing.T) {
 // final — the loop reports once and stops, relying on idempotency keys to
 // keep the duplicate harmless.
 func TestCompleteLeaseLost(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("spawns connector subprocesses")
 	}
 	hub, client := newLeaseHub(t)

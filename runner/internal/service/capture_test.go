@@ -49,7 +49,7 @@ func TestCaptureSamplerBoundsAndRedacts(t *testing.T) {
 // TestCaptureEndToEnd: a capture-enabled run collects per-step samples
 // (source + op stages) through the production path, bounded and redacted.
 func TestCaptureEndToEnd(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("spawns connector subprocesses")
 	}
 	svc := newTestService(t, Options{})
@@ -91,9 +91,11 @@ func TestCaptureEndToEnd(t *testing.T) {
 	// The source sample carries full gen records; the secret name is masked.
 	src := tk.Captured[0]
 	joined := ""
+	var joinedSb94 strings.Builder
 	for _, r := range src.Records {
-		joined += string(r)
+		joinedSb94.WriteString(string(r))
 	}
+	joined += joinedSb94.String()
 	if strings.Contains(joined, "customer-000000") {
 		t.Fatalf("secret leaked into source capture: %s", joined)
 	}

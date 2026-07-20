@@ -3,6 +3,7 @@ package sdktest_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -40,7 +41,7 @@ func (s *countSource) Open(_ context.Context, config []byte) error {
 		return err
 	}
 	if cfg.N <= 0 {
-		return fmt.Errorf("n must be positive")
+		return errors.New("n must be positive")
 	}
 	s.n, s.failAt = cfg.N, cfg.FailAt
 	s.batch = record.NewBatch()
@@ -100,7 +101,7 @@ func (s *collectSink) Write(_ context.Context, b *record.Batch) error {
 	for _, rec := range b.Records() {
 		v, ok := rec.Field("i")
 		if !ok {
-			return fmt.Errorf("record missing i")
+			return errors.New("record missing i")
 		}
 		if v.Int() <= s.last {
 			return fmt.Errorf("ids not ascending: %d after %d", v.Int(), s.last)

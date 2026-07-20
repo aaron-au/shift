@@ -31,7 +31,7 @@ const slowFlow = `{"name":"slow",
   "sink":{"connector":"gen","action":"discard"}}`
 
 func TestCrashRecovery(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("needs postgres + real processes")
 	}
 

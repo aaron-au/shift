@@ -9,7 +9,7 @@ import (
 // TestWebhookSourceExecution: a flow whose source is the built-in @webhook
 // runs over the injected request body (no source connector spawned).
 func TestWebhookSourceExecution(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("spawns connector subprocesses")
 	}
 	svc := newTestService(t, Options{})
@@ -39,7 +39,7 @@ func TestWebhookSourceExecution(t *testing.T) {
 
 // TestWebhookSourceRequiresBody: a @webhook flow with no body fails cleanly.
 func TestWebhookSourceRequiresBody(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("spawns connector subprocesses")
 	}
 	svc := newTestService(t, Options{})

@@ -5,7 +5,7 @@ import (
 )
 
 func TestTieredBenchmark(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || coverageRun() {
 		t.Skip("spawns connector subprocesses")
 	}
 	svc := newTestService(t, Options{})
