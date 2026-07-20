@@ -85,6 +85,22 @@ hub as **metadata only**, and the test asserts the distinctive payload never
 appears in anything the hub stored — the doctrine-critical "payload never
 touches the hub" property (ADR-0016), now proven end-to-end.
 
+### 5. Fuzzing: the untrusted-input surfaces
+
+Native Go fuzz targets on the parsers/verifiers that eat untrusted bytes:
+`flowdoc.Parse` (flow docs from the API/builder), `consign.Verify` (the
+fail-closed signature gate), `ndjson.Reader` (the hand-rolled hot-path
+tokenizer), and the `spill` binary Value codec (re-read from disk). The
+property is **robustness** — never panic/hang/over-allocate; garbage must
+error, and `Verify` must never false-accept. The **seed corpus runs in
+`make test`** (regression on known cases); **`make fuzz`** (`FUZZTIME`
+overridable) is the mutation-discovery pass, run short + blocking in CI
+(a discovered crash is a real bug). Stronger invariants (e.g. a
+Parse→marshal→re-Parse idempotency check) were considered but not adopted:
+a round-trip variant produced a single unreproducible failure that ~17M
+execs could not recreate, and a flaky fuzz target poisons CI — robustness is
+the property that matters for untrusted input.
+
 ## Consequences
 
 - `make check` runtime rises modestly (coverage instrumentation) but does not

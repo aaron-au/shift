@@ -107,6 +107,29 @@ jobs:
             echo "badge unchanged"
           fi
 
+  fuzz:
+    # Mutation-fuzz the untrusted-input parsers/verifiers (ADR-0022). The seed
+    # corpus already runs in the `check` job (make test); this is the discovery
+    # pass. Blocking: a discovered crash is a real bug. Short per push/PR;
+    # deeper runs are a `make fuzz FUZZTIME=…` away locally.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: "**/go.sum"
+      - name: make fuzz (20s per target)
+        run: make fuzz FUZZTIME=20s
+      - name: Upload fuzz crashers
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-crashers
+          path: "**/testdata/fuzz/**"
+          if-no-files-found: ignore
+          retention-days: 14
+
   bench:
     # Non-blocking visibility job; RSS ceilings inside shift-bench stay hard
     # (they exit non-zero), but bench-vs-base regressions are informational.

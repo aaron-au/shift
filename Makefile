@@ -1,4 +1,4 @@
-.PHONY: setup build test bench bench-report cover cover-bump fmt fmt-check vet lint vuln leaks check tidy clean
+.PHONY: setup build test bench bench-report cover cover-bump fmt fmt-check vet lint vuln leaks check tidy clean fuzz
 
 MODULES := engine sdk pkg runner hub connectors
 VERSION ?= dev
@@ -29,10 +29,10 @@ proto:
 test:
 	@for m in $(MODULES); do echo "--- test $$m"; (cd $$m && go test -race ./...) || exit 1; done
 
-## cover: `-race -short` per-package coverage gate (coverage.thresholds) +
-## coverage/ artifacts (coverage.html browsable, coverage.md job summary,
-## coverage.json badge). -short keeps it deterministic — the flaky subprocess
-## integration tests run for correctness in `make test`, not here.
+## cover: per-package coverage gate (coverage.thresholds) + coverage/ artifacts
+## (coverage.html browsable, coverage.md job summary, coverage.json badge). Runs
+## full -race but sets SHIFT_COVERAGE=1 so the timing-flaky connector-subprocess
+## + e2e tests skip — deterministic coverage. Those run in `make test`.
 cover:
 	./scripts/coverage.sh
 
@@ -40,6 +40,16 @@ cover:
 ## only rise). Run after adding tests; review the diff; commit the thresholds.
 cover-bump:
 	./scripts/cover-bump.sh
+
+## fuzz: mutation-fuzz the untrusted-input parsers/verifiers (ADR-0022).
+## The seed corpus already runs under `make test`; this is the discovery
+## pass. FUZZTIME overridable (default 30s per target).
+FUZZTIME ?= 30s
+fuzz:
+	@echo "--- fuzz flowdoc.Parse";   cd pkg    && go test ./flowdoc/       -run='^$$' -fuzz='^FuzzParse$$'  -fuzztime=$(FUZZTIME)
+	@echo "--- fuzz consign.Verify";  cd pkg    && go test ./consign/       -run='^$$' -fuzz='^FuzzVerify$$' -fuzztime=$(FUZZTIME)
+	@echo "--- fuzz ndjson.Reader";   cd engine && go test ./format/ndjson/ -run='^$$' -fuzz='^FuzzReader$$' -fuzztime=$(FUZZTIME)
+	@echo "--- fuzz spill.Decode";    cd engine && go test ./spill/         -run='^$$' -fuzz='^FuzzDecode$$' -fuzztime=$(FUZZTIME)
 
 ## bench: micro-benchmarks + shift-bench RSS regression checks (ADR-0003)
 bench:
@@ -82,7 +92,7 @@ leaks:
 
 ## check: THE gate (ADR-0006) — identical locally, pre-push, and in CI.
 ## `test` = full `-race` suite incl. subprocess integration tests (behavior);
-## `cover` = `-race -short` deterministic per-package coverage gate.
+## `cover` = deterministic per-package coverage gate (SHIFT_COVERAGE).
 check: fmt-check vet lint vuln leaks test cover
 	@echo "check: all gates green"
 
