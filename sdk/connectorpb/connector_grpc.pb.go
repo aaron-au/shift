@@ -26,6 +26,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	Connector_Handshake_FullMethodName = "/shift.connector.v1.Connector/Handshake"
 	Connector_Health_FullMethodName    = "/shift.connector.v1.Connector/Health"
+	Connector_Describe_FullMethodName  = "/shift.connector.v1.Connector/Describe"
 	Connector_Pull_FullMethodName      = "/shift.connector.v1.Connector/Pull"
 	Connector_Push_FullMethodName      = "/shift.connector.v1.Connector/Push"
 	Connector_Shutdown_FullMethodName  = "/shift.connector.v1.Connector/Shutdown"
@@ -40,6 +41,10 @@ type ConnectorClient interface {
 	Handshake(ctx context.Context, in *HandshakeRequest, opts ...grpc.CallOption) (*HandshakeResponse, error)
 	// Health reports liveness of the connector process.
 	Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error)
+	// Describe reports the connector's actions and their config schemas.
+	// Called by the publisher tooling at publish time to extract a signed
+	// descriptor (ADR-0018); not on the execution hot path.
+	Describe(ctx context.Context, in *DescribeRequest, opts ...grpc.CallOption) (*DescribeResponse, error)
 	// Pull streams batches from a source action until exhausted.
 	Pull(ctx context.Context, in *PullRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Frame], error)
 	// Push streams batches into a sink action. The first message must be
@@ -71,6 +76,16 @@ func (c *connectorClient) Health(ctx context.Context, in *HealthRequest, opts ..
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(HealthResponse)
 	err := c.cc.Invoke(ctx, Connector_Health_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *connectorClient) Describe(ctx context.Context, in *DescribeRequest, opts ...grpc.CallOption) (*DescribeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DescribeResponse)
+	err := c.cc.Invoke(ctx, Connector_Describe_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -128,6 +143,10 @@ type ConnectorServer interface {
 	Handshake(context.Context, *HandshakeRequest) (*HandshakeResponse, error)
 	// Health reports liveness of the connector process.
 	Health(context.Context, *HealthRequest) (*HealthResponse, error)
+	// Describe reports the connector's actions and their config schemas.
+	// Called by the publisher tooling at publish time to extract a signed
+	// descriptor (ADR-0018); not on the execution hot path.
+	Describe(context.Context, *DescribeRequest) (*DescribeResponse, error)
 	// Pull streams batches from a source action until exhausted.
 	Pull(*PullRequest, grpc.ServerStreamingServer[Frame]) error
 	// Push streams batches into a sink action. The first message must be
@@ -150,6 +169,9 @@ func (UnimplementedConnectorServer) Handshake(context.Context, *HandshakeRequest
 }
 func (UnimplementedConnectorServer) Health(context.Context, *HealthRequest) (*HealthResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Health not implemented")
+}
+func (UnimplementedConnectorServer) Describe(context.Context, *DescribeRequest) (*DescribeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Describe not implemented")
 }
 func (UnimplementedConnectorServer) Pull(*PullRequest, grpc.ServerStreamingServer[Frame]) error {
 	return status.Error(codes.Unimplemented, "method Pull not implemented")
@@ -217,6 +239,24 @@ func _Connector_Health_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Connector_Describe_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DescribeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ConnectorServer).Describe(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Connector_Describe_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ConnectorServer).Describe(ctx, req.(*DescribeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Connector_Pull_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(PullRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -267,6 +307,10 @@ var Connector_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Health",
 			Handler:    _Connector_Health_Handler,
+		},
+		{
+			MethodName: "Describe",
+			Handler:    _Connector_Describe_Handler,
 		},
 		{
 			MethodName: "Shutdown",

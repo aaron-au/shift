@@ -67,3 +67,44 @@ func TestWithSinkConfig(t *testing.T) {
 		t.Fatal("WithSinkConfig mutated the original document")
 	}
 }
+
+// TestLayoutIgnoredAndRoundTrips proves the presentational layout field
+// (ADR-0019) survives parse validation, round-trips through JSON, and does
+// not affect Plan lowering — including stale keys naming absent steps.
+func TestLayoutIgnoredAndRoundTrips(t *testing.T) {
+	src := `{"name":"g","start":"in","steps":[
+	  {"id":"in","type":"source","connector":"gen","action":"gen","onSuccess":"out"},
+	  {"id":"out","type":"sink","connector":"gen","action":"discard"}],
+	  "layout":{"in":{"x":40,"y":80.5},"out":{"x":260,"y":80.5},"ghost":{"x":1,"y":2}}}`
+	d, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("layout doc rejected: %v", err)
+	}
+	if p := d.Layout["in"]; p.X != 40 || p.Y != 80.5 {
+		t.Fatalf("layout[in] = %+v", p)
+	}
+	// Stale key naming a non-existent step is tolerated (presentational).
+	if _, ok := d.Layout["ghost"]; !ok {
+		t.Fatal("stale layout key dropped")
+	}
+	// Plan lowering is unaffected by layout.
+	pl, err := d.Plan()
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(pl.Main) != 2 {
+		t.Fatalf("plan main len = %d, want 2", len(pl.Main))
+	}
+	// Round-trip: re-marshal + re-parse preserves layout.
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := Parse(b)
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	if d2.Layout["out"].X != 260 {
+		t.Fatalf("round-trip lost layout: %+v", d2.Layout)
+	}
+}

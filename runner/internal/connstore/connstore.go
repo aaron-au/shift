@@ -93,6 +93,17 @@ func (s *Store) Ensure(ctx context.Context, name string) (string, error) {
 	}
 	manifest := consign.Manifest{Name: m.Name, Version: m.Version, OS: m.OS, Arch: m.Arch}
 	copy(manifest.Digest[:], digest)
+	// A descriptor (ADR-0018) makes this a v2-signed artifact: fold its
+	// digest into the manifest so Verify checks the v2 message. The bytes
+	// are the exact base64 the hub stored, so re-hashing them here matches
+	// the digest the publisher signed. Absent → byte-identical v1 verify.
+	if m.Descriptor != "" {
+		desc, err := base64.StdEncoding.DecodeString(m.Descriptor)
+		if err != nil || len(desc) == 0 {
+			return "", fmt.Errorf("connstore: %s: malformed descriptor in manifest", name)
+		}
+		manifest.DescriptorDigest = sha256.Sum256(desc)
+	}
 	if err := consign.Verify(pub, manifest, sig); err != nil {
 		return "", fmt.Errorf("connstore: %s: %w", name, err)
 	}

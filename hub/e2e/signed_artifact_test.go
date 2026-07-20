@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -75,18 +76,36 @@ func TestSignedArtifactPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Extract the connector's descriptor (ADR-0018) and publish a v2-signed
+	// artifact — the descriptor digest is bound into the signature.
+	descriptor := describeConnector(t, filepath.Join(bin, "shift-connector-gen"))
 	manifest := consign.Manifest{Name: "gen", Version: "1.0.0", OS: runtime.GOOS, Arch: runtime.GOARCH, Digest: digest}
+	manifest.DescriptorDigest = sha256.Sum256(descriptor)
 	sig := consign.Sign(priv, manifest)
 
 	// Register the publisher key and upload the signed artifact.
 	doJSON(t, hub.URL, "POST", "/api/v1/publisher-keys",
 		fmt.Sprintf(`{"name":"e2e","public_key":%q}`, base64.StdEncoding.EncodeToString(pub)), nil)
-	uploadArtifact(t, hub.URL, manifest, sig, artifact, http.StatusCreated)
+	uploadArtifact(t, hub.URL, manifest, sig, artifact, descriptor, http.StatusCreated)
 
 	// A tampered upload (bit-flipped signature) is rejected outright.
 	badSig := append([]byte{}, sig...)
 	badSig[0] ^= 0xff
-	uploadArtifact(t, hub.URL, manifest, badSig, artifact, http.StatusForbidden)
+	uploadArtifact(t, hub.URL, manifest, badSig, artifact, descriptor, http.StatusForbidden)
+
+	// resolve serves the descriptor back (base64 of the exact signed bytes)
+	// so the studio builder can render config forms with no runner online.
+	var resolved struct {
+		Descriptor string `json:"descriptor"`
+	}
+	doJSON(t, hub.URL, "GET",
+		fmt.Sprintf("/api/v1/connectors/gen/resolve?os=%s&arch=%s", runtime.GOOS, runtime.GOARCH), "", &resolved)
+	if resolved.Descriptor == "" {
+		t.Fatal("resolve did not return a descriptor")
+	}
+	if got, err := base64.StdEncoding.DecodeString(resolved.Descriptor); err != nil || !bytes.Equal(got, descriptor) {
+		t.Fatalf("resolved descriptor mismatch (err=%v)", err)
+	}
 
 	// Runner with an EMPTY connector dir: everything must come signed
 	// from the registry.
@@ -151,7 +170,18 @@ func TestSignedArtifactPath(t *testing.T) {
 	}
 }
 
-func uploadArtifact(t *testing.T, hubURL string, m consign.Manifest, sig, data []byte, wantCode int) {
+// describeConnector shells out to the connector's `describe` mode to get
+// its canonical descriptor bytes — the same path shift-bootstrap uses.
+func describeConnector(t *testing.T, bin string) []byte {
+	t.Helper()
+	out, err := exec.CommandContext(t.Context(), bin, "describe").Output() //nolint:gosec // G204: binary we just built
+	if err != nil {
+		t.Fatalf("describe %s: %v", bin, err)
+	}
+	return bytes.TrimSuffix(out, []byte("\n"))
+}
+
+func uploadArtifact(t *testing.T, hubURL string, m consign.Manifest, sig, data, descriptor []byte, wantCode int) {
 	t.Helper()
 	url := fmt.Sprintf("%s/api/v1/connectors/%s/versions/%s?os=%s&arch=%s",
 		hubURL, m.Name, m.Version, m.OS, m.Arch)
@@ -162,6 +192,9 @@ func uploadArtifact(t *testing.T, hubURL string, m consign.Manifest, sig, data [
 	req.Header.Set("Authorization", "Bearer "+adminToken)
 	req.Header.Set("X-Shift-Publisher-Key", "e2e")
 	req.Header.Set("X-Shift-Signature", base64.StdEncoding.EncodeToString(sig))
+	if len(descriptor) > 0 {
+		req.Header.Set("X-Shift-Descriptor", base64.StdEncoding.EncodeToString(descriptor))
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

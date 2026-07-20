@@ -37,17 +37,47 @@
   .ops td{border:0;padding:.15rem .5rem;color:var(--dim)} .ops td:first-child{color:var(--text)}
   #login{max-width:420px;margin:4rem auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1.5rem;display:none}
   #login input{width:100%;background:#10141b;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:.5rem .7rem;margin:.6rem 0}
-  #modal{position:fixed;inset:0;background:rgba(4,8,14,.75);display:none;align-items:center;justify-content:center;z-index:10}
-  #modal .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:1.2rem;max-width:92vw;max-height:88vh;overflow:auto}
-  #modal .card h2{display:flex;justify-content:space-between;align-items:center}
-  .glegend{display:flex;gap:1rem;font-size:.72rem;color:var(--dim);margin:.2rem 0 .8rem}
+  .glegend{display:flex;gap:1rem;font-size:.72rem;color:var(--dim);margin:.2rem 0 .8rem;flex-wrap:wrap}
   .glegend b{font-weight:600}
+  .gtoolbar{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;margin:.4rem 0}
+  .gtoolbar button{padding:.15rem .5rem;font-size:.75rem}
+  #gerr{min-height:1rem;margin:.2rem 0}
+  #editor{margin-top:.8rem}
+  #editor .efield{display:flex;gap:.5rem;align-items:center;margin:.3rem 0;font-size:.82rem}
+  #editor .efield label{width:7rem;color:var(--dim)}
+  #editor input,#editor select,#editor textarea{background:#0d1117;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:.25rem .4rem;font-size:.82rem}
+  #editor input,#editor select{flex:1}
+  #editor textarea{flex:1;min-height:5rem;font-family:ui-monospace,monospace}
+  /* --- OS-lite windowed shell (ADR-0019) --- */
+  body.shell{padding:0;height:100vh;overflow:hidden}
+  #shell{display:none;height:100vh}
+  #dock{position:fixed;left:0;top:0;bottom:0;width:64px;background:#0a0d12;border-right:1px solid var(--line);
+    display:flex;flex-direction:column;align-items:center;gap:.4rem;padding:.6rem 0;z-index:50}
+  #dock .tool{width:46px;height:46px;border-radius:12px;background:#141a23;border:1px solid var(--line);color:var(--text);
+    font-size:1.2rem;cursor:pointer;display:flex;align-items:center;justify-content:center;position:relative}
+  #dock .tool:hover{border-color:var(--accent)}
+  #dock .tool.active{background:#12283f;border-color:var(--accent)}
+  #dock .tool .lbl{position:absolute;left:52px;top:50%;transform:translateY(-50%);background:#0a0d12;border:1px solid var(--line);
+    color:var(--text);font-size:.72rem;padding:.15rem .45rem;border-radius:6px;white-space:nowrap;opacity:0;pointer-events:none;transition:.1s}
+  #dock .tool:hover .lbl{opacity:1}
+  #dock .spacer{flex:1}
+  #desktop{position:absolute;left:64px;right:0;top:0;bottom:0;overflow:hidden}
+  .win{position:absolute;background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    display:flex;flex-direction:column;min-width:280px;min-height:120px;box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden}
+  .win.min{display:none}
+  .win .titlebar{display:flex;align-items:center;gap:.5rem;padding:.4rem .6rem;background:#12161d;border-bottom:1px solid var(--line);cursor:move;user-select:none}
+  .win .titlebar .wtitle{font-size:.8rem;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .win .titlebar .wbtn{width:20px;height:20px;border-radius:6px;background:transparent;border:1px solid var(--line);color:var(--dim);
+    font-size:.7rem;padding:0;display:flex;align-items:center;justify-content:center}
+  .win .winbody{padding:.9rem;overflow:auto;flex:1}
+  .win .resize{position:absolute;right:0;bottom:0;width:16px;height:16px;cursor:nwse-resize}
+  .topbar{position:fixed;left:64px;right:0;top:0;height:2.4rem;display:flex;align-items:center;gap:.6rem;padding:0 .8rem;
+    background:#0a0d12;border-bottom:1px solid var(--line);z-index:40;font-size:.85rem}
+  .topbar .spacer{flex:1}
+  #desktop{top:2.4rem}
 </style>
 </head>
 <body>
-<h1>SHIFT Hub <span class="v" id="ident">connecting…</span><span class="spacer"></span>
-  <button class="ghost" id="logoutbtn" style="display:none" onclick="logout()">Sign out</button></h1>
-
 <div id="login">
   <h2>Sign in</h2>
   <div id="oidcbox" style="display:none">
@@ -61,51 +91,85 @@
   <div class="err" id="loginerr"></div>
 </div>
 
-<main id="panels" style="display:none">
-  <section class="wide">
-    <h2>Overview</h2>
-    <div class="stats" id="overview"></div>
-    <div class="hint" id="schedline"></div>
-  </section>
-  <section class="wide">
-    <h2>Flows</h2>
-    <table><thead><tr><th>Name</th><th>Latest</th><th>Published</th><th>Schedule</th><th></th></tr></thead>
-    <tbody id="flows"></tbody></table>
-    <div class="hint">Publish promotes a version to the default execute path and the scheduler. Cron is UTC, 5-field.</div>
-  </section>
-  <section class="wide">
-    <h2>Direct executions (webhook / direct API)</h2>
-    <table><thead><tr><th>Flow</th><th>Trigger</th><th>State</th><th>Records</th><th>When</th></tr></thead>
-    <tbody id="executions"></tbody></table>
-  </section>
-  <section class="wide">
-    <h2>Recent tasks</h2>
-    <table><thead><tr><th>Flow</th><th>v</th><th>State</th><th>Attempt</th><th>Enqueued</th><th>Error</th></tr></thead>
-    <tbody id="tasks"></tbody></table>
-  </section>
-  <section>
-    <h2>Runners</h2>
-    <table><thead><tr><th>Name</th><th>Registered</th><th>Last seen</th></tr></thead><tbody id="runners"></tbody></table>
-  </section>
-  <section>
-    <h2>Connectors (registry)</h2>
-    <table><thead><tr><th>Name</th><th>Version</th><th>Platform</th><th>Digest</th><th>Size</th></tr></thead><tbody id="connectors"></tbody></table>
-  </section>
-  <section>
-    <h2>Secrets</h2>
-    <table><thead><tr><th>Name</th><th>Version</th><th>Updated</th></tr></thead><tbody id="secrets"></tbody></table>
-    <div class="hint">Values are write-only; reference them in flow configs as {"$secret":"name"}.</div>
-  </section>
-</main>
-
-<div id="modal" onclick="if(event.target===this)closeGraph()">
-  <div class="card">
-    <h2><span id="graphtitle"></span><button class="ghost" onclick="closeGraph()">Close</button></h2>
-    <div class="glegend">
-      <span><b style="color:var(--ok)">──</b> success / complete</span>
-      <span><b style="color:var(--bad)">──</b> failure (error handler)</span>
+<div id="shell">
+  <div class="topbar">
+    <b>SHIFT Hub</b><span class="v" id="ident">connecting…</span>
+    <span class="hint" id="schedline" style="margin:0"></span>
+    <span class="spacer"></span>
+    <button class="ghost" id="logoutbtn" style="display:none" onclick="logout()">Sign out</button>
+  </div>
+  <div id="dock"></div>
+  <div id="desktop">
+    <!-- Each tool is a window; render targets keep their original ids. -->
+    <div class="win" id="win-overview" data-title="Overview" data-icon="▦">
+      <div class="titlebar"><span class="wtitle">Overview</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
+      <div class="winbody"><div class="stats" id="overview"></div></div>
+      <div class="resize"></div>
     </div>
-    <div id="graph"></div>
+    <div class="win" id="win-flows" data-title="Flows" data-icon="🗂">
+      <div class="titlebar"><span class="wtitle">Flows</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
+      <div class="winbody">
+        <table><thead><tr><th>Name</th><th>Latest</th><th>Published</th><th>Schedule</th><th></th></tr></thead>
+        <tbody id="flows"></tbody></table>
+        <div class="hint">Open builds/edits the flow. Publish/rollback picks the active version. Cron is UTC, 5-field.</div>
+      </div>
+      <div class="resize"></div>
+    </div>
+    <div class="win" id="win-builder" data-title="Builder" data-icon="✎">
+      <div class="titlebar"><span class="wtitle" id="graphtitle">Builder</span>
+        <button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
+      <div class="winbody">
+        <div class="gtoolbar">
+          <button id="savelayout" onclick="saveLayout()">Save layout</button>
+          <button onclick="deployModel()">Deploy draft</button>
+          <span class="hint">add:</span>
+          <button class="ghost" onclick="addNode('source')">source</button>
+          <button class="ghost" onclick="addNode('sink')">sink</button>
+          <button class="ghost" onclick="addNode('filter')">filter</button>
+          <button class="ghost" onclick="addNode('project')">project</button>
+          <button class="ghost" onclick="addNode('coerce')">coerce</button>
+          <button class="ghost" onclick="addNode('flatten')">flatten</button>
+          <button class="ghost" onclick="addNode('aggregate')">aggregate</button>
+        </div>
+        <div class="glegend">
+          <span><b style="color:var(--ok)">──</b> success / complete</span>
+          <span><b style="color:var(--bad)">──</b> failure (error handler)</span>
+          <span class="hint">drag body to move · drag a port (▸ happy, ▾ fail) onto a node to wire · click an edge to remove</span>
+        </div>
+        <div id="gerr" class="err"></div>
+        <div id="graph"></div>
+        <div id="editor"></div>
+      </div>
+      <div class="resize"></div>
+    </div>
+    <div class="win" id="win-tasks" data-title="Tasks" data-icon="≣">
+      <div class="titlebar"><span class="wtitle">Recent tasks</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
+      <div class="winbody"><table><thead><tr><th>Flow</th><th>v</th><th>State</th><th>Attempt</th><th>Enqueued</th><th>Error</th></tr></thead>
+        <tbody id="tasks"></tbody></table></div>
+      <div class="resize"></div>
+    </div>
+    <div class="win" id="win-executions" data-title="Executions" data-icon="⇄">
+      <div class="titlebar"><span class="wtitle">Direct executions</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
+      <div class="winbody"><table><thead><tr><th>Flow</th><th>Trigger</th><th>State</th><th>Records</th><th>When</th></tr></thead>
+        <tbody id="executions"></tbody></table></div>
+      <div class="resize"></div>
+    </div>
+    <div class="win" id="win-runners" data-title="Runners" data-icon="◎">
+      <div class="titlebar"><span class="wtitle">Runners</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
+      <div class="winbody"><table><thead><tr><th>Name</th><th>Registered</th><th>Last seen</th></tr></thead><tbody id="runners"></tbody></table></div>
+      <div class="resize"></div>
+    </div>
+    <div class="win" id="win-connectors" data-title="Connectors" data-icon="⧉">
+      <div class="titlebar"><span class="wtitle">Connectors (registry)</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
+      <div class="winbody"><table><thead><tr><th>Name</th><th>Version</th><th>Platform</th><th>Digest</th><th>Size</th></tr></thead><tbody id="connectors"></tbody></table></div>
+      <div class="resize"></div>
+    </div>
+    <div class="win" id="win-secrets" data-title="Secrets" data-icon="🔑">
+      <div class="titlebar"><span class="wtitle">Secrets</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
+      <div class="winbody"><table><thead><tr><th>Name</th><th>Version</th><th>Updated</th></tr></thead><tbody id="secrets"></tbody></table>
+        <div class="hint">Write-only; reference in configs as {"$secret":"name"}.</div></div>
+      <div class="resize"></div>
+    </div>
   </div>
 </div>
 
@@ -125,7 +189,8 @@ async function api(path, opts = {}) {
 }
 
 function showLogin() {
-  $('panels').style.display = 'none'; $('login').style.display = 'block';
+  document.body.classList.remove('shell'); $('shell').style.display = 'none';
+  $('login').style.display = 'block';
   $('logoutbtn').style.display = 'none'; $('ident').textContent = 'signed out';
   fetch('/api/v1/authinfo').then(r => r.json()).then(info => {
     $('oidcbox').style.display = info.oidc_login ? 'block' : 'none';
@@ -141,12 +206,102 @@ function logout() {
   location.href = '/auth/logout';
 }
 
+// --- window manager: OS-lite shell (ADR-0019) ---
+// Window open/position/size/z-order is browser-only UI state — never sent to
+// the hub (it is not flow data). One singleton window per tool.
+const WM = {z: 10, key: 'shift_windows', inited: false};
+const WIN_DEFAULT = {
+  'win-builder': {w: 780, h: 500}, 'win-flows': {w: 620, h: 300},
+  'win-tasks': {w: 620, h: 320}, 'win-executions': {w: 560, h: 260},
+  'win-overview': {w: 560, h: 180}, 'win-runners': {w: 460, h: 240},
+  'win-connectors': {w: 620, h: 260}, 'win-secrets': {w: 460, h: 240},
+};
+function wmState() { try { return JSON.parse(localStorage.getItem(WM.key)) || {}; } catch (e) { return {}; } }
+function wmSave(st) { try { localStorage.setItem(WM.key, JSON.stringify(st)); } catch (e) {} }
+
+function initShell() {
+  if (WM.inited) return; WM.inited = true;
+  const wins = [...document.querySelectorAll('.win')];
+  const dock = $('dock');
+  dock.innerHTML = wins.map(w =>
+    `<button class="tool" data-win="${w.id}" title="${esc(w.dataset.title)}">${w.dataset.icon}<span class="lbl">${esc(w.dataset.title)}</span></button>`
+  ).join('');
+  dock.querySelectorAll('.tool').forEach(b => b.onclick = () => toggleWin(b.dataset.win));
+  wins.forEach(w => {
+    w.addEventListener('pointerdown', () => focusWin(w.id), true);
+    const tb = w.querySelector('.titlebar');
+    tb.querySelectorAll('.wbtn').forEach(btn => btn.onclick = ev => {
+      ev.stopPropagation();
+      if (btn.dataset.act === 'close') closeWin(w.id); else minWin(w.id);
+    });
+    dragEl(tb, w, false);
+    dragEl(w.querySelector('.resize'), w, true);
+  });
+  restoreWindows(wins);
+}
+
+function restoreWindows(wins) {
+  const st = wmState();
+  let cascade = 0;
+  wins.forEach(w => {
+    const s = st[w.id], def = WIN_DEFAULT[w.id] || {w: 460, h: 320};
+    w.style.width = ((s && s.w) || def.w) + 'px';
+    w.style.height = ((s && s.h) || def.h) + 'px';
+    if (s) {
+      w.style.left = s.x + 'px'; w.style.top = s.y + 'px';
+      w.style.display = s.open ? 'flex' : 'none';
+    } else {
+      w.style.left = (24 + cascade * 26) + 'px'; w.style.top = (16 + cascade * 24) + 'px';
+      w.style.display = 'none'; cascade++;
+    }
+    markDock(w.id);
+  });
+  if (!Object.keys(st).length) ['win-overview', 'win-flows', 'win-tasks'].forEach(id => openWinEl(id));
+}
+
+function persist() {
+  const st = {};
+  document.querySelectorAll('.win').forEach(w => {
+    st[w.id] = {x: parseInt(w.style.left) || 0, y: parseInt(w.style.top) || 0,
+      w: parseInt(w.style.width) || 0, h: parseInt(w.style.height) || 0, open: w.style.display !== 'none'};
+  });
+  wmSave(st);
+}
+function markDock(winId) {
+  const b = document.querySelector(`.tool[data-win="${winId}"]`);
+  if (b) b.classList.toggle('active', document.getElementById(winId).style.display !== 'none');
+}
+function openWinEl(winId) { const w = document.getElementById(winId); if (!w) return; w.style.display = 'flex'; focusWin(winId); markDock(winId); persist(); }
+function openWin(id) { openWinEl('win-' + id); }
+function toggleWin(winId) { const w = document.getElementById(winId); (w.style.display === 'none' ? openWinEl : closeWin)(winId); }
+function closeWin(winId) { document.getElementById(winId).style.display = 'none'; markDock(winId); persist(); }
+function minWin(winId) { closeWin(winId); } // the dock doubles as the taskbar — reopen there
+function focusWin(winId) { const w = document.getElementById(winId); if (w) w.style.zIndex = ++WM.z; }
+
+function dragEl(handle, win, resize) {
+  if (!handle) return;
+  handle.addEventListener('pointerdown', ev => {
+    ev.preventDefault(); focusWin(win.id);
+    const sx = ev.clientX, sy = ev.clientY;
+    const ox = parseInt(win.style.left) || 0, oy = parseInt(win.style.top) || 0;
+    const ow = win.offsetWidth, oh = win.offsetHeight;
+    const move = e => {
+      if (resize) { win.style.width = Math.max(280, ow + (e.clientX - sx)) + 'px'; win.style.height = Math.max(120, oh + (e.clientY - sy)) + 'px'; }
+      else { win.style.left = Math.max(0, ox + (e.clientX - sx)) + 'px'; win.style.top = Math.max(0, oy + (e.clientY - sy)) + 'px'; }
+    };
+    const up = () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); persist(); };
+    document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
+  });
+}
+
 async function boot() {
   try {
     const me = await api('/api/v1/me');
-    $('login').style.display = 'none'; $('panels').style.display = 'grid';
+    $('login').style.display = 'none';
+    document.body.classList.add('shell'); $('shell').style.display = 'block';
     $('logoutbtn').style.display = '';
     $('ident').textContent = me.email || me.kind;
+    initShell();
     refresh(); if (!window._timer) window._timer = setInterval(refresh, 3000);
   } catch (e) { $('loginerr').textContent = bearer ? 'rejected: ' + e.message : ''; }
 }
@@ -194,18 +349,25 @@ function renderFlows(flows, scheds) {
       (s.last_error ? ` <span class="err">${esc(s.last_error)}</span>` : '') : '—';
     const pubChip = f.published_version
       ? `<span class="chip published">v${f.published_version}</span>` : '<span class="chip draft">none</span>';
-    const canPublish = f.latest_version !== f.published_version
-      ? `<button onclick="publish('${esc(f.name)}',${f.latest_version})">Publish v${f.latest_version}</button>` : '';
+    let opts = '';
+    for (let v = 1; v <= f.latest_version; v++) opts += `<option value="${v}"${v === (f.published_version || f.latest_version) ? ' selected' : ''}>v${v}</option>`;
+    const pubCtl = f.latest_version ? `<select id="pv-${esc(f.name)}" style="padding:.2rem;font-size:.75rem">${opts}</select>
+        <button onclick="publishSel('${esc(f.name)}')">Publish</button>` : '';
     return `<tr><td>${esc(f.name)}</td><td>v${f.latest_version}</td><td>${pubChip}</td>
       <td>${schedTxt}</td>
-      <td style="white-space:nowrap">${canPublish}
-        <button class="ghost" onclick="openGraph('${esc(f.name)}')">Graph</button>
+      <td style="white-space:nowrap">
+        <button onclick="openGraph('${esc(f.name)}')">Open</button>
+        ${pubCtl}
         <button class="ghost" onclick="editSchedule('${esc(f.name)}')">Schedule…</button>
         <button class="ghost" onclick="runNow('${esc(f.name)}')">Run</button></td></tr>`;
-  }).join('') || '<tr><td colspan="5" class="hint">no flows deployed</td></tr>';
+  }).join('') || '<tr><td colspan="5" class="hint">no flows deployed — open the Builder to create one</td></tr>';
 }
 
 async function publish(name, v) { await api(`/api/v1/flows/${name}/versions/${v}/publish`, {method: 'POST'}); refresh(); }
+async function publishSel(name) {
+  const v = ($('pv-' + name) || {}).value; if (!v) return;
+  try { await publish(name, v); } catch (e) { alert('publish failed: ' + e.message); }
+}
 async function runNow(name) { await api(`/api/v1/flows/${name}/execute`, {method: 'POST', body: '{}'}); refresh(); }
 async function editSchedule(name) {
   const cron = prompt(`Cron for "${name}" (UTC, 5-field; empty to remove):`, '*/5 * * * *');
@@ -269,52 +431,499 @@ function renderExecutions(es) {
   }).join('') || '<tr><td colspan="5" class="hint">no direct executions yet</td></tr>';
 }
 
-// --- studio: read-only flow graph ---
+// --- studio: flow builder canvas (edit + drag + deploy, ADR-0019) ---
 const NODE_FILL = {source:'#12283f', sink:'#12352a'};
+const NODE_W = 150, NODE_H = 52;
+const TRANSFORMS = ['filter','project','coerce','flatten','aggregate'];
+const CMP_OPS = ['eq','ne','gt','gte','lt','lte','exists'];
+// studio holds the flow name, an editable graph-form model (always steps),
+// live node positions, current selection, and any in-progress drag/connect.
+const studio = {name:null, model:null, pos:{}, sel:null, drag:null, connect:null, cur:null,
+  catalog:{}, secrets:[]};
+
 async function openGraph(name) {
   try {
-    const g = await api('/api/v1/flows/' + encodeURIComponent(name) + '/graph');
-    $('graphtitle').textContent = 'Flow: ' + name;
-    $('graph').innerHTML = renderGraph(g);
-    $('modal').style.display = 'flex';
-  } catch (e) { alert('graph unavailable: ' + e.message); }
+    const [flow, conns, secrets] = await Promise.all([
+      api('/api/v1/flows/' + encodeURIComponent(name)),
+      api('/api/v1/connectors').catch(() => ({connectors: []})),
+      api('/api/v1/secrets').catch(() => ({secrets: []})),
+    ]);
+    studio.name = name;
+    studio.model = toModel((flow && flow.document) || {name});
+    studio.catalog = buildCatalog(conns.connectors || []);
+    studio.secrets = (secrets.secrets || []).map(s => s.name);
+    studio.sel = null; $('gerr').textContent = '';
+    studio.pos = layoutPositions(clientGraph(studio.model), studio.model.layout || {});
+    $('graphtitle').textContent = 'Builder — ' + name;
+    openWin('builder'); focusWin('win-builder');
+    drawStudio(); renderEditor();
+  } catch (e) { alert('flow unavailable: ' + e.message); }
 }
-function closeGraph() { $('modal').style.display = 'none'; }
 
-function renderGraph(g) {
-  const W = 150, H = 52, DX = 200, DY = 130, X0 = 20, YM = 30, YH = 30 + DY;
+// buildCatalog decodes each connector's signed descriptor (base64 canonical
+// bytes, ADR-0018) into {connector: {action: {direction, schema}}} so the
+// editor can offer action pickers and schema-driven config forms.
+function buildCatalog(list) {
+  const cat = {};
+  list.forEach(c => {
+    const entry = cat[c.name] || (cat[c.name] = {actions: {}});
+    if (!c.descriptor) return;
+    try {
+      const d = JSON.parse(atob(c.descriptor));
+      (d.actions || []).forEach(a => { entry.actions[a.direction + '/' + a.action] = a.configSchema || null; });
+    } catch (e) { /* descriptor absent/old (v1) — action picker falls back to free text */ }
+  });
+  return cat;
+}
+
+// toModel normalizes any document into an editable graph-form model with a
+// steps array. A linear-form doc is lowered to the same source→ops→sink
+// step chain the runner would build, so both forms edit identically.
+function toModel(doc) {
+  const m = {name: doc.name || '', start: doc.start || '', steps: [], layout: doc.layout || {}};
+  if (Array.isArray(doc.steps) && doc.steps.length) {
+    m.steps = doc.steps.map(s => Object.assign({}, s));
+    m.start = doc.start || (m.steps[0] && m.steps[0].id) || '';
+    return m;
+  }
+  // Linear sugar → steps: source, op0.., sink chained on the happy path.
+  const chain = [];
+  if (doc.source && doc.source.connector) chain.push(Object.assign({id:'source', type:'source'}, doc.source));
+  (doc.ops || []).forEach((op, i) => chain.push(Object.assign({id:'op'+i}, op)));
+  if (doc.sink && doc.sink.connector) chain.push(Object.assign({id:'sink', type:'sink'}, doc.sink));
+  chain.forEach((s, i) => { if (i < chain.length - 1) s.onSuccess = chain[i+1].id; });
+  m.steps = chain; m.start = chain.length ? chain[0].id : '';
+  return m;
+}
+
+// clientGraph projects the editable model into the {nodes,edges,main}
+// shape renderGraph consumes — computed locally so edits show instantly.
+function clientGraph(m) {
+  const nodes = m.steps.map(s => ({id:s.id, type:s.type, connector:s.connector, action:s.action}));
+  const edges = [];
+  m.steps.forEach(s => {
+    if (s.onSuccess) edges.push({from:s.id, to:s.onSuccess, kind:'success'});
+    if (s.onComplete) edges.push({from:s.id, to:s.onComplete, kind:'complete'});
+    if (s.onFailure) edges.push({from:s.id, to:s.onFailure, kind:'failure'});
+  });
+  const failTargets = new Set(edges.filter(e => e.kind === 'failure').map(e => e.to));
+  nodes.forEach(n => n.role = failTargets.has(n.id) ? 'handler' : 'main');
+  // main = walk the happy path from start (for auto-layout ordering only).
+  const byId = {}; m.steps.forEach(s => byId[s.id] = s);
+  const main = []; const seen = new Set(); let cur = m.start || (m.steps[0] && m.steps[0].id);
+  while (cur && byId[cur] && !seen.has(cur)) {
+    seen.add(cur); main.push(cur);
+    const s = byId[cur]; cur = s.onSuccess || s.onComplete || null;
+  }
+  return {start:m.start, main, nodes, edges};
+}
+
+function layoutPositions(g, saved) {
+  const DX = 200, X0 = 20, YM = 30, YH = 30 + 130;
   const pos = {}, main = g.main || [];
   main.forEach((id, i) => pos[id] = {x: X0 + i * DX, y: YM});
-  // Handlers sit on a lower row, aligned under the step that references them.
-  const handlers = (g.nodes || []).filter(n => n.role === 'handler');
-  handlers.forEach((n, i) => {
+  (g.nodes || []).filter(n => n.role === 'handler').forEach((n, i) => {
     const ref = (g.edges || []).find(e => e.kind === 'failure' && e.to === n.id);
     const under = ref && pos[ref.from] ? pos[ref.from].x : X0 + i * DX;
     pos[n.id] = {x: under, y: YH};
   });
-  const width = Math.max(...Object.values(pos).map(p => p.x)) + W + X0;
-  const height = (handlers.length ? YH : YM) + H + 30;
+  (g.nodes || []).forEach((n, i) => { if (!pos[n.id]) pos[n.id] = {x: X0 + i * DX, y: YM}; });
+  for (const id in saved) {
+    if (pos[id] && saved[id] && typeof saved[id].x === 'number') pos[id] = {x: saved[id].x, y: saved[id].y};
+  }
+  return pos;
+}
 
-  const byId = {}; (g.nodes || []).forEach(n => byId[n.id] = n);
+function svgPoint(ev) {
+  const r = $('graph').querySelector('svg').getBoundingClientRect();
+  return {x: ev.clientX - r.left, y: ev.clientY - r.top};
+}
+
+function drawStudio() {
+  const g = clientGraph(studio.model);
+  // Drop positions for deleted nodes; default-place new ones.
+  const ids = new Set(g.nodes.map(n => n.id));
+  for (const id in studio.pos) if (!ids.has(id)) delete studio.pos[id];
+  const auto = layoutPositions(g, studio.pos);
+  g.nodes.forEach(n => { if (!studio.pos[n.id]) studio.pos[n.id] = auto[n.id]; });
+  $('graph').innerHTML = renderGraph(g, studio.pos, studio.sel);
+
+  const svg = $('graph').querySelector('svg');
+  svg.querySelectorAll('[data-port]').forEach(el => {
+    el.addEventListener('pointerdown', ev => {
+      ev.stopPropagation(); ev.preventDefault();
+      studio.connect = {from: el.getAttribute('data-id'), kind: el.getAttribute('data-port'), cur: svgPoint(ev)};
+    });
+  });
+  svg.querySelectorAll('g[data-id] rect').forEach(rect => {
+    rect.addEventListener('pointerdown', ev => {
+      const id = rect.parentNode.getAttribute('data-id');
+      studio.drag = {id, moved:false, sx:ev.clientX, sy:ev.clientY, ox:studio.pos[id].x, oy:studio.pos[id].y};
+      ev.preventDefault();
+    });
+  });
+  svg.querySelectorAll('[data-edge]').forEach(line => {
+    line.addEventListener('click', ev => {
+      ev.stopPropagation();
+      const [from, kind] = line.getAttribute('data-edge').split('|');
+      removeEdge(from, kind);
+    });
+  });
+}
+
+document.addEventListener('pointermove', ev => {
+  if (studio.drag) {
+    const d = studio.drag;
+    if (Math.abs(ev.clientX - d.sx) + Math.abs(ev.clientY - d.sy) > 3) d.moved = true;
+    studio.pos[d.id] = {x: Math.max(0, d.ox + (ev.clientX - d.sx)), y: Math.max(0, d.oy + (ev.clientY - d.sy))};
+    drawStudio();
+  } else if (studio.connect) {
+    studio.connect.cur = svgPoint(ev);
+    drawStudio();
+    drawTempWire();
+  }
+});
+document.addEventListener('pointerup', ev => {
+  if (studio.connect) {
+    const tgt = nodeUnder(ev);
+    if (tgt && tgt !== studio.connect.from) setEdge(studio.connect.from, studio.connect.kind, tgt);
+    studio.connect = null; drawStudio();
+  } else if (studio.drag) {
+    if (!studio.drag.moved) { studio.sel = studio.drag.id; renderEditor(); drawStudio(); }
+    studio.drag = null;
+  }
+});
+
+function drawTempWire() {
+  const svg = $('graph').querySelector('svg'); if (!svg || !studio.connect) return;
+  const a = studio.pos[studio.connect.from], c = studio.connect.cur;
+  const col = studio.connect.kind === 'fail' ? 'var(--bad)' : 'var(--ok)';
+  const ns = 'http://www.w3.org/2000/svg';
+  const ln = document.createElementNS(ns, 'line');
+  ln.setAttribute('x1', a.x + NODE_W/2); ln.setAttribute('y1', a.y + NODE_H/2);
+  ln.setAttribute('x2', c.x); ln.setAttribute('y2', c.y);
+  ln.setAttribute('stroke', col); ln.setAttribute('stroke-dasharray', '4 3'); ln.setAttribute('stroke-width', '2');
+  svg.appendChild(ln);
+}
+
+function nodeUnder(ev) {
+  let el = document.elementFromPoint(ev.clientX, ev.clientY);
+  while (el && el !== document.body) {
+    if (el.getAttribute && el.getAttribute('data-id')) return el.getAttribute('data-id');
+    el = el.parentNode;
+  }
+  return null;
+}
+
+// --- topology mutations ---
+function stepById(id) { return studio.model.steps.find(s => s.id === id); }
+
+function setEdge(from, port, to) {
+  const s = stepById(from); if (!s) return;
+  if (port === 'happy') { s.onSuccess = to; delete s.onComplete; }
+  else { s.onFailure = to; }
+  if (!studio.model.start) studio.model.start = from;
+}
+function removeEdge(from, kind) {
+  const s = stepById(from); if (!s) return;
+  if (kind === 'success') delete s.onSuccess;
+  else if (kind === 'complete') delete s.onComplete;
+  else if (kind === 'failure') delete s.onFailure;
+  drawStudio(); renderEditor();
+}
+
+function addNode(type) {
+  const base = type + '_';
+  let n = 1; while (stepById(base + n)) n++;
+  const id = base + n;
+  const step = {id, type};
+  if (type === 'source' || type === 'sink') { step.connector = ''; step.action = ''; }
+  studio.model.steps.push(step);
+  if (!studio.model.start && type === 'source') studio.model.start = id;
+  // Place it to the right of the current spread.
+  const xs = Object.values(studio.pos).map(p => p.x);
+  studio.pos[id] = {x: (xs.length ? Math.max(...xs) : 20) + 60, y: 30 + (type === 'sink' ? 0 : 0)};
+  studio.sel = id; drawStudio(); renderEditor();
+}
+
+function deleteNode(id) {
+  studio.model.steps = studio.model.steps.filter(s => s.id !== id);
+  studio.model.steps.forEach(s => {
+    ['onSuccess','onComplete','onFailure'].forEach(k => { if (s[k] === id) delete s[k]; });
+  });
+  if (studio.model.start === id) studio.model.start = (studio.model.steps[0] || {}).id || '';
+  delete studio.pos[id];
+  studio.sel = null; drawStudio(); renderEditor();
+}
+
+function renameStep(oldId, newId) {
+  newId = newId.trim(); if (!newId || newId === oldId) return;
+  if (stepById(newId)) { $('gerr').textContent = 'id "' + newId + '" already exists'; return; }
+  const s = stepById(oldId); s.id = newId;
+  studio.model.steps.forEach(x => ['onSuccess','onComplete','onFailure'].forEach(k => { if (x[k] === oldId) x[k] = newId; }));
+  if (studio.model.start === oldId) studio.model.start = newId;
+  studio.pos[newId] = studio.pos[oldId]; delete studio.pos[oldId];
+  studio.sel = newId; $('gerr').textContent = ''; drawStudio(); renderEditor();
+}
+
+// --- inline step editor (minimal; full schema-driven forms are Phase D) ---
+function renderEditor() {
+  const el = $('editor');
+  const s = studio.sel && stepById(studio.sel);
+  if (!s) { el.innerHTML = '<div class="hint">select a node to edit, or add one above</div>'; return; }
+  const row = (label, html) => `<div class="efield"><label>${esc(label)}</label>${html}</div>`;
+  const inp = (field, val) => `<input value="${esc(val ?? '')}" onchange="editField('${esc(s.id)}','${field}',this.value)">`;
+  const ta = (field, val) => `<textarea onchange="editField('${esc(s.id)}','${field}',this.value)">${esc(val ?? '')}</textarea>`;
+  let body = row('id', `<input value="${esc(s.id)}" onchange="renameStep('${esc(s.id)}',this.value)">`) +
+    row('type', `<span class="mono">${esc(s.type)}</span>`);
+  if (s.type === 'source' || s.type === 'sink') {
+    body += connectorPickers(s) + configEditor(s);
+  } else if (s.type === 'filter') {
+    body += row('path', inp('path', s.path)) +
+      row('op', `<select onchange="editField('${esc(s.id)}','op',this.value)">` +
+        CMP_OPS.map(o => `<option${o===s.op?' selected':''}>${o}</option>`).join('') + `</select>`) +
+      row('value (JSON)', inp('value', jsonStr(s.value)));
+  } else if (s.type === 'project') {
+    body += row('fields (JSON)', ta('fields', jsonStr(s.fields)));
+  } else if (s.type === 'coerce') {
+    body += row('rules (JSON)', ta('rules', jsonStr(s.rules)));
+  } else if (s.type === 'flatten') {
+    body += row('sep', inp('sep', s.sep));
+  } else if (s.type === 'aggregate') {
+    body += row('key', inp('key', s.key)) + row('aggs (JSON)', ta('aggs', jsonStr(s.aggs)));
+  }
+  // Happy-edge intent toggle (success vs complete) when a happy edge exists.
+  const happyTo = s.onSuccess || s.onComplete;
+  if (happyTo) {
+    const kind = s.onSuccess ? 'onSuccess' : 'onComplete';
+    body += row('happy edge', `<select onchange="setHappyKind('${esc(s.id)}',this.value)">` +
+      `<option value="onSuccess"${kind==='onSuccess'?' selected':''}>onSuccess → ${esc(happyTo)}</option>` +
+      `<option value="onComplete"${kind==='onComplete'?' selected':''}>onComplete → ${esc(happyTo)}</option></select>`);
+  }
+  body += `<div class="efield"><label></label><button class="ghost" onclick="deleteNode('${esc(s.id)}')">Delete node</button></div>`;
+  el.innerHTML = body;
+}
+
+function setHappyKind(id, kind) {
+  const s = stepById(id); const to = s.onSuccess || s.onComplete; if (!to) return;
+  delete s.onSuccess; delete s.onComplete; s[kind] = to; drawStudio(); renderEditor();
+}
+
+// editField writes a value back to the step. JSON-typed fields parse; a bad
+// value surfaces inline and is not committed.
+const JSON_FIELDS = new Set(['config','value','fields','rules','aggs']);
+function editField(id, field, val) {
+  const s = stepById(id); if (!s) return;
+  if (JSON_FIELDS.has(field)) {
+    if (val.trim() === '') { delete s[field]; $('gerr').textContent = ''; drawStudio(); return; }
+    try { s[field] = JSON.parse(val); $('gerr').textContent = ''; }
+    catch (e) { $('gerr').textContent = field + ': invalid JSON — ' + e.message; return; }
+  } else {
+    if (val === '') delete s[field]; else s[field] = val;
+  }
+  drawStudio();
+}
+
+function jsonStr(v) { return v === undefined || v === null ? '' : (typeof v === 'string' ? v : JSON.stringify(v)); }
+
+// --- connector pickers + schema-driven config form (Phase D, ADR-0018) ---
+function connectorPickers(s) {
+  const cats = Object.keys(studio.catalog).sort();
+  const opts = cats.slice();
+  if (s.type === 'source') opts.unshift('@webhook');
+  if (s.connector && !opts.includes(s.connector)) opts.push(s.connector); // preserve unknown/unpublished
+  const connSel = `<select onchange="setConnector('${esc(s.id)}',this.value)">` +
+    `<option value=""${!s.connector ? ' selected' : ''}>— choose —</option>` +
+    opts.map(c => `<option${c === s.connector ? ' selected' : ''}>${esc(c)}</option>`).join('') + `</select>`;
+
+  let actCtl;
+  const entry = studio.catalog[s.connector];
+  if (entry) {
+    const acts = Object.keys(entry.actions).filter(k => k.startsWith(s.type + '/')).map(k => k.slice(s.type.length + 1));
+    if (s.action && !acts.includes(s.action)) acts.push(s.action);
+    actCtl = `<select onchange="setAction('${esc(s.id)}',this.value)"><option value="">— choose —</option>` +
+      acts.map(a => `<option${a === s.action ? ' selected' : ''}>${esc(a)}</option>`).join('') + `</select>`;
+  } else { // @webhook or unpublished connector → free-text action, no schema
+    actCtl = `<input value="${esc(s.action ?? '')}" onchange="setAction('${esc(s.id)}',this.value)">`;
+  }
+  return `<div class="efield"><label>connector</label>${connSel}</div>` +
+         `<div class="efield"><label>action</label>${actCtl}</div>`;
+}
+function setConnector(id, val) {
+  const s = stepById(id); if (!s) return;
+  s.connector = val || '';
+  const e = studio.catalog[s.connector];
+  if (e && s.action && !e.actions[s.type + '/' + s.action]) s.action = ''; // action no longer valid
+  drawStudio(); renderEditor();
+}
+function setAction(id, val) { const s = stepById(id); if (!s) return; s.action = val || ''; drawStudio(); renderEditor(); }
+
+function actionSchema(s) { const e = studio.catalog[s.connector]; return e && e.actions[s.type + '/' + s.action]; }
+
+function configEditor(s) {
+  const schema = actionSchema(s);
+  if (schema && schema.type === 'object' && schema.properties) {
+    return `<div class="hint" style="margin-top:.5rem">config</div>` + schemaForm(s, schema, []);
+  }
+  // No schema (unknown/old connector, or none declared) → raw JSON fallback.
+  return `<div class="efield"><label>config (JSON)</label><textarea onchange="editField('${esc(s.id)}','config',this.value)">${esc(jsonStr(s.config))}</textarea></div>`;
+}
+
+function schemaForm(s, schema, path) {
+  const req = new Set(schema.required || []);
+  return Object.entries(schema.properties).map(([k, ps]) =>
+    schemaField(s, ps, path.concat(k), (ps.title || k) + (req.has(k) ? ' *' : ''))).join('');
+}
+
+function schemaField(s, ps, path, label) {
+  const key = path.join('.'); // nested keys addressed by dotted path (simple names)
+  const val = getCfg(s.config, path);
+  const on = (kind) => `data-id="${esc(s.id)}" data-path="${esc(key)}" data-kind="${kind}"`;
+  const field = (html) => `<div class="efield"><label>${esc(label)}</label>${html}</div>`;
+
+  if (ps['x-shift-secret']) {
+    const cur = (val && typeof val === 'object' && val['$secret']) ? val['$secret'] : '';
+    return field(`<select ${on('secret')} onchange="setCfgFrom(this)">` +
+      `<option value="">— none —</option>` +
+      studio.secrets.map(n => `<option${n === cur ? ' selected' : ''}>${esc(n)}</option>`).join('') +
+      (cur && !studio.secrets.includes(cur) ? `<option selected>${esc(cur)}</option>` : '') +
+      `</select> <span class="hint">secret ref</span>`);
+  }
+  if (Array.isArray(ps.enum)) {
+    return field(`<select ${on('string')} onchange="setCfgFrom(this)">` +
+      ps.enum.map(o => `<option${o === val ? ' selected' : ''}>${esc(o)}</option>`).join('') + `</select>`);
+  }
+  if (ps.type === 'boolean') {
+    return field(`<input type="checkbox" ${on('bool')} ${val ? 'checked' : ''} onchange="setCfgFrom(this)" style="flex:0">`);
+  }
+  if (ps.type === 'integer' || ps.type === 'number') {
+    return field(`<input type="number" ${on('number')} value="${esc(val ?? '')}" placeholder="${esc(ps.default ?? '')}" onchange="setCfgFrom(this)">`);
+  }
+  if (ps.type === 'object' && ps.properties) {
+    return `<div style="border-left:2px solid var(--line);padding-left:.6rem;margin:.2rem 0">` +
+      `<div class="hint">${esc(label)}</div>` + schemaForm(s, ps, path) + `</div>`;
+  }
+  if (ps.type === 'object') { // map / additionalProperties → raw JSON for this subtree
+    return field(`<textarea ${on('json')} onchange="setCfgFrom(this)">${esc(jsonStr(val))}</textarea>`);
+  }
+  return field(`<input ${on('string')} value="${esc(val ?? '')}" onchange="setCfgFrom(this)">`);
+}
+
+function getCfg(cfg, path) {
+  let c = cfg;
+  for (const k of path) { if (c == null || typeof c !== 'object') return undefined; c = c[k]; }
+  return c;
+}
+// setCfgFrom reads data-* off the control and writes into step.config by
+// path, pruning empties so absent fields don't clutter the document.
+function setCfgFrom(el) {
+  const s = stepById(el.getAttribute('data-id')); if (!s) return;
+  const path = el.getAttribute('data-path').split('.');
+  const kind = el.getAttribute('data-kind');
+  let val;
+  if (kind === 'bool') val = el.checked;
+  else if (kind === 'number') val = el.value === '' ? undefined : Number(el.value);
+  else if (kind === 'secret') val = el.value ? {'$secret': el.value} : undefined;
+  else if (kind === 'json') {
+    if (el.value.trim() === '') val = undefined;
+    else { try { val = JSON.parse(el.value); $('gerr').textContent = ''; } catch (e) { $('gerr').textContent = 'config: invalid JSON — ' + e.message; return; } }
+  } else val = el.value === '' ? undefined : el.value;
+  if (typeof s.config !== 'object' || s.config === null) s.config = {};
+  setDeep(s.config, path, val);
+  if (!Object.keys(s.config).length) delete s.config;
+  drawStudio();
+}
+function setDeep(obj, path, val) {
+  let c = obj;
+  for (let i = 0; i < path.length - 1; i++) {
+    if (typeof c[path[i]] !== 'object' || c[path[i]] === null) c[path[i]] = {};
+    c = c[path[i]];
+  }
+  const last = path[path.length - 1];
+  if (val === undefined) {
+    delete c[last];
+  } else { c[last] = val; }
+  // Prune now-empty ancestor objects.
+  for (let i = path.length - 2; i >= 0; i--) {
+    let p = obj; for (let j = 0; j < i; j++) p = p[path[j]];
+    if (p[path[i]] && typeof p[path[i]] === 'object' && !Object.keys(p[path[i]]).length) delete p[path[i]];
+  }
+}
+
+async function saveLayout() {
+  if (!studio.name || !studio.model) { alert('nothing to save'); return; }
+  return deployModel(true);
+}
+
+// deployModel serializes the editable model to a clean flow document and
+// PUTs it (a new draft). Server-side flowdoc validation is authoritative;
+// a 422 is surfaced inline rather than re-implemented here.
+async function deployModel(layoutOnly) {
+  if (!studio.name || !studio.model) return;
+  const m = studio.model;
+  const doc = {name: m.name || studio.name, layout: studio.pos};
+  if (m.start) doc.start = m.start;
+  doc.steps = m.steps.map(cleanStep);
+  try {
+    await api('/api/v1/flows/' + encodeURIComponent(studio.name),
+      {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(doc)});
+    $('gerr').textContent = '';
+    alert((layoutOnly ? 'Saved' : 'Deployed') + ' as a new draft version — publish it to keep.');
+    refresh();
+  } catch (e) { $('gerr').textContent = 'deploy rejected: ' + e.message; }
+}
+
+// cleanStep emits only the fields relevant to a step's type, dropping stale
+// keys left over from type changes so the document validates cleanly.
+function cleanStep(s) {
+  const out = {id: s.id, type: s.type};
+  if (s.type === 'source' || s.type === 'sink') {
+    out.connector = s.connector || ''; out.action = s.action || '';
+    if (s.config !== undefined) out.config = s.config;
+  } else if (s.type === 'filter') {
+    out.path = s.path || ''; out.op = s.op || 'eq';
+    if (s.value !== undefined) out.value = s.value;
+  } else if (s.type === 'project') { out.fields = s.fields || [];
+  } else if (s.type === 'coerce') { out.rules = s.rules || [];
+  } else if (s.type === 'flatten') { out.sep = s.sep || '';
+  } else if (s.type === 'aggregate') { out.key = s.key || ''; out.aggs = s.aggs || []; }
+  if (s.onSuccess) out.onSuccess = s.onSuccess;
+  if (s.onComplete) out.onComplete = s.onComplete;
+  if (s.onFailure) out.onFailure = s.onFailure;
+  return out;
+}
+
+function renderGraph(g, pos, sel) {
+  const W = NODE_W, H = NODE_H, X0 = 20;
+  const xs = Object.values(pos).map(p => p.x), ys = Object.values(pos).map(p => p.y);
+  const width = (xs.length ? Math.max(...xs) : X0) + W + X0;
+  const height = (ys.length ? Math.max(...ys) : 30) + H + 60;
+
   const edges = (g.edges || []).map(e => {
     const a = pos[e.from], b = pos[e.to]; if (!a || !b) return '';
     const col = e.kind === 'failure' ? 'var(--bad)' : 'var(--ok)';
     let x1, y1, x2, y2;
-    if (b.y > a.y) { x1 = a.x + W/2; y1 = a.y + H; x2 = b.x + W/2; y2 = b.y; }   // down to handler
-    else { x1 = a.x + W; y1 = a.y + H/2; x2 = b.x; y2 = b.y + H/2; }             // along the main row
-    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col}" stroke-width="2" marker-end="url(#arr-${e.kind==='failure'?'r':'g'})"/>`;
+    if (b.y > a.y) { x1 = a.x + W/2; y1 = a.y + H; x2 = b.x + W/2; y2 = b.y; }
+    else { x1 = a.x + W; y1 = a.y + H/2; x2 = b.x; y2 = b.y + H/2; }
+    // Wide transparent hit-line under the visible line for easy click-delete.
+    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="transparent" stroke-width="12" data-edge="${esc(e.from)}|${e.kind}" style="cursor:pointer"/>
+      <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col}" stroke-width="2" marker-end="url(#arr-${e.kind==='failure'?'r':'g'})" style="pointer-events:none"/>`;
   }).join('');
   const nodes = (g.nodes || []).map(n => {
     const p = pos[n.id]; if (!p) return '';
     const fill = NODE_FILL[n.type] || '#1b2230';
-    const sub = n.connector ? esc(n.connector + '/' + (n.action||'')) : esc(n.type);
-    return `<g><rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="8" fill="${fill}" stroke="var(--line)"/>
-      <text x="${p.x+10}" y="${p.y+21}" fill="var(--text)" font-size="13" font-weight="600">${esc(n.id)}</text>
-      <text x="${p.x+10}" y="${p.y+38}" fill="var(--dim)" font-size="11">${sub}</text></g>`;
+    const sub = n.connector ? esc((n.connector||'?') + '/' + (n.action||'?')) : esc(n.type);
+    const selStroke = sel === n.id ? 'var(--accent,#5b8cff)' : 'var(--line)';
+    return `<g data-id="${esc(n.id)}">
+      <rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="8" fill="${fill}" stroke="${selStroke}" stroke-width="${sel===n.id?2:1}" style="cursor:grab"/>
+      <text x="${p.x+10}" y="${p.y+21}" fill="var(--text)" font-size="13" font-weight="600" style="pointer-events:none">${esc(n.id)}</text>
+      <text x="${p.x+10}" y="${p.y+38}" fill="var(--dim)" font-size="11" style="pointer-events:none">${sub}</text>
+      <circle data-id="${esc(n.id)}" data-port="happy" cx="${p.x+W}" cy="${p.y+H/2}" r="6" fill="var(--ok)" style="cursor:crosshair"/>
+      <circle data-id="${esc(n.id)}" data-port="fail" cx="${p.x+W/2}" cy="${p.y+H}" r="6" fill="var(--bad)" style="cursor:crosshair"/></g>`;
   }).join('');
   const arrow = c => `<marker id="arr-${c[0]}" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto">
     <path d="M0,0 L6,3 L0,6 Z" fill="${c==='green'?'var(--ok)':'var(--bad)'}"/></marker>`;
-  return `<svg width="${width}" height="${height}" style="max-width:none">
+  return `<svg width="${width}" height="${height}" style="max-width:none;touch-action:none">
     <defs>${arrow('green')}${arrow('red')}</defs>${edges}${nodes}</svg>`;
 }
 

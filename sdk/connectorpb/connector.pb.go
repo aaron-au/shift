@@ -149,6 +149,166 @@ func (x *HandshakeResponse) GetSinkActions() []string {
 	return nil
 }
 
+type DescribeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DescribeRequest) Reset() {
+	*x = DescribeRequest{}
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DescribeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DescribeRequest) ProtoMessage() {}
+
+func (x *DescribeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DescribeRequest.ProtoReflect.Descriptor instead.
+func (*DescribeRequest) Descriptor() ([]byte, []int) {
+	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{2}
+}
+
+type DescribeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Version       string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	Actions       []*ActionSchema        `protobuf:"bytes,3,rep,name=actions,proto3" json:"actions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DescribeResponse) Reset() {
+	*x = DescribeResponse{}
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DescribeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DescribeResponse) ProtoMessage() {}
+
+func (x *DescribeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DescribeResponse.ProtoReflect.Descriptor instead.
+func (*DescribeResponse) Descriptor() ([]byte, []int) {
+	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *DescribeResponse) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *DescribeResponse) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *DescribeResponse) GetActions() []*ActionSchema {
+	if x != nil {
+		return x.Actions
+	}
+	return nil
+}
+
+// ActionSchema describes one action's config document.
+type ActionSchema struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Action string                 `protobuf:"bytes,1,opt,name=action,proto3" json:"action,omitempty"`
+	// "source" or "sink".
+	Direction string `protobuf:"bytes,2,opt,name=direction,proto3" json:"direction,omitempty"`
+	// JSON Schema (draft-07 subset) for this action's config; empty when
+	// the connector declares none (builder falls back to a raw JSON editor).
+	ConfigSchema  []byte `protobuf:"bytes,3,opt,name=config_schema,json=configSchema,proto3" json:"config_schema,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ActionSchema) Reset() {
+	*x = ActionSchema{}
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ActionSchema) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ActionSchema) ProtoMessage() {}
+
+func (x *ActionSchema) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ActionSchema.ProtoReflect.Descriptor instead.
+func (*ActionSchema) Descriptor() ([]byte, []int) {
+	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ActionSchema) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *ActionSchema) GetDirection() string {
+	if x != nil {
+		return x.Direction
+	}
+	return ""
+}
+
+func (x *ActionSchema) GetConfigSchema() []byte {
+	if x != nil {
+		return x.ConfigSchema
+	}
+	return nil
+}
+
 type HealthRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -157,7 +317,7 @@ type HealthRequest struct {
 
 func (x *HealthRequest) Reset() {
 	*x = HealthRequest{}
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[2]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -169,7 +329,7 @@ func (x *HealthRequest) String() string {
 func (*HealthRequest) ProtoMessage() {}
 
 func (x *HealthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[2]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -182,7 +342,7 @@ func (x *HealthRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthRequest.ProtoReflect.Descriptor instead.
 func (*HealthRequest) Descriptor() ([]byte, []int) {
-	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{2}
+	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{5}
 }
 
 type HealthResponse struct {
@@ -195,7 +355,7 @@ type HealthResponse struct {
 
 func (x *HealthResponse) Reset() {
 	*x = HealthResponse{}
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[3]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -207,7 +367,7 @@ func (x *HealthResponse) String() string {
 func (*HealthResponse) ProtoMessage() {}
 
 func (x *HealthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[3]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -220,7 +380,7 @@ func (x *HealthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResponse.ProtoReflect.Descriptor instead.
 func (*HealthResponse) Descriptor() ([]byte, []int) {
-	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{3}
+	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *HealthResponse) GetOk() bool {
@@ -248,7 +408,7 @@ type PullRequest struct {
 
 func (x *PullRequest) Reset() {
 	*x = PullRequest{}
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[4]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -260,7 +420,7 @@ func (x *PullRequest) String() string {
 func (*PullRequest) ProtoMessage() {}
 
 func (x *PullRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[4]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -273,7 +433,7 @@ func (x *PullRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PullRequest.ProtoReflect.Descriptor instead.
 func (*PullRequest) Descriptor() ([]byte, []int) {
-	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{4}
+	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *PullRequest) GetAction() string {
@@ -305,7 +465,7 @@ type Frame struct {
 
 func (x *Frame) Reset() {
 	*x = Frame{}
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[5]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -317,7 +477,7 @@ func (x *Frame) String() string {
 func (*Frame) ProtoMessage() {}
 
 func (x *Frame) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[5]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -330,7 +490,7 @@ func (x *Frame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Frame.ProtoReflect.Descriptor instead.
 func (*Frame) Descriptor() ([]byte, []int) {
-	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{5}
+	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *Frame) GetPayload() []byte {
@@ -360,7 +520,7 @@ type PushMessage struct {
 
 func (x *PushMessage) Reset() {
 	*x = PushMessage{}
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[6]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -372,7 +532,7 @@ func (x *PushMessage) String() string {
 func (*PushMessage) ProtoMessage() {}
 
 func (x *PushMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[6]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -385,7 +545,7 @@ func (x *PushMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushMessage.ProtoReflect.Descriptor instead.
 func (*PushMessage) Descriptor() ([]byte, []int) {
-	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{6}
+	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *PushMessage) GetMsg() isPushMessage_Msg {
@@ -439,7 +599,7 @@ type PushOpen struct {
 
 func (x *PushOpen) Reset() {
 	*x = PushOpen{}
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[7]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -451,7 +611,7 @@ func (x *PushOpen) String() string {
 func (*PushOpen) ProtoMessage() {}
 
 func (x *PushOpen) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[7]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -464,7 +624,7 @@ func (x *PushOpen) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushOpen.ProtoReflect.Descriptor instead.
 func (*PushOpen) Descriptor() ([]byte, []int) {
-	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{7}
+	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *PushOpen) GetAction() string {
@@ -490,7 +650,7 @@ type PushSummary struct {
 
 func (x *PushSummary) Reset() {
 	*x = PushSummary{}
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[8]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -502,7 +662,7 @@ func (x *PushSummary) String() string {
 func (*PushSummary) ProtoMessage() {}
 
 func (x *PushSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[8]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -515,7 +675,7 @@ func (x *PushSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushSummary.ProtoReflect.Descriptor instead.
 func (*PushSummary) Descriptor() ([]byte, []int) {
-	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{8}
+	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *PushSummary) GetRecords() int64 {
@@ -533,7 +693,7 @@ type ShutdownRequest struct {
 
 func (x *ShutdownRequest) Reset() {
 	*x = ShutdownRequest{}
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[9]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -545,7 +705,7 @@ func (x *ShutdownRequest) String() string {
 func (*ShutdownRequest) ProtoMessage() {}
 
 func (x *ShutdownRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[9]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -558,7 +718,7 @@ func (x *ShutdownRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShutdownRequest.ProtoReflect.Descriptor instead.
 func (*ShutdownRequest) Descriptor() ([]byte, []int) {
-	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{9}
+	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{12}
 }
 
 type ShutdownResponse struct {
@@ -569,7 +729,7 @@ type ShutdownResponse struct {
 
 func (x *ShutdownResponse) Reset() {
 	*x = ShutdownResponse{}
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[10]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -581,7 +741,7 @@ func (x *ShutdownResponse) String() string {
 func (*ShutdownResponse) ProtoMessage() {}
 
 func (x *ShutdownResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_connector_v1_connector_proto_msgTypes[10]
+	mi := &file_proto_connector_v1_connector_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -594,7 +754,7 @@ func (x *ShutdownResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShutdownResponse.ProtoReflect.Descriptor instead.
 func (*ShutdownResponse) Descriptor() ([]byte, []int) {
-	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{10}
+	return file_proto_connector_v1_connector_proto_rawDescGZIP(), []int{13}
 }
 
 var File_proto_connector_v1_connector_proto protoreflect.FileDescriptor
@@ -609,7 +769,16 @@ const file_proto_connector_v1_connector_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x03 \x01(\tR\aversion\x12%\n" +
 	"\x0esource_actions\x18\x04 \x03(\tR\rsourceActions\x12!\n" +
-	"\fsink_actions\x18\x05 \x03(\tR\vsinkActions\"\x0f\n" +
+	"\fsink_actions\x18\x05 \x03(\tR\vsinkActions\"\x11\n" +
+	"\x0fDescribeRequest\"|\n" +
+	"\x10DescribeResponse\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\tR\aversion\x12:\n" +
+	"\aactions\x18\x03 \x03(\v2 .shift.connector.v1.ActionSchemaR\aactions\"i\n" +
+	"\fActionSchema\x12\x16\n" +
+	"\x06action\x18\x01 \x01(\tR\x06action\x12\x1c\n" +
+	"\tdirection\x18\x02 \x01(\tR\tdirection\x12#\n" +
+	"\rconfig_schema\x18\x03 \x01(\fR\fconfigSchema\"\x0f\n" +
 	"\rHealthRequest\"8\n" +
 	"\x0eHealthResponse\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x12\x16\n" +
@@ -630,10 +799,11 @@ const file_proto_connector_v1_connector_proto_rawDesc = "" +
 	"\vPushSummary\x12\x18\n" +
 	"\arecords\x18\x01 \x01(\x03R\arecords\"\x11\n" +
 	"\x0fShutdownRequest\"\x12\n" +
-	"\x10ShutdownResponse2\x9f\x03\n" +
+	"\x10ShutdownResponse2\xf6\x03\n" +
 	"\tConnector\x12X\n" +
 	"\tHandshake\x12$.shift.connector.v1.HandshakeRequest\x1a%.shift.connector.v1.HandshakeResponse\x12O\n" +
-	"\x06Health\x12!.shift.connector.v1.HealthRequest\x1a\".shift.connector.v1.HealthResponse\x12D\n" +
+	"\x06Health\x12!.shift.connector.v1.HealthRequest\x1a\".shift.connector.v1.HealthResponse\x12U\n" +
+	"\bDescribe\x12#.shift.connector.v1.DescribeRequest\x1a$.shift.connector.v1.DescribeResponse\x12D\n" +
 	"\x04Pull\x12\x1f.shift.connector.v1.PullRequest\x1a\x19.shift.connector.v1.Frame0\x01\x12J\n" +
 	"\x04Push\x12\x1f.shift.connector.v1.PushMessage\x1a\x1f.shift.connector.v1.PushSummary(\x01\x12U\n" +
 	"\bShutdown\x12#.shift.connector.v1.ShutdownRequest\x1a$.shift.connector.v1.ShutdownResponseB+Z)github.com/aaron-au/shift/sdk/connectorpbb\x06proto3"
@@ -650,38 +820,44 @@ func file_proto_connector_v1_connector_proto_rawDescGZIP() []byte {
 	return file_proto_connector_v1_connector_proto_rawDescData
 }
 
-var file_proto_connector_v1_connector_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_proto_connector_v1_connector_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_proto_connector_v1_connector_proto_goTypes = []any{
 	(*HandshakeRequest)(nil),  // 0: shift.connector.v1.HandshakeRequest
 	(*HandshakeResponse)(nil), // 1: shift.connector.v1.HandshakeResponse
-	(*HealthRequest)(nil),     // 2: shift.connector.v1.HealthRequest
-	(*HealthResponse)(nil),    // 3: shift.connector.v1.HealthResponse
-	(*PullRequest)(nil),       // 4: shift.connector.v1.PullRequest
-	(*Frame)(nil),             // 5: shift.connector.v1.Frame
-	(*PushMessage)(nil),       // 6: shift.connector.v1.PushMessage
-	(*PushOpen)(nil),          // 7: shift.connector.v1.PushOpen
-	(*PushSummary)(nil),       // 8: shift.connector.v1.PushSummary
-	(*ShutdownRequest)(nil),   // 9: shift.connector.v1.ShutdownRequest
-	(*ShutdownResponse)(nil),  // 10: shift.connector.v1.ShutdownResponse
+	(*DescribeRequest)(nil),   // 2: shift.connector.v1.DescribeRequest
+	(*DescribeResponse)(nil),  // 3: shift.connector.v1.DescribeResponse
+	(*ActionSchema)(nil),      // 4: shift.connector.v1.ActionSchema
+	(*HealthRequest)(nil),     // 5: shift.connector.v1.HealthRequest
+	(*HealthResponse)(nil),    // 6: shift.connector.v1.HealthResponse
+	(*PullRequest)(nil),       // 7: shift.connector.v1.PullRequest
+	(*Frame)(nil),             // 8: shift.connector.v1.Frame
+	(*PushMessage)(nil),       // 9: shift.connector.v1.PushMessage
+	(*PushOpen)(nil),          // 10: shift.connector.v1.PushOpen
+	(*PushSummary)(nil),       // 11: shift.connector.v1.PushSummary
+	(*ShutdownRequest)(nil),   // 12: shift.connector.v1.ShutdownRequest
+	(*ShutdownResponse)(nil),  // 13: shift.connector.v1.ShutdownResponse
 }
 var file_proto_connector_v1_connector_proto_depIdxs = []int32{
-	7,  // 0: shift.connector.v1.PushMessage.open:type_name -> shift.connector.v1.PushOpen
-	5,  // 1: shift.connector.v1.PushMessage.frame:type_name -> shift.connector.v1.Frame
-	0,  // 2: shift.connector.v1.Connector.Handshake:input_type -> shift.connector.v1.HandshakeRequest
-	2,  // 3: shift.connector.v1.Connector.Health:input_type -> shift.connector.v1.HealthRequest
-	4,  // 4: shift.connector.v1.Connector.Pull:input_type -> shift.connector.v1.PullRequest
-	6,  // 5: shift.connector.v1.Connector.Push:input_type -> shift.connector.v1.PushMessage
-	9,  // 6: shift.connector.v1.Connector.Shutdown:input_type -> shift.connector.v1.ShutdownRequest
-	1,  // 7: shift.connector.v1.Connector.Handshake:output_type -> shift.connector.v1.HandshakeResponse
-	3,  // 8: shift.connector.v1.Connector.Health:output_type -> shift.connector.v1.HealthResponse
-	5,  // 9: shift.connector.v1.Connector.Pull:output_type -> shift.connector.v1.Frame
-	8,  // 10: shift.connector.v1.Connector.Push:output_type -> shift.connector.v1.PushSummary
-	10, // 11: shift.connector.v1.Connector.Shutdown:output_type -> shift.connector.v1.ShutdownResponse
-	7,  // [7:12] is the sub-list for method output_type
-	2,  // [2:7] is the sub-list for method input_type
-	2,  // [2:2] is the sub-list for extension type_name
-	2,  // [2:2] is the sub-list for extension extendee
-	0,  // [0:2] is the sub-list for field type_name
+	4,  // 0: shift.connector.v1.DescribeResponse.actions:type_name -> shift.connector.v1.ActionSchema
+	10, // 1: shift.connector.v1.PushMessage.open:type_name -> shift.connector.v1.PushOpen
+	8,  // 2: shift.connector.v1.PushMessage.frame:type_name -> shift.connector.v1.Frame
+	0,  // 3: shift.connector.v1.Connector.Handshake:input_type -> shift.connector.v1.HandshakeRequest
+	5,  // 4: shift.connector.v1.Connector.Health:input_type -> shift.connector.v1.HealthRequest
+	2,  // 5: shift.connector.v1.Connector.Describe:input_type -> shift.connector.v1.DescribeRequest
+	7,  // 6: shift.connector.v1.Connector.Pull:input_type -> shift.connector.v1.PullRequest
+	9,  // 7: shift.connector.v1.Connector.Push:input_type -> shift.connector.v1.PushMessage
+	12, // 8: shift.connector.v1.Connector.Shutdown:input_type -> shift.connector.v1.ShutdownRequest
+	1,  // 9: shift.connector.v1.Connector.Handshake:output_type -> shift.connector.v1.HandshakeResponse
+	6,  // 10: shift.connector.v1.Connector.Health:output_type -> shift.connector.v1.HealthResponse
+	3,  // 11: shift.connector.v1.Connector.Describe:output_type -> shift.connector.v1.DescribeResponse
+	8,  // 12: shift.connector.v1.Connector.Pull:output_type -> shift.connector.v1.Frame
+	11, // 13: shift.connector.v1.Connector.Push:output_type -> shift.connector.v1.PushSummary
+	13, // 14: shift.connector.v1.Connector.Shutdown:output_type -> shift.connector.v1.ShutdownResponse
+	9,  // [9:15] is the sub-list for method output_type
+	3,  // [3:9] is the sub-list for method input_type
+	3,  // [3:3] is the sub-list for extension type_name
+	3,  // [3:3] is the sub-list for extension extendee
+	0,  // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_proto_connector_v1_connector_proto_init() }
@@ -689,7 +865,7 @@ func file_proto_connector_v1_connector_proto_init() {
 	if File_proto_connector_v1_connector_proto != nil {
 		return
 	}
-	file_proto_connector_v1_connector_proto_msgTypes[6].OneofWrappers = []any{
+	file_proto_connector_v1_connector_proto_msgTypes[9].OneofWrappers = []any{
 		(*PushMessage_Open)(nil),
 		(*PushMessage_Frame)(nil),
 	}
@@ -699,7 +875,7 @@ func file_proto_connector_v1_connector_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_connector_v1_connector_proto_rawDesc), len(file_proto_connector_v1_connector_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

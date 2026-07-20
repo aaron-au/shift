@@ -25,8 +25,26 @@ func Connector() sdk.Connector {
 		Sinks: map[string]func() sdk.SinkAction{
 			"discard": func() sdk.SinkAction { return &discard{} },
 		},
+		Schemas: map[string][]byte{
+			"gen": []byte(genSchema),
+			// discard takes no config; omit (builder shows a raw editor).
+		},
 	}
 }
+
+// genSchema is the JSON Schema (draft-07 subset) for SourceConfig.
+const genSchema = `{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "title": "Synthetic source",
+  "required": ["records"],
+  "properties": {
+    "records": {"type": "integer", "title": "Records to emit"},
+    "groups": {"type": "integer", "title": "Distinct group cardinality", "default": 1000},
+    "batch_records": {"type": "integer", "title": "Records per batch", "default": 1024},
+    "delay_ms": {"type": "integer", "title": "Delay per batch (ms)", "default": 0}
+  }
+}`
 
 // SourceConfig configures the gen source.
 type SourceConfig struct {

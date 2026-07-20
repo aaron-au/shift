@@ -87,6 +87,68 @@ lowest-priority, "last option" capability.
   metadata** (vs name-based policy) + **per-tenant** capability scope
   (ADR-0015/0016); http-sink "extreme" benchmark profile.
 
+### M5.5 — Studio Builder (ADR-0018, ADR-0019) — before M6
+Promote the read-only studio (M5d-3) into a visual **builder**: canvas
+drag-drop flow authoring inside an "operating-system-lite" windowed UI shell
+(left dock of tools; each opens its own draggable app window, so the builder
+canvas and the task-runner list sit side by side). Decided 2026-07-20: canvas
+editing (not form-list), **schema-driven** config forms via connector
+config-schema discovery baked into the signed manifest (ADR-0018, path A — hub
+serves schema, builder needs no runner online), **stay vanilla / no build
+step** (dependency-free `go:embed`'d JS/CSS — ADR-0019). Backend write path
+already exists (`deployFlow`/`publish`/`execute` + JSONB draft→published), so
+most work is UI + the schema chain.
+
+Build order (each lands green through `make check`; A is the long pole and
+unblocks D; B+C can run in parallel with A since they need no schema):
+- **Phase 0 — ADRs + plan ✅ 2026-07-20.** ADR-0018 (config-schema discovery,
+  signed manifest v2), ADR-0019 (canvas builder + windowed shell), this entry.
+- **Phase A — schema in the manifest chain ✅ 2026-07-20.** `sdk.Connector.Schemas`
+  per-action JSON Schema; proto `Describe` RPC (+ regen `connectorpb`);
+  `consign` v2 signed message binding a descriptor digest (byte-identical v1
+  when absent → old signatures valid); connectors self-describe (`<bin>
+  describe` CLI + `host.ExtractDescriptor`); publisher (shift-bootstrap)
+  extracts + signs + uploads the descriptor; hub registry stores `descriptor`
+  (migration 0008) + serves it on `list`/`resolve`, verify fail-closed;
+  `http`/`gen` reference schemas. e2e runs the full v2 supply chain.
+- **Phase B — canvas foundation ✅ 2026-07-20.** Interactive canvas (drag-move);
+  node positions persisted via optional presentational `flowdoc.Document.Layout`
+  (ignored by validation/`Plan`/engine).
+- **Phase C — graph editing ✅ 2026-07-20.** Add/delete nodes, drag-to-connect
+  outcome edges (onSuccess/onComplete/onFailure), delete edges; model-based
+  editor (linear docs lowered client-side); serialize → `deployFlow`; 422
+  surfaced inline; validation stays server-authoritative.
+- **Phase D — schema-driven config panel ✅ 2026-07-20.** Connector/action
+  pickers + typed config forms from the served descriptor; `x-shift-secret`
+  fields → secret picker inserting `{"$secret":...}`; raw-JSON fallback.
+- **Phase E — windowed shell + publish/rollback ✅ 2026-07-20.** OS-lite dock +
+  draggable/resizable singleton windows (Overview/Flows/Builder/Tasks/
+  Executions/Runners/Connectors/Secrets; layout browser-only in localStorage);
+  builder is a window (canvas + tasks side by side); Flows version picker for
+  publish/rollback + run-now. Test-run overlay (ADR-0014 `Sampler`) deferred.
+- **Phase F — docs ✅ 2026-07-20.** `docs/dev/03-connector-protocol.md` (Describe
+  + descriptor + signing v2) and `docs/dev/06-hub.md` (builder + shell) updated
+  in lockstep; ADRs 0018/0019; this plan. Browser-automation e2e of the JS
+  builder is out of scope (no browser/build harness by doctrine); the
+  serialize→deploy→publish→execute path is covered by the existing hub e2e +
+  manual curl smoke of builder-shaped documents.
+
+**M5.5 complete 2026-07-20.** Studio is a functional canvas builder in an
+OS-lite windowed shell, on schema-driven config from signed connector
+descriptors — vanilla, no build step.
+
+**Deferred — Studio visual polish (its own series, later; not a blocker for
+M6).** Functional-first was deliberate. Backlog: window snapping (left/right
++ middle drag bar) & maximise; merge close/minimise into one control; labels
++ helper text; per-window help button; styled scrollbars; a visible
+resize-corner indicator; a proper **light + dark colour palette** (currently
+dark-only). UI-only, still vanilla unless a bundler ADR supersedes.
+
+**Related / future (not in M5.5):** persistent encrypted runner-local
+credential store synced from the hub, with the hub sourcing KEK/secret material
+from an external key vault (provider TBD) — an evolution of ADR-0010's
+pluggable KEK, tracked separately (noted in ADR-0018).
+
 ### M6 — Enterprise hardening
 Observability (OpenTelemetry + Prometheus), audit log, billing aggregation from telemetry, rate limiting, connector marketplace plumbing, migration tooling (OpenAPI importer), benchmark-vs-incumbent collateral.
 

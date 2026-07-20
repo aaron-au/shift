@@ -183,8 +183,55 @@ graph — `flowdoc.GraphView()`: nodes (steps, with role main|handler) + typed
 outcome edges (success / complete / failure). Data-free, like everything
 hub-side. The dashboard renders it as an SVG in a modal (green success/
 complete edges, red failure edges to the dead-letter handler), reachable
-from each flow row's "Graph" button. Read-only; authoring a graph in the
-browser and the test-run capture overlay are later studio work.
+from each flow row's "Graph" button.
+
+**Builder canvas (M5.5 Phase B+C, ADR-0019).** The modal is a full editor.
+
+- *Model.* On open, the dashboard loads the document (not `GraphView`) and
+  normalizes it to an editable **graph-form model** (`toModel`): linear-form
+  docs are lowered client-side to the same `source→ops→sink` step chain the
+  runner builds, so both forms edit identically. Topology renders from a
+  locally computed `clientGraph(model)` so edits show instantly with no
+  round-trip.
+- *Layout (Phase B).* Node positions live in the document's presentational
+  `layout` field (`flowdoc.Document.Layout`, step-id → `{x,y}`, ignored by
+  validation/`Plan`/engine; stale/missing keys fall back to auto-layout).
+  Nodes drag (pointer deltas, 1:1 unscaled SVG).
+- *Editing (Phase C).* Add nodes (source/sink + the five transforms); delete
+  nodes (edges referencing them are cleared); wire edges by dragging a node's
+  happy (▸, right) or fail (▾, bottom) port onto another node — happy sets
+  `onSuccess` (a per-node toggle switches to `onComplete`), fail sets
+  `onFailure`; click an edge to remove it. A minimal inline editor edits each
+  step's fields (typed fields for transforms).
+- *Config forms (Phase D, ADR-0018).* On open the editor also loads
+  `GET /api/v1/connectors` and decodes each connector's signed **descriptor**
+  (base64 canonical bytes) into a catalog `{connector: {action: schema}}`.
+  A connector step then gets a connector dropdown (catalog names + `@webhook`
+  for sources) and an action dropdown (descriptor actions filtered by
+  direction); the action's JSON Schema drives a typed config form — strings,
+  numbers, booleans, enums, nested objects; `x-shift-secret` fields render a
+  **secret picker** from `GET /api/v1/secrets` that inserts a
+  `{"$secret":"name"}` ref. No schema (unpublished/v1 connector, `@webhook`,
+  or none declared) falls back to a raw-JSON config editor.
+- *Deploy.* "Deploy draft"/"Save layout" serialize the model with
+  `cleanStep` (only type-relevant fields, dropping stale keys) and `PUT`
+  `deployFlow` as a new draft. **`pkg/flowdoc` validation stays
+  authoritative** — a 422 is surfaced inline (`#gerr`), never re-implemented
+  client-side.
+
+**Windowed shell (Phase E, ADR-0019).** The dashboard is an "OS-lite" desktop:
+a left **dock** of tools, each toggling a draggable/resizable/closable
+**window** (`initShell` + a small window manager). One singleton window per
+tool — Overview, Flows, Builder, Tasks, Executions, Runners, Connectors,
+Secrets — each wrapping the original render target by its unchanged id, so
+`refresh()` and the render functions are untouched. The builder is now a
+**window** (not a modal), so the canvas and the Tasks list sit side by side.
+Window open/position/size/z-order is **browser-only** state
+(`localStorage`, never sent to the hub — it is not flow data); first run
+opens Overview+Flows+Tasks. Flows rows carry a **version picker + Publish**
+(publish or roll back to any version 1..latest via
+`POST .../versions/{v}/publish`) and Run. The test-run capture overlay
+(studio→runner read, ADR-0014) remains deferred.
 
 ## Dashboard
 

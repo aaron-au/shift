@@ -227,6 +227,10 @@ type ConnectorManifest struct {
 	Signature    string `json:"signature"`     // base64 Ed25519
 	PublisherKey string `json:"publisher_key"` // base64 Ed25519 public key
 	SizeBytes    int64  `json:"size_bytes"`
+	// Descriptor is base64 of the exact signed action-catalog bytes
+	// (ADR-0018); empty for pre-descriptor (v1) artifacts. The runner
+	// re-hashes it to verify the v2 manifest; it does not parse it.
+	Descriptor string `json:"descriptor,omitempty"`
 }
 
 // ResolveConnector asks the hub for the named connector's manifest for

@@ -51,6 +51,43 @@ sink (`docs/bench-M2.md`).
   quirk handled in `host.SinkStream.sendErr`: a failed `Send` reports
   `io.EOF` and the real error is parked on `CloseAndRecv`.
 
+- **Describe** (`Describe`): unary. Returns the connector's identity plus,
+  per action, its `direction` (`source`/`sink`) and an optional
+  `config_schema` (JSON Schema, draft-07 subset). It is **not on the
+  execution path** — the runner never calls it; publisher tooling does, to
+  extract the signed *descriptor* (see below). Config stays opaque `bytes`
+  on `Pull`/`Push`; `Describe` only publishes its *shape*.
+
+## Config schemas & the descriptor (ADR-0018)
+
+So the studio builder can render a typed config form per action, a
+connector optionally declares a JSON Schema per action and the shape is
+carried, **signed**, to the hub:
+
+1. **Author** sets `Connector.Schemas[action] = []byte(jsonSchema)`.
+   Secret-typed string fields carry `"x-shift-secret": true` so the builder
+   offers a secret picker (`{"$secret":"name"}`). Optional — an action with
+   no schema falls back to a raw-JSON editor.
+2. **Descriptor.** `sdk.BuildDescriptor` + `sdk.CanonicalDescriptor` render
+   a deterministic JSON blob (actions sorted by `direction,action`) — the
+   *descriptor*. Two ways to extract it, both identical bytes:
+   `<binary> describe` (a non-serving CLI mode of `sdk.Serve`, no gRPC), or
+   `host.ExtractDescriptor` (spawns + calls the `Describe` RPC).
+3. **Signing.** The publisher hashes the descriptor and folds the digest
+   into `consign.Manifest.DescriptorDigest`; `Message()` then renders the
+   **v2** signed form (`shift-connector-artifact-v2` + `descriptor-sha256`
+   line). A manifest with no descriptor renders the byte-identical **v1**
+   form, so pre-descriptor artifacts and signatures stay valid.
+4. **Hub.** Upload carries the descriptor as base64 `X-Shift-Descriptor`;
+   the hub re-hashes it, verifies the v2 signature fail-closed, and stores
+   it verbatim (`connector_versions.descriptor`). `resolve`/`list` serve it
+   back as base64 (byte-exact) so the runner re-verifies v2 and the builder
+   renders forms **with no runner online**. The hub never parses it.
+
+The descriptor is opaque signed bytes end to end — treated exactly like the
+artifact digest, never re-marshaled (re-marshaling would change the bytes
+and break the digest).
+
 ## Writing a connector
 
 Implement one or both interfaces (they mirror the engine's stream
@@ -77,6 +114,7 @@ func main() {
         Name: "myconn", Version: "0.1.0",
         Sources: map[string]func() sdk.SourceAction{"read": newRead},
         Sinks:   map[string]func() sdk.SinkAction{"write": newWrite},
+        Schemas: map[string][]byte{"read": []byte(readSchema)}, // optional (ADR-0018)
     })
     ...
 }

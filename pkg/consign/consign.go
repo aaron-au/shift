@@ -27,14 +27,31 @@ type Manifest struct {
 	OS      string   // GOOS
 	Arch    string   // GOARCH
 	Digest  [32]byte // SHA-256 of the artifact bytes
+
+	// DescriptorDigest is the SHA-256 of the connector's opaque descriptor
+	// blob (action config schemas — ADR-0018). Zero when the artifact
+	// carries no descriptor, in which case the canonical message stays the
+	// byte-identical v1 form and existing signatures remain valid. When
+	// non-zero the message bumps to the v2 form so the descriptor is signed
+	// alongside identity + artifact digest.
+	DescriptorDigest [32]byte
 }
 
+// zeroDigest is the sentinel for "no descriptor" (v1 artifacts).
+var zeroDigest [32]byte
+
 // Message renders the canonical signing payload. The leading version
-// tag makes the scheme evolvable: a future format bumps the tag and
-// old signatures cannot be replayed against it.
+// tag makes the scheme evolvable: a format bump changes the tag and old
+// signatures cannot be replayed against it. A manifest without a
+// descriptor digest renders the original v1 form so pre-descriptor
+// artifacts stay verifiable; one with a descriptor digest renders v2.
 func (m Manifest) Message() []byte {
-	return fmt.Appendf(nil, "shift-connector-artifact-v1\n%s\n%s\n%s/%s\nsha256:%x\n",
-		m.Name, m.Version, m.OS, m.Arch, m.Digest)
+	if m.DescriptorDigest == zeroDigest {
+		return fmt.Appendf(nil, "shift-connector-artifact-v1\n%s\n%s\n%s/%s\nsha256:%x\n",
+			m.Name, m.Version, m.OS, m.Arch, m.Digest)
+	}
+	return fmt.Appendf(nil, "shift-connector-artifact-v2\n%s\n%s\n%s/%s\nsha256:%x\ndescriptor-sha256:%x\n",
+		m.Name, m.Version, m.OS, m.Arch, m.Digest, m.DescriptorDigest)
 }
 
 // Sign returns a 64-byte detached Ed25519 signature over the manifest.

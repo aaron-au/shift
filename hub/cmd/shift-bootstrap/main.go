@@ -16,6 +16,7 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -29,6 +30,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -301,6 +303,15 @@ func (h *hubAPI) uploadArtifact(path, name, version string, priv ed25519.Private
 		return err
 	}
 	m := consign.Manifest{Name: name, Version: version, OS: runtime.GOOS, Arch: runtime.GOARCH, Digest: digest}
+
+	// Extract the connector's action-catalog descriptor (ADR-0018) so the
+	// studio builder can render config forms. Done by shelling out to the
+	// connectors-module tool (the hub module must not import sdk/host) —
+	// best-effort: a binary that can't be described is signed v1.
+	descriptor := extractDescriptor(path)
+	if len(descriptor) > 0 {
+		m.DescriptorDigest = sha256.Sum256(descriptor)
+	}
 	sig := consign.Sign(priv, m)
 
 	url := fmt.Sprintf("%s/api/v1/connectors/%s/versions/%s?os=%s&arch=%s", h.base, name, version, m.OS, m.Arch)
@@ -311,6 +322,9 @@ func (h *hubAPI) uploadArtifact(path, name, version string, priv ed25519.Private
 	req.Header.Set("Authorization", "Bearer "+h.token)
 	req.Header.Set("X-Shift-Publisher-Key", "bundle-dev")
 	req.Header.Set("X-Shift-Signature", base64.StdEncoding.EncodeToString(sig))
+	if len(descriptor) > 0 {
+		req.Header.Set("X-Shift-Descriptor", base64.StdEncoding.EncodeToString(descriptor))
+	}
 	resp, err := h.client.Do(req)
 	if err != nil {
 		return err
@@ -320,6 +334,23 @@ func (h *hubAPI) uploadArtifact(path, name, version string, priv ed25519.Private
 		return fmt.Errorf("upload: %s", readBody(resp))
 	}
 	return nil
+}
+
+// extractDescriptor runs `<connector> describe` to obtain its canonical
+// action-catalog bytes (ADR-0018). Shelling out keeps the hub module free
+// of any sdk/host dependency. Best-effort: on failure the artifact is
+// signed v1 (schema-less).
+func extractDescriptor(path string) []byte {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "describe").Output() //nolint:gosec // G204: path is the bundle's own connector binary being published
+	if err != nil {
+		log.Printf("warn: descriptor extraction for %s failed, publishing v1: %v", path, err)
+		return nil
+	}
+	// describeToStdout appends one trailing newline; strip it so the bytes
+	// match the connector's canonical descriptor exactly (digest stability).
+	return bytes.TrimSuffix(out, []byte("\n"))
 }
 
 func loadOrCreatePublisherKey(path string) (ed25519.PrivateKey, ed25519.PublicKey, error) {

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -32,6 +33,51 @@ func TestMessageGolden(t *testing.T) {
 	got := string(testManifest().Message())
 	if got != want {
 		t.Fatalf("canonical message changed:\ngot  %q\nwant %q", got, want)
+	}
+}
+
+// TestMessageGoldenV2 freezes the descriptor-bearing canonical payload.
+// Same rule as v1: breaking this breaks every v2 signature in every
+// registry — bump the tag, never edit the format.
+func TestMessageGoldenV2(t *testing.T) {
+	dd := sha256.Sum256([]byte("descriptor-bytes"))
+	m := testManifest()
+	m.DescriptorDigest = dd
+	// Derive the expected descriptor hex from the digest so a hand-typed
+	// mistake can't mask a real format change; the fixed prefix still
+	// freezes the layout.
+	want := fmt.Sprintf("shift-connector-artifact-v2\nhttp\n1.2.0\nlinux/arm64\n"+
+		"sha256:6521df166eb07efaf36eba5b6bedefd9d6a252e9c80bab1c99653700ec71473c\n"+
+		"descriptor-sha256:%x\n", dd)
+	if got := string(m.Message()); got != want {
+		t.Fatalf("v2 canonical message changed:\ngot  %q\nwant %q", got, want)
+	}
+}
+
+// TestDescriptorTamper proves the descriptor digest is covered by the
+// signature: flipping it must fail verification.
+func TestDescriptorTamper(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := testManifest()
+	m.DescriptorDigest = sha256.Sum256([]byte("descriptor-bytes"))
+	sig := Sign(priv, m)
+	if err := Verify(pub, m, sig); err != nil {
+		t.Fatalf("Verify() on valid v2 signature: %v", err)
+	}
+	m.DescriptorDigest[0] ^= 0xff
+	if err := Verify(pub, m, sig); !errors.Is(err, ErrBadSignature) {
+		t.Errorf("tampered descriptor: Verify() = %v, want ErrBadSignature", err)
+	}
+	// A v1 signature must not verify a v2 manifest (cross-version replay).
+	v1 := testManifest()
+	v1sig := Sign(priv, v1)
+	v2 := testManifest()
+	v2.DescriptorDigest = sha256.Sum256([]byte("x"))
+	if err := Verify(pub, v2, v1sig); !errors.Is(err, ErrBadSignature) {
+		t.Errorf("v1 sig on v2 manifest: Verify() = %v, want ErrBadSignature", err)
 	}
 }
 

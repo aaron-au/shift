@@ -25,8 +25,39 @@ func Connector() sdk.Connector {
 		Sinks: map[string]func() sdk.SinkAction{
 			"post": func() sdk.SinkAction { return &postSink{} },
 		},
+		// get and post share commonConfig, so one schema covers both
+		// (ADR-0018). Secret-typed fields carry x-shift-secret so the
+		// studio builder offers a secret picker for them.
+		Schemas: map[string][]byte{
+			"get":  []byte(configSchema),
+			"post": []byte(configSchema),
+		},
 	}
 }
+
+// configSchema is the JSON Schema (draft-07 subset) for commonConfig.
+const configSchema = `{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "title": "HTTP request",
+  "required": ["url"],
+  "properties": {
+    "url": {"type": "string", "title": "URL", "description": "Target URL (http/https)"},
+    "headers": {"type": "object", "title": "Headers", "additionalProperties": {"type": "string"}},
+    "auth": {
+      "type": "object",
+      "title": "Authentication",
+      "properties": {
+        "type": {"type": "string", "title": "Type", "enum": ["", "basic", "bearer"]},
+        "user": {"type": "string", "title": "User"},
+        "pass": {"type": "string", "title": "Password", "x-shift-secret": true},
+        "token": {"type": "string", "title": "Token", "x-shift-secret": true}
+      }
+    },
+    "allow_local": {"type": "boolean", "title": "Allow local/loopback targets", "default": false},
+    "timeout_seconds": {"type": "integer", "title": "Timeout (seconds)", "default": 300}
+  }
+}`
 
 // commonConfig is shared by source and sink.
 type commonConfig struct {

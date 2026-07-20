@@ -23,10 +23,16 @@ import (
 type fakeHub struct {
 	t        *testing.T
 	pub      ed25519.PublicKey
+	priv     ed25519.PrivateKey
 	manifest consign.Manifest
 	sig      []byte
 	artifact []byte
 	fetches  atomic.Int64
+
+	// descriptor, when set, is served in resolve and (via serveDescriptor)
+	// exercises the v2 signed-manifest path.
+	descriptor      []byte
+	serveDescriptor func() []byte
 
 	// mutators for failure-mode tests
 	serveKey      func() []byte // publisher key returned by /publisher-keys
@@ -44,19 +50,24 @@ func newFakeHub(t *testing.T) (*fakeHub, *httptest.Server) {
 		Name: "gen", Version: "1.0.0", OS: runtime.GOOS, Arch: runtime.GOARCH,
 		Digest: sha256.Sum256(artifact),
 	}
-	f := &fakeHub{t: t, pub: pub, manifest: m, sig: consign.Sign(priv, m), artifact: artifact}
+	f := &fakeHub{t: t, pub: pub, priv: priv, manifest: m, sig: consign.Sign(priv, m), artifact: artifact}
 	f.serveKey = func() []byte { return f.pub }
 	f.serveArtifact = func() []byte { return f.artifact }
+	f.serveDescriptor = func() []byte { return f.descriptor }
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/connectors/gen/resolve", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		resp := map[string]any{
 			"name": m.Name, "version": m.Version, "os": m.OS, "arch": m.Arch,
-			"digest":        hex.EncodeToString(m.Digest[:]),
+			"digest":        hex.EncodeToString(f.manifest.Digest[:]),
 			"signature":     base64.StdEncoding.EncodeToString(f.sig),
 			"publisher_key": base64.StdEncoding.EncodeToString(f.serveKey()),
 			"size_bytes":    len(f.artifact),
-		})
+		}
+		if d := f.serveDescriptor(); len(d) > 0 {
+			resp["descriptor"] = base64.StdEncoding.EncodeToString(d)
+		}
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	mux.HandleFunc("GET /api/v1/connectors/gen/versions/1.0.0/artifact", func(w http.ResponseWriter, _ *http.Request) {
 		f.fetches.Add(1)
@@ -188,6 +199,38 @@ func TestEnsureBadSignature(t *testing.T) {
 	}
 	if hub.fetches.Load() != 0 {
 		t.Fatal("artifact fetched despite bad signature")
+	}
+}
+
+// signV2 attaches a descriptor and re-signs the manifest with the v2
+// message so the artifact exercises the descriptor path (ADR-0018).
+func (f *fakeHub) signV2(descriptor []byte) {
+	f.descriptor = descriptor
+	f.manifest.DescriptorDigest = sha256.Sum256(descriptor)
+	f.sig = consign.Sign(f.priv, f.manifest)
+}
+
+func TestEnsureV2DescriptorVerifies(t *testing.T) {
+	hub, srv := newFakeHub(t)
+	hub.signV2([]byte(`{"name":"gen","version":"1.0.0","actions":[{"action":"gen","direction":"source"}]}`))
+	s := newStore(t, srv, [][]byte{hub.pub})
+	if _, err := s.Ensure(t.Context(), "gen"); err != nil {
+		t.Fatalf("v2 descriptor artifact rejected: %v", err)
+	}
+}
+
+func TestEnsureV2DescriptorTamperFailsClosed(t *testing.T) {
+	hub, srv := newFakeHub(t)
+	hub.signV2([]byte(`{"actions":[{"action":"gen","direction":"source"}]}`))
+	// Serve a different descriptor than the one signed: digest mismatch
+	// must break the v2 signature.
+	hub.serveDescriptor = func() []byte { return []byte(`{"actions":[{"action":"evil","direction":"sink"}]}`) }
+	s := newStore(t, srv, [][]byte{hub.pub})
+	if _, err := s.Ensure(t.Context(), "gen"); !errors.Is(err, consign.ErrBadSignature) {
+		t.Fatalf("tampered descriptor: err = %v, want ErrBadSignature", err)
+	}
+	if hub.fetches.Load() != 0 {
+		t.Fatal("artifact fetched despite tampered descriptor")
 	}
 }
 

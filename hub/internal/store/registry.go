@@ -31,6 +31,10 @@ type ConnectorVersion struct {
 	PublisherKey []byte    `json:"publisher_key"` // joined for runner verification
 	SizeBytes    int64     `json:"size_bytes"`
 	Created      time.Time `json:"created_at"`
+	// Descriptor is the opaque signed action-catalog blob (ADR-0018),
+	// nil for pre-descriptor (v1) artifacts. Stored and served verbatim;
+	// the hub never parses it.
+	Descriptor []byte `json:"-"`
 }
 
 // AddPublisherKey registers a trusted Ed25519 public key.
@@ -99,7 +103,7 @@ func (s *Store) PublisherKeyByName(ctx context.Context, name string) (PublisherK
 // digest) + version row, one transaction. The API layer verifies the
 // signature BEFORE calling this — the store trusts its caller here and
 // stays dumb SQL.
-func (s *Store) PutConnectorVersion(ctx context.Context, name, version, osName, arch string, digest, signature []byte, publisherKeyID string, data []byte) error {
+func (s *Store) PutConnectorVersion(ctx context.Context, name, version, osName, arch string, digest, signature []byte, publisherKeyID string, data, descriptor []byte) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -119,11 +123,11 @@ func (s *Store) PutConnectorVersion(ctx context.Context, name, version, osName, 
 		return err
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO connector_versions (connector_id, version, os, arch, digest, signature, publisher_key_id)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7)
+		`INSERT INTO connector_versions (connector_id, version, os, arch, digest, signature, publisher_key_id, descriptor)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		 ON CONFLICT (connector_id, version, os, arch)
-		 DO UPDATE SET digest = $5, signature = $6, publisher_key_id = $7, created_at = now(), yanked_at = NULL`,
-		connectorID, version, osName, arch, digest, signature, publisherKeyID); err != nil {
+		 DO UPDATE SET digest = $5, signature = $6, publisher_key_id = $7, descriptor = $8, created_at = now(), yanked_at = NULL`,
+		connectorID, version, osName, arch, digest, signature, publisherKeyID, descriptor); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -133,7 +137,7 @@ func (s *Store) PutConnectorVersion(ctx context.Context, name, version, osName, 
 // registry-latest not semver). Yanked versions and revoked keys are
 // excluded — fail closed.
 func (s *Store) ResolveConnector(ctx context.Context, name, version, osName, arch string) (ConnectorVersion, error) {
-	q := `SELECT c.name, v.version, v.os, v.arch, v.digest, v.signature, k.public_key, b.size_bytes, v.created_at
+	q := `SELECT c.name, v.version, v.os, v.arch, v.digest, v.signature, k.public_key, b.size_bytes, v.created_at, v.descriptor
 	        FROM connector_versions v
 	        JOIN connectors c ON c.id = v.connector_id
 	        JOIN publisher_keys k ON k.id = v.publisher_key_id AND k.revoked_at IS NULL
@@ -149,7 +153,7 @@ func (s *Store) ResolveConnector(ctx context.Context, name, version, osName, arc
 	var cv ConnectorVersion
 	err := s.pool.QueryRow(ctx, q, args...).Scan(
 		&cv.Name, &cv.Version, &cv.OS, &cv.Arch, &cv.Digest, &cv.Signature,
-		&cv.PublisherKey, &cv.SizeBytes, &cv.Created)
+		&cv.PublisherKey, &cv.SizeBytes, &cv.Created, &cv.Descriptor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ConnectorVersion{}, ErrNotFound
 	}
@@ -178,7 +182,7 @@ func (s *Store) ConnectorBlob(ctx context.Context, digest []byte) ([]byte, error
 func (s *Store) Connectors(ctx context.Context) ([]ConnectorVersion, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT DISTINCT ON (c.name)
-		        c.name, v.version, v.os, v.arch, v.digest, v.signature, k.public_key, b.size_bytes, v.created_at
+		        c.name, v.version, v.os, v.arch, v.digest, v.signature, k.public_key, b.size_bytes, v.created_at, v.descriptor
 		   FROM connector_versions v
 		   JOIN connectors c ON c.id = v.connector_id
 		   JOIN publisher_keys k ON k.id = v.publisher_key_id
@@ -193,7 +197,7 @@ func (s *Store) Connectors(ctx context.Context) ([]ConnectorVersion, error) {
 	for rows.Next() {
 		var cv ConnectorVersion
 		if err := rows.Scan(&cv.Name, &cv.Version, &cv.OS, &cv.Arch, &cv.Digest,
-			&cv.Signature, &cv.PublisherKey, &cv.SizeBytes, &cv.Created); err != nil {
+			&cv.Signature, &cv.PublisherKey, &cv.SizeBytes, &cv.Created, &cv.Descriptor); err != nil {
 			return nil, err
 		}
 		out = append(out, cv)

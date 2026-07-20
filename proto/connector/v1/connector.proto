@@ -16,6 +16,11 @@ service Connector {
   // Health reports liveness of the connector process.
   rpc Health(HealthRequest) returns (HealthResponse);
 
+  // Describe reports the connector's actions and their config schemas.
+  // Called by the publisher tooling at publish time to extract a signed
+  // descriptor (ADR-0018); not on the execution hot path.
+  rpc Describe(DescribeRequest) returns (DescribeResponse);
+
   // Pull streams batches from a source action until exhausted.
   rpc Pull(PullRequest) returns (stream Frame);
 
@@ -40,6 +45,24 @@ message HandshakeResponse {
   // Action names this connector exposes.
   repeated string source_actions = 4;
   repeated string sink_actions = 5;
+}
+
+message DescribeRequest {}
+
+message DescribeResponse {
+  string name = 1;
+  string version = 2;
+  repeated ActionSchema actions = 3;
+}
+
+// ActionSchema describes one action's config document.
+message ActionSchema {
+  string action = 1;
+  // "source" or "sink".
+  string direction = 2;
+  // JSON Schema (draft-07 subset) for this action's config; empty when
+  // the connector declares none (builder falls back to a raw JSON editor).
+  bytes config_schema = 3;
 }
 
 message HealthRequest {}

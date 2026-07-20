@@ -20,6 +20,8 @@ Hub-and-spoke Integration Platform as a Service. Goal: a provisionable, enterpri
 11. Trigger & ingress: two planes — control (hub↔runner, metadata only: lease, config sync, execution reports) and data (ingress→runner, runner→source; **payload never touches the hub**). Webhooks are push triggers on a runner (`@webhook` source, async), reported to the hub as metadata; runner APIs are a public, authenticated surface (Basic first, pluggable). (ADR-0016)
 12. Test-mode data capture: an engine `Sampler` hook takes a bounded, secret-redacted, runner-only, ephemeral sample of each stage's output; hub never sees payload. (ADR-0014)
 13. Custom code (designed, build deferred): two tiers — `starlark` inline (fuel-metered, no I/O) + `python` out-of-process (connector subprocess, wheels-only, signed bundles). Step types `starlark`/`python`/`subflow` reserved. (ADR-0017)
+14. Connector config-schema discovery: connectors declare a per-action JSON Schema (`sdk.Connector.Schemas`); it travels as a signed, opaque **descriptor** blob bound into `consign.Manifest` (v2 message; byte-identical v1 when absent). Connectors self-describe (`<binary> describe` + `Describe` RPC); the hub stores + serves it (`resolve`/`list`) so the studio builder renders config forms with **no runner online and no payload plane**. Hub never parses it; verify fail-closed. (ADR-0018)
+15. Studio is a **canvas builder** in an "OS-lite" **windowed shell** (dock + draggable/resizable app windows; builder + tasks side by side), authored in **vanilla JS, no build step**. Node positions ride in an optional presentational `flowdoc.Document.Layout` (ignored by validation/`Plan`/engine). `pkg/flowdoc` validation stays authoritative — the builder surfaces 422s, never re-implements them. Visual polish is a deferred series. (ADR-0019)
 
 ## Doctrine (non-negotiable for new code)
 
@@ -57,8 +59,11 @@ engine/     Streaming data plane (M1, done — see docs/bench-M1.md for proven n
   mem/        watermark Governor (TryReserve fail == spill signal)
   cmd/shift-bench/  the proof harness; run with -max-rss to enforce exit criteria
 sdk/        Connector SDK (M2, done — see docs/bench-M2.md: 1.32x subprocess overhead):
-  sdk.go/server.go   author side: SourceAction/SinkAction + Serve (UDS, token auth, graceful stop)
-  host/              runner side: Launch/Attach, handshake-as-readiness, stream.Source/Sink adapters
+  sdk.go/server.go   author side: SourceAction/SinkAction + Serve (UDS, token auth, graceful stop);
+                     M5.5: per-action config Schemas + Describe RPC + `describe` CLI mode → signed
+                     descriptor (ADR-0018)
+  host/              runner side: Launch/Attach, handshake-as-readiness, stream.Source/Sink adapters,
+                     Describe/ExtractDescriptor (publisher-side schema extraction)
   sdktest/           in-process wire-protocol test harness for connector authors
   connectorpb/       generated from proto/connector/v1 (make proto to regenerate)
 connectors/ Connector binaries: gen (bench/test), http (streaming GET source, NDJSON POST sink, SSRF guard)
@@ -74,12 +79,16 @@ hub/        hubd (M4a+M4b, done — see docs/dev/06-hub.md): Postgres store (sch
   internal/{oidcauth,kek,secrets,scheduler}   runner registration, flow versions + publish workflow, OIDC
   cmd/{hubd,shift-bootstrap}                  realm + tenancy, envelope secrets, connector registry (signed),
                                               HA scheduler (exactly-once), embedded dashboard on :8400;
-                                              e2e: crash recovery, exactly-once schedules, signed artifacts,
-                                              secrets-never-at-rest (hub/e2e)
+                                              M5.5: studio = canvas flow builder in an OS-lite windowed
+                                              shell + connector config-schema discovery served for
+                                              schema-driven config forms (ADR-0018/0019, vanilla no-build);
+                                              e2e: crash recovery, exactly-once schedules, signed artifacts
+                                              (v2 descriptor supply chain), secrets-never-at-rest (hub/e2e)
 pkg/        flowdoc (flow document model + validation + {"$secret":...} refs — shared hub↔runner;
               M5a: step graph with outcome edges — onSuccess/onComplete happy path, onFailure
-              error handler — linear source/ops/sink kept as sugar; both lower to one Plan; ADR-0013),
-            consign (Ed25519 artifact signing — hub/runner/CLI), buildinfo
+              error handler — linear source/ops/sink kept as sugar; both lower to one Plan; ADR-0013;
+              M5.5: optional presentational Document.Layout for builder node positions, ADR-0019),
+            consign (Ed25519 artifact signing + v2 descriptor digest — hub/runner/CLI; ADR-0018), buildinfo
 deploy/     compose.dev.yml (dev Postgres), compose.yml + docker/ + dex/ (the M4b "just runs"
             bundle — `make up`; see deploy/README.md for the exit-criterion walkthrough)
 _archive/   The complete 2025 prototype (hub, runner, scripts, compose, legacy docs). Read-only reference.

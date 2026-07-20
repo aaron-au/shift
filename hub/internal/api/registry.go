@@ -59,6 +59,18 @@ func (a *api) uploadConnector(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("X-Shift-Publisher-Key and base64 X-Shift-Signature headers are required"))
 		return
 	}
+	// Optional descriptor (ADR-0018): the canonical action-catalog bytes,
+	// base64 in a header. When present the signature must cover the v2
+	// manifest (identity + artifact digest + descriptor digest); absent
+	// keeps the byte-identical v1 form.
+	var descriptor []byte
+	if h := r.Header.Get("X-Shift-Descriptor"); h != "" {
+		descriptor, err = base64.StdEncoding.DecodeString(h)
+		if err != nil || len(descriptor) == 0 {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("X-Shift-Descriptor must be non-empty base64"))
+			return
+		}
+	}
 
 	body := http.MaxBytesReader(w, r.Body, defaultMaxArtifact)
 	hasher := sha256.New()
@@ -88,12 +100,15 @@ func (a *api) uploadConnector(w http.ResponseWriter, r *http.Request) {
 
 	m := consign.Manifest{Name: name, Version: version, OS: osName, Arch: arch}
 	copy(m.Digest[:], hasher.Sum(nil))
+	if len(descriptor) > 0 {
+		m.DescriptorDigest = sha256.Sum256(descriptor)
+	}
 	if err := consign.Verify(key.PublicKey, m, sig); err != nil {
 		writeErr(w, http.StatusForbidden, err)
 		return
 	}
 
-	if err := a.st.PutConnectorVersion(r.Context(), name, version, osName, arch, m.Digest[:], sig, key.ID, data); err != nil {
+	if err := a.st.PutConnectorVersion(r.Context(), name, version, osName, arch, m.Digest[:], sig, key.ID, data, descriptor); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -174,7 +189,7 @@ func (a *api) listConnectors(w http.ResponseWriter, r *http.Request) {
 }
 
 func connectorManifestJSON(cv store.ConnectorVersion) map[string]any {
-	return map[string]any{
+	m := map[string]any{
 		"name": cv.Name, "version": cv.Version, "os": cv.OS, "arch": cv.Arch,
 		"digest":        hex.EncodeToString(cv.Digest),
 		"signature":     base64.StdEncoding.EncodeToString(cv.Signature),
@@ -182,6 +197,14 @@ func connectorManifestJSON(cv store.ConnectorVersion) map[string]any {
 		"size_bytes":    cv.SizeBytes,
 		"created_at":    cv.Created,
 	}
+	// Descriptor (ADR-0018): base64 of the exact signed canonical bytes so
+	// the runner re-digests them byte-for-byte to verify the v2 manifest,
+	// and the studio builder decodes them to render config forms. Omitted
+	// for pre-descriptor (v1) artifacts.
+	if len(cv.Descriptor) > 0 {
+		m["descriptor"] = base64.StdEncoding.EncodeToString(cv.Descriptor)
+	}
+	return m
 }
 
 // --- publisher keys ----------------------------------------------------------

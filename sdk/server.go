@@ -32,7 +32,14 @@ const tokenMetadataKey = "shift-token"
 // Serve runs the connector until the host asks it to stop (Shutdown RPC or
 // SIGTERM/SIGINT). It reads the socket path and token from the environment
 // per the spawn contract. Call it from the connector's main; it blocks.
+//
+// As a special non-serving mode, `<binary> describe` prints the connector's
+// canonical descriptor (ADR-0018) to stdout and exits — used by publisher
+// tooling to extract action config schemas without a gRPC spawn.
 func Serve(c Connector) error {
+	if len(os.Args) > 1 && os.Args[1] == "describe" {
+		return describeToStdout(c)
+	}
 	socket := os.Getenv(EnvSocket)
 	token := os.Getenv(EnvToken)
 	if socket == "" || token == "" {
@@ -52,6 +59,18 @@ func Serve(c Connector) error {
 		}
 	}()
 	return ServeOn(socket, token, c)
+}
+
+// describeToStdout writes the connector's canonical descriptor to stdout.
+func describeToStdout(c Connector) error {
+	b, err := CanonicalDescriptor(BuildDescriptor(c))
+	if err != nil {
+		return fmt.Errorf("sdk: describe: %w", err)
+	}
+	if _, err := os.Stdout.Write(append(b, '\n')); err != nil {
+		return fmt.Errorf("sdk: describe: %w", err)
+	}
+	return nil
 }
 
 // ServeOn is Serve with explicit socket and token (used by sdktest to run
@@ -144,6 +163,19 @@ func (s *server) Handshake(_ context.Context, req *connectorpb.HandshakeRequest)
 
 func (s *server) Health(context.Context, *connectorpb.HealthRequest) (*connectorpb.HealthResponse, error) {
 	return &connectorpb.HealthResponse{Ok: true}, nil
+}
+
+func (s *server) Describe(_ context.Context, _ *connectorpb.DescribeRequest) (*connectorpb.DescribeResponse, error) {
+	d := BuildDescriptor(s.c)
+	resp := &connectorpb.DescribeResponse{Name: d.Name, Version: d.Version}
+	for _, a := range d.Actions {
+		resp.Actions = append(resp.Actions, &connectorpb.ActionSchema{
+			Action:       a.Action,
+			Direction:    a.Direction,
+			ConfigSchema: a.ConfigSchema,
+		})
+	}
+	return resp, nil
 }
 
 func (s *server) Pull(req *connectorpb.PullRequest, stream grpc.ServerStreamingServer[connectorpb.Frame]) error {

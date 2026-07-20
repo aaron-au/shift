@@ -200,6 +200,46 @@ func (p *Process) Health(ctx context.Context) error {
 	return nil
 }
 
+// Describe fetches the connector's action catalog with config schemas and
+// assembles a sdk.Descriptor (ADR-0018). Publisher tooling calls this at
+// publish time; it is not on the execution path.
+func (p *Process) Describe(ctx context.Context) (sdk.Descriptor, error) {
+	resp, err := p.client.Describe(p.withToken(ctx), &connectorpb.DescribeRequest{})
+	if err != nil {
+		return sdk.Descriptor{}, fmt.Errorf("host: describe: %w", err)
+	}
+	d := sdk.Descriptor{Name: resp.GetName(), Version: resp.GetVersion()}
+	for _, a := range resp.GetActions() {
+		ad := sdk.ActionDescriptor{Action: a.GetAction(), Direction: a.GetDirection()}
+		if len(a.GetConfigSchema()) > 0 {
+			ad.ConfigSchema = a.GetConfigSchema()
+		}
+		d.Actions = append(d.Actions, ad)
+	}
+	return d, nil
+}
+
+// ExtractDescriptor spawns the connector binary, calls Describe, and
+// returns its canonical descriptor bytes (ready to hash + sign + upload
+// per ADR-0018) alongside the parsed descriptor. Used by publisher
+// tooling; it fully launches and closes the connector.
+func ExtractDescriptor(ctx context.Context, binary string) ([]byte, sdk.Descriptor, error) {
+	p, err := Launch(ctx, binary, LaunchOptions{})
+	if err != nil {
+		return nil, sdk.Descriptor{}, err
+	}
+	defer func() { _ = p.Close() }()
+	d, err := p.Describe(ctx)
+	if err != nil {
+		return nil, sdk.Descriptor{}, err
+	}
+	canon, err := sdk.CanonicalDescriptor(d)
+	if err != nil {
+		return nil, sdk.Descriptor{}, fmt.Errorf("host: canonicalize descriptor: %w", err)
+	}
+	return canon, d, nil
+}
+
 // Close shuts the connector down: graceful Shutdown RPC, then SIGKILL
 // after a grace period, then reaps the process and socket directory.
 func (p *Process) Close() error {

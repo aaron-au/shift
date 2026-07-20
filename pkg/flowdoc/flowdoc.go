@@ -33,6 +33,19 @@ type Document struct {
 	// Graph form.
 	Steps []Step `json:"steps,omitempty"`
 	Start string `json:"start,omitempty"` // entry step id ("" = the sole source step)
+
+	// Layout is presentational only: the studio builder's saved node
+	// positions, keyed by step id (ADR-0019). It is ignored by Validate,
+	// Plan/buildPlan, and the engine — a stale or missing key just means a
+	// node falls back to auto-layout. Round-trips in the stored JSONB
+	// document; never affects execution.
+	Layout map[string]Point `json:"layout,omitempty"`
+}
+
+// Point is a node's saved canvas position (presentational, ADR-0019).
+type Point struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
 }
 
 // Step is one node in the flow graph (v2). Every node — connector or
