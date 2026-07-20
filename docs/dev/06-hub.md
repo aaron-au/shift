@@ -146,6 +146,14 @@ as body (cap 128 MiB). The hub verifies the consign manifest signature
 key-trust + signature + digest fail-closed (see 04-runner.md). Blobs
 live in Postgres, content-addressed, deduped; "latest" = newest publish.
 
+**Capability policy (M5d, ADR-0015).** A per-deployment allow/deny list
+(`SHIFT_HUB_CONNECTOR_ALLOW` / `SHIFT_HUB_CONNECTOR_DENY`) restricts which
+connectors flows may use: a deploy referencing a disallowed connector is
+rejected (422), and disallowed connectors are hidden from listing and
+return 404 on resolve — cloud hubs hide dangerous connectors "not even
+visible." Empty (self-hosted default) allows everything. Name-based and
+hub-wide today; capability metadata and per-tenant scope are later adds.
+
 ## Dashboard
 
 `GET /` serves the embedded single-file page (runner pattern): overview

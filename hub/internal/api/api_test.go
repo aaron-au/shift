@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aaron-au/shift/hub/internal/api"
+	"github.com/aaron-au/shift/hub/internal/connpolicy"
 	"github.com/aaron-au/shift/hub/internal/pgtest"
 	"github.com/aaron-au/shift/hub/internal/store"
 )
@@ -69,6 +70,42 @@ func call(t *testing.T, method, url, token, body string, out any) int {
 const goodFlow = `{"name":"orders",
   "source":{"connector":"gen","action":"gen","config":{"records":10}},
   "sink":{"connector":"gen","action":"discard"}}`
+
+// TestConnectorPolicy: a restricted hub rejects a deploy that uses a
+// disallowed connector (422) and hides it from resolution (404).
+func TestConnectorPolicy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs postgres")
+	}
+	st, err := store.Open(t.Context(), pgtest.DSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	h, err := api.Handler(st, api.Options{
+		AdminToken:      adminToken,
+		ConnectorPolicy: connpolicy.Parse("", "gen"), // deny gen
+		LeaseTTL:        2 * time.Second,
+		LeasePoll:       20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	// Deploy of a flow that uses the denied connector is rejected.
+	if code := call(t, "PUT", srv.URL+"/api/v1/flows/orders", adminToken, goodFlow, nil); code != 422 {
+		t.Fatalf("deploy with denied connector = %d, want 422", code)
+	}
+	// The denied connector is hidden from resolution (as if absent).
+	if code := call(t, "GET", srv.URL+"/api/v1/connectors/gen/resolve", adminToken, "", nil); code != 404 {
+		t.Fatalf("resolve denied connector = %d, want 404", code)
+	}
+}
 
 func TestAuthRealms(t *testing.T) {
 	if testing.Short() {

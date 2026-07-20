@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/aaron-au/shift/hub/internal/secrets"
 	"github.com/aaron-au/shift/hub/internal/store"
@@ -77,6 +78,25 @@ func (a *api) rotateKEK(w http.ResponseWriter, r *http.Request) {
 // reference in the document names an existing secret. Metadata check
 // only — nothing is decrypted. A later delete is caught at execution
 // with a clear task failure instead.
+// checkConnectorPolicy rejects a deploy that references any connector the
+// hub's per-deployment capability policy disallows (cloud hubs hide
+// dangerous connectors). No-op when the hub is unrestricted (self-hosted).
+func (a *api) checkConnectorPolicy(doc *flowdoc.Document) error {
+	if !a.opts.ConnectorPolicy.Restricted() {
+		return nil
+	}
+	var blocked []string
+	for _, name := range doc.Connectors() {
+		if !a.opts.ConnectorPolicy.Allowed(name) {
+			blocked = append(blocked, name)
+		}
+	}
+	if len(blocked) > 0 {
+		return fmt.Errorf("connector(s) not permitted on this hub: %s", strings.Join(blocked, ", "))
+	}
+	return nil
+}
+
 func (a *api) checkSecretRefs(r *http.Request, doc *flowdoc.Document) error {
 	refs, err := doc.SecretRefs()
 	if err != nil {

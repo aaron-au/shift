@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/aaron-au/shift/hub/internal/api"
+	"github.com/aaron-au/shift/hub/internal/connpolicy"
 	"github.com/aaron-au/shift/hub/internal/kek"
 	"github.com/aaron-au/shift/hub/internal/oidcauth"
 	"github.com/aaron-au/shift/hub/internal/scheduler"
@@ -44,6 +45,9 @@ func main() {
 		kekFilesOld  = flag.String("kek-files-old", os.Getenv("SHIFT_HUB_KEK_FILES_OLD"), "comma-separated retired KEK files still needed to unwrap")
 
 		schedInterval = flag.Duration("sched-interval", envDuration("SHIFT_HUB_SCHED_INTERVAL", 5*time.Second), "scheduler poll interval")
+
+		connAllow = flag.String("connector-allow", os.Getenv("SHIFT_HUB_CONNECTOR_ALLOW"), "comma-separated connector allowlist (empty = all); cloud hubs restrict")
+		connDeny  = flag.String("connector-deny", os.Getenv("SHIFT_HUB_CONNECTOR_DENY"), "comma-separated connector denylist (hidden + blocked at deploy)")
 	)
 	flag.Parse()
 
@@ -73,6 +77,10 @@ func main() {
 	}
 
 	opts := api.Options{AdminToken: adminToken, LeaseTTL: *leaseTTL}
+	if policy := connpolicy.Parse(*connAllow, *connDeny); policy.Restricted() {
+		opts.ConnectorPolicy = policy
+		log.Print("hubd: connector capability policy active")
+	}
 
 	if *oidcIssuer != "" {
 		// Client secret is env-only, like the admin token.

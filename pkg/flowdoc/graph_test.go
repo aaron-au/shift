@@ -124,6 +124,30 @@ func TestGraphValidation(t *testing.T) {
 	}
 }
 
+func TestConnectors(t *testing.T) {
+	// Graph form: source, sink, and a handler — deduped + sorted.
+	d, err := Parse([]byte(goodGraph))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := d.Connectors()
+	if len(got) != 1 || got[0] != "http" { // all three steps use "http"
+		t.Fatalf("graph connectors = %v, want [http]", got)
+	}
+
+	// Linear form: source + sink.
+	d2, err := Parse([]byte(`{"name":"x",
+	  "source":{"connector":"sftp","action":"get"},
+	  "sink":{"connector":"http","action":"post"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = d2.Connectors()
+	if len(got) != 2 || got[0] != "http" || got[1] != "sftp" {
+		t.Fatalf("linear connectors = %v, want [http sftp]", got)
+	}
+}
+
 func TestGraphSecretRefsAcrossSteps(t *testing.T) {
 	d, err := Parse([]byte(`{"name":"x","steps":[
 	  {"id":"s","type":"source","connector":"a","action":"b","config":{"token":{"$secret":"src_key"}},"onComplete":"k","onFailure":"h"},

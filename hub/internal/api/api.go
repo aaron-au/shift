@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aaron-au/shift/hub/internal/connpolicy"
 	"github.com/aaron-au/shift/hub/internal/oidcauth"
 	"github.com/aaron-au/shift/hub/internal/scheduler"
 	"github.com/aaron-au/shift/hub/internal/secrets"
@@ -40,6 +41,10 @@ type Options struct {
 	// SchedStatus reports the scheduler loop's last pass for /api/v1/stats.
 	// Optional (tests and API-only deployments).
 	SchedStatus func() scheduler.Status
+	// ConnectorPolicy is the per-deployment connector capability policy:
+	// disallowed connectors are hidden from listing/resolution and rejected
+	// at deploy. Optional; nil allows everything (self-hosted default).
+	ConnectorPolicy *connpolicy.Policy
 	// LeaseTTL is how long a claimed task stays leased between heartbeats
 	// (default 30s).
 	LeaseTTL time.Duration
@@ -244,6 +249,10 @@ func (a *api) deployFlow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.checkSecretRefs(r, doc); err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	if err := a.checkConnectorPolicy(doc); err != nil {
 		writeErr(w, http.StatusUnprocessableEntity, err)
 		return
 	}

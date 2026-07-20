@@ -1,6 +1,38 @@
 package flowdoc
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
+
+// Connectors returns the sorted, unique connector names the document
+// references — source and sink in the linear form; every connector step
+// (including error handlers) in the graph form. The hub uses this to apply
+// its per-deployment connector capability policy at deploy time.
+func (d *Document) Connectors() []string {
+	seen := map[string]bool{}
+	add := func(n string) {
+		if n != "" {
+			seen[n] = true
+		}
+	}
+	if len(d.Steps) > 0 {
+		for i := range d.Steps {
+			if isConnectorType(d.Steps[i].Type) {
+				add(d.Steps[i].Connector)
+			}
+		}
+	} else {
+		add(d.Source.Connector)
+		add(d.Sink.Connector)
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // Plan is the normalized, validated execution plan a document lowers to.
 // Both authoring forms (linear and graph) produce one; the hub validates

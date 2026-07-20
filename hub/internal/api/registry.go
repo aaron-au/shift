@@ -108,6 +108,10 @@ func (a *api) uploadConnector(w http.ResponseWriter, r *http.Request) {
 // resolveConnector returns the manifest a runner needs to fetch+verify:
 // GET /api/v1/connectors/{name}/resolve?version=latest&os=&arch=
 func (a *api) resolveConnector(w http.ResponseWriter, r *http.Request) {
+	if !a.opts.ConnectorPolicy.Allowed(r.PathValue("name")) {
+		writeErr(w, http.StatusNotFound, store.ErrNotFound) // hidden by policy
+		return
+	}
 	q := r.URL.Query()
 	cv, err := a.st.ResolveConnector(r.Context(), r.PathValue("name"),
 		q.Get("version"), q.Get("os"), q.Get("arch"))
@@ -125,6 +129,10 @@ func (a *api) resolveConnector(w http.ResponseWriter, r *http.Request) {
 // downloadConnector streams the artifact bytes with verification
 // headers: GET /api/v1/connectors/{name}/versions/{version}/artifact?os=&arch=
 func (a *api) downloadConnector(w http.ResponseWriter, r *http.Request) {
+	if !a.opts.ConnectorPolicy.Allowed(r.PathValue("name")) {
+		writeErr(w, http.StatusNotFound, store.ErrNotFound) // hidden by policy
+		return
+	}
 	q := r.URL.Query()
 	cv, err := a.st.ResolveConnector(r.Context(), r.PathValue("name"),
 		r.PathValue("version"), q.Get("os"), q.Get("arch"))
@@ -157,6 +165,9 @@ func (a *api) listConnectors(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(cvs))
 	for _, cv := range cvs {
+		if !a.opts.ConnectorPolicy.Allowed(cv.Name) {
+			continue // hidden by policy — "not even visible"
+		}
 		out = append(out, connectorManifestJSON(cv))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"connectors": out})
