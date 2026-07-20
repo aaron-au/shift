@@ -6,6 +6,7 @@ package genconn
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -71,7 +72,7 @@ func (s *source) Open(_ context.Context, config []byte) error {
 		return fmt.Errorf("gen: bad config: %w", err)
 	}
 	if s.cfg.Records <= 0 {
-		return fmt.Errorf("gen: records must be positive")
+		return errors.New("gen: records must be positive")
 	}
 	if s.cfg.Groups <= 0 {
 		s.cfg.Groups = 1000

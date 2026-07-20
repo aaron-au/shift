@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -88,7 +89,7 @@ func Connect(ctx context.Context, hc *http.Client, hubURL, credFile, token, name
 		return creds.RunnerID, New(hubURL, creds.Secret).WithHTTPClient(hc), nil
 	}
 	if token == "" {
-		return "", nil, fmt.Errorf("hubclient: no saved credentials and no registration token")
+		return "", nil, errors.New("hubclient: no saved credentials and no registration token")
 	}
 
 	var lastErr error

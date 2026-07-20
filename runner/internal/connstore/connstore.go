@@ -56,7 +56,7 @@ type Store struct {
 // New builds a store and ensures the cache dir exists.
 func New(opts Options) (*Store, error) {
 	if opts.Dir == "" || opts.Client == nil {
-		return nil, fmt.Errorf("connstore: Dir and Client are required")
+		return nil, errors.New("connstore: Dir and Client are required")
 	}
 	if err := os.MkdirAll(opts.Dir, 0o700); err != nil {
 		return nil, fmt.Errorf("connstore: cache dir: %w", err)

@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -168,4 +167,4 @@ func (i *IdP) MintForeign(t *testing.T, c Claims) string {
 }
 
 // String satisfies fmt.Stringer for debugging.
-func (i *IdP) String() string { return fmt.Sprintf("fake IdP at %s", i.Server.URL) }
+func (i *IdP) String() string { return "fake IdP at " + i.Server.URL }

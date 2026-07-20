@@ -83,7 +83,7 @@ func main() {
 	err = st.Migrate(ctx)
 	cancel()
 	if err != nil {
-		log.Fatalf("hubd: migrate: %v", err)
+		log.Fatalf("hubd: migrate: %v", err) //nolint:gocritic // exitAfterDefer: startup-fatal; process exits and the OS reclaims the pool/fds — deferred st.Close() is moot
 	}
 
 	opts := api.Options{AdminToken: adminToken, LeaseTTL: *leaseTTL}

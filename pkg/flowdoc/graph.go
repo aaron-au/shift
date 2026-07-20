@@ -1,6 +1,7 @@
 package flowdoc
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 )
@@ -271,7 +272,7 @@ func (d *Document) GraphView() (*GraphView, error) {
 // the plan, which has the whole step set for reference).
 func (s *Step) validate() error {
 	if s.OnSuccess != "" && s.OnComplete != "" {
-		return fmt.Errorf("step has both onSuccess and onComplete; use one")
+		return errors.New("step has both onSuccess and onComplete; use one")
 	}
 	switch {
 	case isReservedType(s.Type):

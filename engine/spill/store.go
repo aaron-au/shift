@@ -6,6 +6,7 @@ package spill
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -54,7 +55,7 @@ func NewStore(dir string) (*Store, error) {
 // starting the next.
 func (s *Store) StartSegment() (*bufio.Writer, error) {
 	if s.writing {
-		return nil, fmt.Errorf("spill: segment already open")
+		return nil, errors.New("spill: segment already open")
 	}
 	s.writing = true
 	return s.w, nil
@@ -63,7 +64,7 @@ func (s *Store) StartSegment() (*bufio.Writer, error) {
 // FinishSegment flushes and seals the open segment, returning its handle.
 func (s *Store) FinishSegment() (Segment, error) {
 	if !s.writing {
-		return Segment{}, fmt.Errorf("spill: no open segment")
+		return Segment{}, errors.New("spill: no open segment")
 	}
 	if err := s.w.Flush(); err != nil {
 		return Segment{}, fmt.Errorf("spill: flush: %w", err)

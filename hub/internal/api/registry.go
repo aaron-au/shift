@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"runtime"
+	"strconv"
 
 	"github.com/aaron-au/shift/hub/internal/store"
 	"github.com/aaron-au/shift/pkg/consign"
@@ -39,7 +40,7 @@ func (a *api) uploadConnector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if version == "" || len(version) > 64 {
-		writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf("version must be 1-64 characters"))
+		writeErr(w, http.StatusUnprocessableEntity, errors.New("version must be 1-64 characters"))
 		return
 	}
 	osName, arch := r.URL.Query().Get("os"), r.URL.Query().Get("arch")
@@ -56,7 +57,7 @@ func (a *api) uploadConnector(w http.ResponseWriter, r *http.Request) {
 	keyName := r.Header.Get("X-Shift-Publisher-Key")
 	sig, err := base64.StdEncoding.DecodeString(r.Header.Get("X-Shift-Signature"))
 	if keyName == "" || err != nil || len(sig) == 0 {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("X-Shift-Publisher-Key and base64 X-Shift-Signature headers are required"))
+		writeErr(w, http.StatusBadRequest, errors.New("X-Shift-Publisher-Key and base64 X-Shift-Signature headers are required"))
 		return
 	}
 	// Optional descriptor (ADR-0018): the canonical action-catalog bytes,
@@ -67,7 +68,7 @@ func (a *api) uploadConnector(w http.ResponseWriter, r *http.Request) {
 	if h := r.Header.Get("X-Shift-Descriptor"); h != "" {
 		descriptor, err = base64.StdEncoding.DecodeString(h)
 		if err != nil || len(descriptor) == 0 {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("X-Shift-Descriptor must be non-empty base64"))
+			writeErr(w, http.StatusBadRequest, errors.New("X-Shift-Descriptor must be non-empty base64"))
 			return
 		}
 	}
@@ -84,7 +85,7 @@ func (a *api) uploadConnector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(data) == 0 {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("empty artifact"))
+		writeErr(w, http.StatusBadRequest, errors.New("empty artifact"))
 		return
 	}
 
@@ -168,7 +169,7 @@ func (a *api) downloadConnector(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Shift-Digest", hex.EncodeToString(cv.Digest))
 	w.Header().Set("X-Shift-Signature", base64.StdEncoding.EncodeToString(cv.Signature))
 	w.Header().Set("X-Shift-Publisher-Key", base64.StdEncoding.EncodeToString(cv.PublisherKey))
-	w.Header().Set("Content-Length", fmt.Sprint(len(data)))
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	_, _ = w.Write(data)
 }
 
@@ -220,7 +221,7 @@ func (a *api) addPublisherKey(w http.ResponseWriter, r *http.Request) {
 	}
 	pub, err := base64.StdEncoding.DecodeString(req.PublicKey)
 	if req.Name == "" || err != nil {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("name and base64 public_key are required"))
+		writeErr(w, http.StatusBadRequest, errors.New("name and base64 public_key are required"))
 		return
 	}
 	id, err := a.st.AddPublisherKey(r.Context(), req.Name, pub)

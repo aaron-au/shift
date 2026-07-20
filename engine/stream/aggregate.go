@@ -61,7 +61,7 @@ type AggregateSpec struct {
 // partition at a time.
 func (p *Pipeline) Aggregate(spec AggregateSpec) *Pipeline {
 	if spec.Gov == nil {
-		return p.fail(fmt.Errorf("stream: aggregate requires a governor"))
+		return p.fail(errors.New("stream: aggregate requires a governor"))
 	}
 	if spec.KeyName == "" {
 		spec.KeyName = spec.Key.LeafName()

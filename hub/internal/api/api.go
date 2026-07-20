@@ -64,13 +64,13 @@ type Options struct {
 
 func (o *Options) defaults() error {
 	if o.AdminToken == "" && o.OIDC == nil {
-		return fmt.Errorf("api: an admin realm is required — configure OIDC or a break-glass admin token")
+		return errors.New("api: an admin realm is required — configure OIDC or a break-glass admin token")
 	}
 	if o.AdminToken != "" && len(o.AdminToken) < 16 {
-		return fmt.Errorf("api: admin token must be at least 16 characters")
+		return errors.New("api: admin token must be at least 16 characters")
 	}
 	if o.OIDCFlow != nil && o.OIDC == nil {
-		return fmt.Errorf("api: OIDCFlow requires OIDC")
+		return errors.New("api: OIDCFlow requires OIDC")
 	}
 	if o.LeaseTTL <= 0 {
 		o.LeaseTTL = 30 * time.Second
@@ -335,7 +335,7 @@ func (a *api) publishFlow(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	version, err := strconv.Atoi(r.PathValue("version"))
 	if err != nil || version < 1 {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("version must be a positive integer"))
+		writeErr(w, http.StatusBadRequest, errors.New("version must be a positive integer"))
 		return
 	}
 	err = a.st.PublishFlow(r.Context(), name, version)
@@ -364,7 +364,7 @@ func (a *api) executeFlow(w http.ResponseWriter, r *http.Request) {
 	// The scheduler derives its dedup keys as "sched:<id>:<tick>"; a
 	// user key in that namespace could silently absorb a tick.
 	if strings.HasPrefix(req.IdempotencyKey, "sched:") {
-		writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf(`idempotency keys may not use the reserved "sched:" prefix`))
+		writeErr(w, http.StatusUnprocessableEntity, errors.New(`idempotency keys may not use the reserved "sched:" prefix`))
 		return
 	}
 	id, err := a.st.Enqueue(r.Context(), r.PathValue("name"), req.Version, req.IdempotencyKey, req.MaxAttempts)
@@ -424,7 +424,7 @@ func (a *api) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Token == "" || req.Name == "" {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("token and name are required"))
+		writeErr(w, http.StatusBadRequest, errors.New("token and name are required"))
 		return
 	}
 	id, secret, err := a.st.RegisterRunner(r.Context(), req.Token, req.Name)
@@ -521,7 +521,7 @@ func (a *api) reportExecution(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if e.FlowName == "" || (e.State != "completed" && e.State != "failed") {
-		writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf("flow_name and a terminal state are required"))
+		writeErr(w, http.StatusUnprocessableEntity, errors.New("flow_name and a terminal state are required"))
 		return
 	}
 	if e.Trigger == "" {

@@ -150,7 +150,7 @@ func main() {
 	if *users != "" {
 		basic, err := auth.NewBasic(*users)
 		if err != nil {
-			log.Fatalf("runnerd: %v", err)
+			log.Fatalf("runnerd: %v", err) //nolint:gocritic // exitAfterDefer: startup-fatal; process exits and the OS reclaims resources — deferred loopCancel() is moot
 		}
 		guard = auth.NewGuard(basic)
 	} else if !strings.HasPrefix(*listen, "127.0.0.1:") && !strings.HasPrefix(*listen, "localhost:") {

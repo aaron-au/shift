@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"runtime"
 	"time"
@@ -124,7 +125,7 @@ func (s *Service) RunTieredBenchmark(records int64, streams int) (*TieredReport,
 	s.bench.mu.Lock()
 	if s.bench.tieredRunning {
 		s.bench.mu.Unlock()
-		return nil, fmt.Errorf("service: a tiered benchmark is already running")
+		return nil, errors.New("service: a tiered benchmark is already running")
 	}
 	s.bench.tieredRunning = true
 	s.bench.mu.Unlock()
@@ -171,7 +172,7 @@ func (s *Service) measureTier(t tier, records int64, streams int) (TierResult, e
 	}
 	secs := tk.Finished.Sub(*tk.Started).Seconds()
 	if secs <= 0 {
-		return res, fmt.Errorf("tier finished instantly; increase records")
+		return res, errors.New("tier finished instantly; increase records")
 	}
 	res.SingleStreamRecS = float64(tk.RecordsIn) / secs
 

@@ -8,6 +8,7 @@ package flowdoc
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 
@@ -195,11 +196,11 @@ func Parse(data []byte) (*Document, error) {
 // the linear-form checks otherwise.
 func (d *Document) Validate() error {
 	if d.Name == "" {
-		return fmt.Errorf("flow: name is required")
+		return errors.New("flow: name is required")
 	}
 	if len(d.Steps) > 0 {
 		if d.Source.Connector != "" || len(d.Ops) > 0 || d.Sink.Connector != "" {
-			return fmt.Errorf("flow: use either the linear form (source/ops/sink) or the graph form (steps), not both")
+			return errors.New("flow: use either the linear form (source/ops/sink) or the graph form (steps), not both")
 		}
 		_, err := d.buildPlan()
 		return err
@@ -243,7 +244,7 @@ func (o *Op) validate() error {
 		}
 	case "project":
 		if len(o.Fields) == 0 {
-			return fmt.Errorf("project needs fields")
+			return errors.New("project needs fields")
 		}
 		for _, f := range o.Fields {
 			p, err := record.ParsePath(f.Path)
@@ -256,26 +257,26 @@ func (o *Op) validate() error {
 		}
 	case "coerce":
 		if len(o.Rules) == 0 {
-			return fmt.Errorf("coerce needs rules")
+			return errors.New("coerce needs rules")
 		}
 		for _, r := range o.Rules {
 			if !CoerceKinds[r.To] {
 				return fmt.Errorf("unknown coerce kind %q", r.To)
 			}
 			if r.Field == "" {
-				return fmt.Errorf("coerce rule needs field")
+				return errors.New("coerce rule needs field")
 			}
 		}
 	case "flatten":
 		if o.Sep == "" {
-			return fmt.Errorf("flatten needs sep")
+			return errors.New("flatten needs sep")
 		}
 	case "aggregate":
 		if _, err := record.ParsePath(o.Key); err != nil {
 			return err
 		}
 		if len(o.Aggs) == 0 {
-			return fmt.Errorf("aggregate needs aggs")
+			return errors.New("aggregate needs aggs")
 		}
 		for _, a := range o.Aggs {
 			switch a.Op {
@@ -288,7 +289,7 @@ func (o *Op) validate() error {
 				return fmt.Errorf("unknown agg op %q", a.Op)
 			}
 			if a.Out == "" {
-				return fmt.Errorf("agg needs out name")
+				return errors.New("agg needs out name")
 			}
 		}
 	default:

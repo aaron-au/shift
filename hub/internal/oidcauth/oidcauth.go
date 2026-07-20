@@ -6,6 +6,7 @@ package oidcauth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -37,7 +38,7 @@ type Verifier struct {
 // rotation needs no hub restart.
 func New(ctx context.Context, cfg Config) (*Verifier, error) {
 	if cfg.IssuerURL == "" || cfg.ClientID == "" {
-		return nil, fmt.Errorf("oidcauth: issuer URL and client ID are both required")
+		return nil, errors.New("oidcauth: issuer URL and client ID are both required")
 	}
 	provider, err := oidc.NewProvider(ctx, cfg.IssuerURL)
 	if err != nil {

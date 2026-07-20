@@ -2,6 +2,7 @@ package oidcauth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -27,7 +28,7 @@ type Flow struct {
 // ID-token verification.
 func NewFlow(ctx context.Context, cfg FlowConfig) (*Flow, error) {
 	if cfg.RedirectURL == "" {
-		return nil, fmt.Errorf("oidcauth: redirect URL is required for the login flow")
+		return nil, errors.New("oidcauth: redirect URL is required for the login flow")
 	}
 	provider, err := oidc.NewProvider(ctx, cfg.IssuerURL)
 	if err != nil {
@@ -61,7 +62,7 @@ func (f *Flow) Exchange(ctx context.Context, code string) (rawIDToken string, id
 	}
 	raw, ok := tok.Extra("id_token").(string)
 	if !ok {
-		return "", Identity{}, fmt.Errorf("oidcauth: token response had no id_token")
+		return "", Identity{}, errors.New("oidcauth: token response had no id_token")
 	}
 	id, err = f.verifier.Verify(ctx, raw)
 	if err != nil {

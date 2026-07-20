@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -40,10 +41,10 @@ func main() {
 		fatal(err)
 	}
 	if *groups < 1 {
-		fatal(fmt.Errorf("-groups must be >= 1"))
+		fatal(errors.New("-groups must be >= 1"))
 	}
 	if *runs < 1 {
-		fatal(fmt.Errorf("-runs must be >= 1"))
+		fatal(errors.New("-runs must be >= 1"))
 	}
 	wm, err := parseSize(*watermark)
 	if err != nil {
@@ -233,7 +234,7 @@ func (r runner) aggregate(ctx context.Context) (stream.Report, int64, error) {
 // what the engine saves. Refuses very large inputs.
 func (r runner) baseline(ctx context.Context) (stream.Report, error) {
 	if r.size > 2<<30 {
-		return stream.Report{}, fmt.Errorf("baseline refuses inputs over 2GiB (it buffers everything)")
+		return stream.Report{}, errors.New("baseline refuses inputs over 2GiB (it buffers everything)")
 	}
 	return runBaseline(ctx, newGenerator("ndjson", r.size, r.groups))
 }

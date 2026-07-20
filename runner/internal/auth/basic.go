@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -31,7 +32,7 @@ func NewBasic(spec string) (*Basic, error) {
 		}
 		user, rest, ok := strings.Cut(entry, ":")
 		if !ok {
-			return nil, fmt.Errorf("auth: bad user entry (want user:hash:role)")
+			return nil, errors.New("auth: bad user entry (want user:hash:role)")
 		}
 		hash, roleName, ok := strings.Cut(rest, ":")
 		if !ok {
@@ -42,12 +43,12 @@ func NewBasic(spec string) (*Basic, error) {
 			return nil, fmt.Errorf("auth: user %q: unknown role %q", user, roleName)
 		}
 		if user == "" || hash == "" {
-			return nil, fmt.Errorf("auth: empty user or hash")
+			return nil, errors.New("auth: empty user or hash")
 		}
 		b.users[user] = basicUser{hash: []byte(hash), role: role}
 	}
 	if len(b.users) == 0 {
-		return nil, fmt.Errorf("auth: no users configured")
+		return nil, errors.New("auth: no users configured")
 	}
 	return b, nil
 }

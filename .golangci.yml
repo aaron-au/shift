@@ -14,6 +14,21 @@ linters:
     - misspell
     - copyloopvar
     - depguard     # enforce the module-boundary doctrine (CLAUDE.md)
+    - gocritic     # broad diagnostic/perf/style checks
+    - perfsprint   # fmt.Sprintf where strconv/concat is faster (perf thesis)
+    - prealloc     # slice preallocation in loops (perf thesis; production only)
+    - nilerr       # return nil after a non-nil error check
+    - usestdlibvars # use stdlib consts (http.MethodGet, status codes, ...)
+    - thelper      # test helpers must call t.Helper()
+    - tparallel    # correct t.Parallel() usage
+  # contextcheck intentionally NOT enabled: this codebase deliberately detaches
+  # contexts at durability seams (task execution must outlive the lease request
+  # — ADR-0002 at-least-once; cleanup/reports use fresh bounded timeouts). noctx
+  # already covers the real v0 lesson (context on HTTP/DB calls).
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [prealloc] # test alloc is irrelevant; keep prealloc for hot paths
   settings:
     gosec:
       excludes: [] # no blanket exclusions — suppress inline with justification (ADR-0006)

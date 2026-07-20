@@ -23,6 +23,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -153,7 +154,7 @@ func seed(args []string) error {
 	_ = fs.Parse(args)
 	adminToken := os.Getenv("SHIFT_HUB_ADMIN_TOKEN")
 	if adminToken == "" {
-		return fmt.Errorf("seed: SHIFT_HUB_ADMIN_TOKEN is required")
+		return errors.New("seed: SHIFT_HUB_ADMIN_TOKEN is required")
 	}
 
 	client, err := tlsClient(filepath.Join(*dir, "ca.pem"))

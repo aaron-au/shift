@@ -11,6 +11,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -61,7 +62,7 @@ func keygen(args []string) error {
 	out := fs.String("out", "", "output file prefix (writes <prefix>.key and <prefix>.pub)")
 	_ = fs.Parse(args)
 	if *out == "" {
-		return fmt.Errorf("keygen: -out is required")
+		return errors.New("keygen: -out is required")
 	}
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -92,7 +93,7 @@ func addManifestFlags(fs *flag.FlagSet) *manifestFlags {
 
 func (m *manifestFlags) manifest(artifact string) (consign.Manifest, error) {
 	if m.name == "" || m.version == "" {
-		return consign.Manifest{}, fmt.Errorf("-name and -version are required")
+		return consign.Manifest{}, errors.New("-name and -version are required")
 	}
 	f, err := os.Open(artifact) //nolint:gosec // G304: user-supplied artifact path is this CLI's purpose
 	if err != nil {
@@ -112,7 +113,7 @@ func sign(args []string) error {
 	mf := addManifestFlags(fs)
 	_ = fs.Parse(args)
 	if *keyFile == "" || fs.NArg() != 1 {
-		return fmt.Errorf("sign: -key and exactly one artifact path are required")
+		return errors.New("sign: -key and exactly one artifact path are required")
 	}
 	seed, err := readB64File(*keyFile, ed25519.SeedSize)
 	if err != nil {
@@ -134,7 +135,7 @@ func verify(args []string) error {
 	mf := addManifestFlags(fs)
 	_ = fs.Parse(args)
 	if *pubFile == "" || *sigArg == "" || fs.NArg() != 1 {
-		return fmt.Errorf("verify: -pub, -sig and exactly one artifact path are required")
+		return errors.New("verify: -pub, -sig and exactly one artifact path are required")
 	}
 	pub, err := readB64File(*pubFile, ed25519.PublicKeySize)
 	if err != nil {

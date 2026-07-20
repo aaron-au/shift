@@ -156,7 +156,7 @@ func (d *Decoder) Decode(bld *record.Builder) error {
 
 func (d *Decoder) decodeTagged(t byte, bld *record.Builder, depth int) error {
 	if depth > 64 {
-		return fmt.Errorf("spill: nesting too deep")
+		return errors.New("spill: nesting too deep")
 	}
 	switch t {
 	case tagNull:

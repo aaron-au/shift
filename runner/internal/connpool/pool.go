@@ -6,6 +6,7 @@ package connpool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -81,7 +82,7 @@ func (p *Pool) Get(ctx context.Context, name string) (*host.Process, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stopped {
-		return nil, fmt.Errorf("connpool: pool is closed")
+		return nil, errors.New("connpool: pool is closed")
 	}
 
 	if e, ok := p.entries[name]; ok {

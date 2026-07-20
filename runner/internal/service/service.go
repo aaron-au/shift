@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -133,7 +132,7 @@ func (s *Service) SubmitWith(doc *flow.Document, o SubmitOpts) (string, error) {
 	s.mu.Lock()
 	if s.draining {
 		s.mu.Unlock()
-		return "", fmt.Errorf("service: runner is draining")
+		return "", errors.New("service: runner is draining")
 	}
 	s.wg.Add(1)
 	s.mu.Unlock()
@@ -240,7 +239,7 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 	var src stream.Source
 	if srcStep.Connector == flowdoc.WebhookSource {
 		if webhookBody == nil {
-			return execResult{}, fmt.Errorf("service: @webhook flow requires a request body")
+			return execResult{}, errors.New("service: @webhook flow requires a request body")
 		}
 		src = ndjson.NewReader(bytes.NewReader(webhookBody), ndjson.ReaderOptions{})
 	} else {

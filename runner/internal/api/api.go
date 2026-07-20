@@ -13,6 +13,7 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -104,7 +105,7 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 	mux.HandleFunc("GET /api/tasks/{id}", func(w http.ResponseWriter, r *http.Request) {
 		t, ok := svc.Task(r.PathValue("id"))
 		if !ok {
-			writeErr(w, http.StatusNotFound, fmt.Errorf("unknown task"))
+			writeErr(w, http.StatusNotFound, errors.New("unknown task"))
 			return
 		}
 		writeJSON(w, http.StatusOK, t)
@@ -115,7 +116,7 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 	mux.HandleFunc("GET /api/tasks/{id}/capture", func(w http.ResponseWriter, r *http.Request) {
 		t, ok := svc.Task(r.PathValue("id"))
 		if !ok {
-			writeErr(w, http.StatusNotFound, fmt.Errorf("unknown task"))
+			writeErr(w, http.StatusNotFound, errors.New("unknown task"))
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"task_id": t.ID, "captured": t.Captured})
@@ -151,7 +152,7 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 
 	mux.HandleFunc("DELETE /api/webhooks/{name}", func(w http.ResponseWriter, r *http.Request) {
 		if !hooks.Delete(r.PathValue("name")) {
-			writeErr(w, http.StatusNotFound, fmt.Errorf("unknown webhook"))
+			writeErr(w, http.StatusNotFound, errors.New("unknown webhook"))
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -171,11 +172,11 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 		}
 		h, ok := hooks.Get(name)
 		if !ok {
-			writeErr(w, http.StatusNotFound, fmt.Errorf("unknown webhook"))
+			writeErr(w, http.StatusNotFound, errors.New("unknown webhook"))
 			return
 		}
 		if h.TokenHash != "" && !validHookToken(r, h.TokenHash) {
-			writeErr(w, http.StatusUnauthorized, fmt.Errorf("invalid webhook token"))
+			writeErr(w, http.StatusUnauthorized, errors.New("invalid webhook token"))
 			return
 		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBody))

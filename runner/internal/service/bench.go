@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"runtime"
 	"sync"
@@ -105,7 +106,7 @@ func (s *Service) RunBenchmark(records int64, streams int) (*CapacityReport, err
 	s.bench.mu.Lock()
 	if s.bench.running {
 		s.bench.mu.Unlock()
-		return nil, fmt.Errorf("service: a benchmark is already running")
+		return nil, errors.New("service: a benchmark is already running")
 	}
 	s.bench.running = true
 	s.bench.mu.Unlock()
@@ -180,7 +181,7 @@ func (s *Service) runBenchTask(records int64, rep *CapacityReport) (recS float64
 	}
 	secs := t.Finished.Sub(*t.Started).Seconds()
 	if secs <= 0 {
-		return 0, fmt.Errorf("service: benchmark task finished instantly; increase records")
+		return 0, errors.New("service: benchmark task finished instantly; increase records")
 	}
 	return float64(t.RecordsIn) / secs, nil
 }

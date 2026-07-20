@@ -5,6 +5,7 @@ package httpconn
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -80,7 +81,7 @@ type commonConfig struct {
 
 func (c *commonConfig) validate() error {
 	if c.URL == "" {
-		return fmt.Errorf("http: url is required")
+		return errors.New("http: url is required")
 	}
 	if c.TimeoutSeconds <= 0 {
 		c.TimeoutSeconds = 300

@@ -28,7 +28,7 @@ func (a *api) putSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Value == "" {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("value is required"))
+		writeErr(w, http.StatusBadRequest, errors.New("value is required"))
 		return
 	}
 	version, err := a.opts.Secrets.Put(r.Context(), name, []byte(req.Value), requestIdentity(r).id)
@@ -106,7 +106,7 @@ func (a *api) checkSecretRefs(r *http.Request, doc *flowdoc.Document) error {
 		return nil
 	}
 	if a.opts.Secrets == nil {
-		return fmt.Errorf("document references secrets but the hub has no secret store configured")
+		return errors.New("document references secrets but the hub has no secret store configured")
 	}
 	envs, err := a.st.SecretEnvelopes(r.Context(), refs)
 	if err != nil {
@@ -139,7 +139,7 @@ func (a *api) resolveSecrets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(req.Names) == 0 || len(req.Names) > 100 {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("names must list 1-100 secrets"))
+		writeErr(w, http.StatusBadRequest, errors.New("names must list 1-100 secrets"))
 		return
 	}
 	values, err := a.opts.Secrets.Resolve(r.Context(), req.Names)
@@ -148,7 +148,7 @@ func (a *api) resolveSecrets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, fmt.Errorf("secret resolution failed"))
+		writeErr(w, http.StatusInternalServerError, errors.New("secret resolution failed"))
 		return
 	}
 	for _, name := range req.Names {
