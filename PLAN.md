@@ -152,6 +152,28 @@ pluggable KEK, tracked separately (noted in ADR-0018).
 ### M6 — Enterprise hardening
 Observability (OpenTelemetry + Prometheus), audit log, billing aggregation from telemetry, rate limiting, connector marketplace plumbing, migration tooling (OpenAPI importer), benchmark-vs-incumbent collateral.
 
+Milestone-scale; split into sub-milestones (each lands green through `make check`).
+Build order chosen 2026-07-20 — observability first (the substrate billing +
+rate limiting lean on):
+- **M6a — Observability (ADR-0020).** OpenTelemetry (Go SDK) as the single
+  telemetry stack: traces via OTLP, metrics via a Prometheus `/metrics`
+  endpoint on hubd + runnerd. Spans model a task across the control plane
+  (enqueue → lease → execute → per-step → report; trace context propagated in
+  lease/report metadata). **Metadata only — no payload, secret-redacted**
+  (two-plane split, ADR-0016). **Honest metrics** sourced from the engine's
+  real per-op accounting; **engine + `pkg/` stay telemetry-free** — OTel lives
+  only in `hub/`+`runner/`. Bounded cardinality (task/trace id never a metric
+  label). Off by default (no OTLP endpoint ⇒ no-op tracer). A metric-naming
+  convention doc under `docs/dev/` precedes wide instrumentation.
+- **M6b — Audit log completion.** `Audit()` + table already exist; round out
+  coverage of every mutating action, a query/export API, and a studio window.
+- **M6c — Rate limiting.** Hub control API + public runner webhook surface
+  (ADR-0016); per-realm/token limits. Needs an ADR (algorithm, storage, scope).
+- **M6d — Billing aggregation** from the telemetry substrate (M6a).
+- **M6e — Connector marketplace plumbing.**
+- **M6f — Migration tooling** (OpenAPI importer) + **benchmark-vs-incumbent**
+  collateral.
+
 ## Standing rules
 
 - Every milestone lands with tests (`-race` mandatory) and updated docs/ADRs for decisions made in flight.
