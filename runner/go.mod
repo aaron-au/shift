@@ -7,6 +7,8 @@ require (
 	github.com/aaron-au/shift/sdk v0.0.0
 )
 
+require golang.org/x/crypto v0.50.0
+
 require (
 	github.com/aaron-au/shift/pkg v0.0.0
 	golang.org/x/net v0.53.0 // indirect

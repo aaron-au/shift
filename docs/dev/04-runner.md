@@ -198,12 +198,29 @@ never reaches the hub (the whole point: the hub holds no payload).
   (and `.../capture`) for status/results. A per-execution sync toggle rides
   the same machinery (later stage).
 - **Auth:** hook endpoints authenticate by a per-webhook token
-  (`X-Webhook-Token` or `Authorization: Bearer`, constant-time). Control
-  endpoints get user auth in the next stage.
+  (`X-Webhook-Token` or `Authorization: Bearer`, constant-time). The
+  **control surface** (`/api/*`, dashboard) is guarded separately —
+  see below.
 - **Registration:** stage 1 registers hooks on the runner
   (`PUT /api/webhooks/{name}` with `{document, token}`), in memory. A later
   stage authors them on the hub and syncs to runners; the runner will also
   report direct tasks to the hub as metadata so the hub sees fleet load.
+
+## Control-surface auth (M5d-2, ADR-0016)
+
+`internal/auth` guards the control surface once runners are public. **Opt-in:**
+with no users configured the surface is open (loopback dev, all existing
+callers keep working); `SHIFT_RUNNER_USERS="user:bcrypt-hash:role;…"` turns
+it on. Method today is **HTTP Basic** (bcrypt-hashed passwords) behind an
+`Authenticator` interface, so bearer/OIDC/mTLS drop in later.
+
+**Roles → permissions:** `admin` (read+execute+manage), `operator`
+(read+execute), `viewer` (read). A single middleware (`Guard.Wrap`) derives
+the permission per request — GET ⇒ read, PUT/DELETE ⇒ manage, other writes ⇒
+execute — authenticates once, and enforces. `/healthz` and `/hooks/*` are
+unguarded by user auth (the latter uses its per-hook token). Browsers get a
+native Basic prompt (`WWW-Authenticate`), so the dashboard just works. A
+non-loopback bind with no users logs a loud warning.
 
 ## HTTP surface
 

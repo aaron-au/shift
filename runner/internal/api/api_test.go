@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aaron-au/shift/runner/internal/auth"
 	"github.com/aaron-au/shift/runner/internal/service"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func testHandler(t *testing.T) http.Handler {
@@ -25,7 +27,7 @@ func testHandler(t *testing.T) http.Handler {
 	}
 	svc := service.New(service.Options{ConnectorDir: dir})
 	t.Cleanup(func() { _ = svc.Close(30 * time.Second) })
-	return Handler(svc, "test-runner", "0.0.0", time.Now(), nil)
+	return Handler(svc, "test-runner", "0.0.0", time.Now(), nil, auth.NewGuard(nil))
 }
 
 func TestAPISurface(t *testing.T) {
@@ -180,6 +182,70 @@ func TestWebhookEndpoints(t *testing.T) {
 			t.Fatalf("task state %q", tk.State)
 		}
 		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// TestAuthEnforced: with a guard configured, the control surface requires
+// credentials and enforces per-endpoint permissions, while health checks and
+// hook endpoints stay open.
+func TestAuthEnforced(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns connector subprocesses")
+	}
+	dir := t.TempDir()
+	cmd := exec.CommandContext(t.Context(), "go", "build", //nolint:gosec // G204: our own package
+		"-o", filepath.Join(dir, "shift-connector-gen"),
+		"github.com/aaron-au/shift/connectors/cmd/shift-connector-gen")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	svc := service.New(service.Options{ConnectorDir: dir})
+	t.Cleanup(func() { _ = svc.Close(30 * time.Second) })
+
+	hash, err := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	basic, err := auth.NewBasic("viewer:" + string(hash) + ":viewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := Handler(svc, "r", "0", time.Now(), nil, auth.NewGuard(basic))
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	req := func(method, path, user, pass string) int {
+		r, _ := http.NewRequestWithContext(t.Context(), method, srv.URL+path, nil)
+		if user != "" {
+			r.SetBasicAuth(user, pass)
+		}
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if c := req("GET", "/healthz", "", ""); c != 200 {
+		t.Errorf("healthz open = %d, want 200", c)
+	}
+	if c := req("GET", "/api/status", "", ""); c != 401 {
+		t.Errorf("status no-creds = %d, want 401", c)
+	}
+	if c := req("GET", "/api/status", "viewer", "pw"); c != 200 {
+		t.Errorf("status viewer = %d, want 200", c)
+	}
+	if c := req("GET", "/api/status", "viewer", "wrong"); c != 401 {
+		t.Errorf("status bad-pw = %d, want 401", c)
+	}
+	// Viewer lacks execute → 403 on a write.
+	if c := req("POST", "/api/flows/execute", "viewer", "pw"); c != 403 {
+		t.Errorf("viewer execute = %d, want 403", c)
+	}
+	// Hook endpoints bypass user auth (own token); unknown hook → 404, not 401.
+	if c := req("POST", "/hooks/none", "", ""); c != 404 {
+		t.Errorf("hook no-creds = %d, want 404 (unguarded by user auth)", c)
 	}
 }
 

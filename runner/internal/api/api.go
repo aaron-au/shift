@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aaron-au/shift/runner/internal/auth"
 	"github.com/aaron-au/shift/runner/internal/flow"
 	"github.com/aaron-au/shift/runner/internal/service"
 	"github.com/aaron-au/shift/runner/internal/webhook"
@@ -32,8 +33,9 @@ var uiHTML []byte
 
 // Handler builds the runner's HTTP mux. hubStatus is optional: when the
 // hub lease intake is running it supplies the intake snapshot for
-// /api/status (nil = local-only runner).
-func Handler(svc *service.Service, runnerName, version string, started time.Time, hubStatus func() any) http.Handler {
+// /api/status (nil = local-only runner). guard authenticates the control
+// surface; a nil/open guard leaves it unauthenticated (loopback dev).
+func Handler(svc *service.Service, runnerName, version string, started time.Time, hubStatus func() any, guard *auth.Guard) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -223,7 +225,26 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 		_, _ = w.Write(uiHTML)
 	})
 
-	return mux
+	return guard.Wrap(mux, permFor)
+}
+
+// permFor maps a request to the permission its endpoint needs. Health checks
+// and the hook trigger are unguarded (the latter authenticates by its own
+// per-hook token); reads need PermRead; webhook config changes (PUT/DELETE)
+// need PermManage; other writes (execute, benchmarks) need PermExecute.
+func permFor(r *http.Request) (auth.Permission, bool) {
+	p := r.URL.Path
+	if p == "/healthz" || strings.HasPrefix(p, "/hooks/") {
+		return "", false
+	}
+	switch r.Method {
+	case http.MethodGet:
+		return auth.PermRead, true
+	case http.MethodPut, http.MethodDelete:
+		return auth.PermManage, true
+	default: // POST and anything else that mutates
+		return auth.PermExecute, true
+	}
 }
 
 func decodeFlow(r *http.Request) (*flow.Document, error) {

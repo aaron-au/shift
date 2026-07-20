@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/aaron-au/shift/runner/internal/api"
+	"github.com/aaron-au/shift/runner/internal/auth"
 	"github.com/aaron-au/shift/runner/internal/connstore"
 	"github.com/aaron-au/shift/runner/internal/hubclient"
 	"github.com/aaron-au/shift/runner/internal/leaseloop"
@@ -43,6 +44,7 @@ func main() {
 		credFile      = flag.String("cred-file", os.Getenv("SHIFT_HUB_CRED_FILE"), "persist/reuse the runner's hub identity here (reg tokens are single-use)")
 		connCache     = flag.String("connector-cache", envOr("SHIFT_CONNECTOR_CACHE", ""), "cache dir for registry-fetched connectors (default <spill-dir or temp>/shift-connectors)")
 		requireSigned = flag.Bool("require-signed", os.Getenv("SHIFT_REQUIRE_SIGNED") == "1", "refuse local connector binaries; registry-verified artifacts only")
+		users         = flag.String("users", os.Getenv("SHIFT_RUNNER_USERS"), "control-surface users \"user:bcrypt-hash:role;...\" (role: admin|operator|viewer); empty = open (loopback only)")
 	)
 	flag.Parse()
 	// Env only — a flag would leak the token into process listings. The
@@ -136,9 +138,23 @@ func main() {
 		close(loopDone)
 	}
 
+	// Control-surface auth (ADR-0016). Configured users → enforce; none →
+	// open (loopback dev). A non-loopback bind with no users is a foot-gun,
+	// so warn loudly.
+	guard := auth.NewGuard(nil)
+	if *users != "" {
+		basic, err := auth.NewBasic(*users)
+		if err != nil {
+			log.Fatalf("runnerd: %v", err)
+		}
+		guard = auth.NewGuard(basic)
+	} else if !strings.HasPrefix(*listen, "127.0.0.1:") && !strings.HasPrefix(*listen, "localhost:") {
+		log.Printf("runnerd: WARNING: control API is UNAUTHENTICATED on a non-loopback address %s — set SHIFT_RUNNER_USERS", *listen)
+	}
+
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           api.Handler(svc, *name, version, time.Now(), hubStatus),
+		Handler:           api.Handler(svc, *name, version, time.Now(), hubStatus, guard),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {
