@@ -15,6 +15,11 @@ Hub-and-spoke Integration Platform as a Service. Goal: a provisionable, enterpri
 6. Tenancy = `store.WithAccount(ctx)` set by every auth middleware; user secrets = envelope encryption (per-secret DEK, pluggable KEK) with **runner-pull** resolution of `{"$secret":"name"}` refs — plaintext never in the queue, task reads, or logs. (ADR-0010)
 7. Connector registry: Ed25519 signatures over a canonical manifest (`pkg/consign`); publisher private keys never server-side; runners verify fail-closed (`connstore`, re-hash on every use); `SHIFT_REQUIRE_SIGNED=1` disables local-Dir trust. (ADR-0011)
 8. Scheduler: DB-owned exactly-once — advisory lock + SKIP LOCKED + atomic tick advance + `sched:<id>:<tick>` idempotency keys (the `sched:` key prefix is reserved); Postgres `now()` is the only clock; UTC crons; only published versions fire. (ADR-0012)
+9. Flow model v2: a **step graph** with typed outcome edges — `onSuccess`/`onComplete` happy path, `onFailure` error handler (dead-letter). Linear source/ops/sink kept as sugar; both lower to one validated `Plan`. Engine `OpError` tags failures by step id; per-step-id telemetry. (ADR-0013)
+10. Connector capability policy: per-deployment allow/deny (cloud hubs hide dangerous connectors — rejected at deploy, invisible in list/resolve). Name-based, hub-wide. (ADR-0015)
+11. Trigger & ingress: two planes — control (hub↔runner, metadata only: lease, config sync, execution reports) and data (ingress→runner, runner→source; **payload never touches the hub**). Webhooks are push triggers on a runner (`@webhook` source, async), reported to the hub as metadata; runner APIs are a public, authenticated surface (Basic first, pluggable). (ADR-0016)
+12. Test-mode data capture: an engine `Sampler` hook takes a bounded, secret-redacted, runner-only, ephemeral sample of each stage's output; hub never sees payload. (ADR-0014)
+13. Custom code (designed, build deferred): two tiers — `starlark` inline (fuel-metered, no I/O) + `python` out-of-process (connector subprocess, wheels-only, signed bundles). Step types `starlark`/`python`/`subflow` reserved. (ADR-0017)
 
 ## Doctrine (non-negotiable for new code)
 

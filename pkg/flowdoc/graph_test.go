@@ -101,7 +101,7 @@ func TestGraphValidation(t *testing.T) {
 		  {"id":"h","type":"filter","path":"$.a","op":"exists"}]}`,
 		"reserved type": `{"name":"x","steps":[
 		  {"id":"s","type":"source","connector":"a","action":"b","onComplete":"w"},
-		  {"id":"w","type":"wasm","onComplete":"k"},
+		  {"id":"w","type":"starlark","onComplete":"k"},
 		  {"id":"k","type":"sink","connector":"c","action":"d"}]}`,
 		"sink with happy edge": `{"name":"x","steps":[
 		  {"id":"s","type":"source","connector":"a","action":"b","onComplete":"k"},

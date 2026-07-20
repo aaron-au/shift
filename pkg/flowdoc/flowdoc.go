@@ -43,7 +43,8 @@ type Document struct {
 // Type namespace:
 //   - connector: source | sink   (Connector/Action/Config apply)
 //   - transform: filter | project | coerce | flatten | aggregate (Op fields)
-//   - reserved:  wasm | python | subflow — parsed but rejected until M5b.
+//   - reserved:  starlark | python | subflow — parsed but rejected until
+//     built (custom code: ADR-0017; sub-flows: later).
 type Step struct {
 	ID string `json:"id"`
 	Op        // promotes Type + the transform option fields
@@ -106,7 +107,7 @@ func isTransformType(t string) bool {
 
 func isReservedType(t string) bool {
 	switch t {
-	case "wasm", "python", "subflow":
+	case "starlark", "python", "subflow":
 		return true
 	}
 	return false

@@ -52,12 +52,12 @@ Postgres schema v1 (evolved from `docs/reference/schema-v0.sql`: accounts, runne
 OIDC auth + tenancy enforcement (generic OIDC via go-oidc; Dex in the bundle; break-glass token retained — ADR-0010), envelope-encrypted secrets with runner-pull resolution (`{"$secret":...}` refs; plaintext never at rest — ADR-0010), connector registry with Ed25519 artifact signing + fail-closed runner verification (`pkg/consign`, `runner/internal/connstore` — ADR-0011), HA scheduler with layered exactly-once (advisory lock + SKIP LOCKED + atomic tick + `sched:` idempotency keys; periodic lease sweep — ADR-0012), flow publish workflow (drafts; version 0 = published), hub dashboard (embedded, OIDC login), "just runs" compose bundle (`make up`: postgres + dex + certgen + hubd TLS + bootstrap seeding + runner with `SHIFT_REQUIRE_SIGNED=1`).
 **Exit met** (live walkthrough + e2e suite): compose up → Dex login → seeded demo flow → minutely schedule fired exactly once per tick → runner executed the registry-signed connector → telemetry on the dashboard. Proofs: `hub/e2e/{schedule,signed_artifact,secrets}_test.go` + two-account isolation and FireDue-contention store tests. Deferred deliberately: multi-tenant signup UX, connector version pinning in flow docs (M5), KMS KEK provider.
 
-### M5 — Flow model & studio API 🚧 in progress
+### M5 — Flow model & studio API ✅ 2026-07-20 (M5b build deferred, designed)
 DAG flows (branch/merge, error handlers, parallel fan-out, sub-flows), mapping/transform authoring API (AI-friendly: flows and mappings are declarative JSON/YAML documents with a JSON-Schema), WASM (wazero) user transforms, webhook triggers with custom API endpoints on runners.
 
 M5 is milestone-scale, split into sub-milestones (each lands green through `make check`). Build order (chosen 2026-07-20 — operational + visual first, custom code last since it is "another step, not needed right now"): **M5a → M5e → M5c → M5d → M5b**.
 - **M5a — Flow model v2 (ADR-0013) ✅ 2026-07-20.** Step graph with typed outcome edges (`onSuccess`/`onComplete` happy path, `onFailure` error handler); linear form kept as sugar, both lower to one validated `Plan`; engine `OpError` for step-attributed error routing; per-step-id telemetry; runner routes a step failure to its dead-letter handler with a payload-free, secret-redacted error record. Deferred to later ADRs: parallel fan-out/merge/multi-sink, per-record routing, sub-flows.
-- **M5b — Custom code:** Starlark-WASM inline transform op + Python subprocess step (ADR-0014; step types `wasm`/`python` reserved by M5a). Studio remains low/no-code first — code is the escape hatch, not the default.
+- **M5b — Custom code (ADR-0017) — designed, build deferred.** Two tiers: `starlark` inline transform (deterministic, fuel-metered, no fs/network; Starlark-guest-in-WASM/wazero per ADR-0001, `go.starlark.net` fallback decided at build) + `python` out-of-process step (connector subprocess pattern; uv, wheels-only, hash-pinned lockfile, internal proxy index, signed bundles in the registry). Step types `starlark`/`python`/`subflow` are reserved in `pkg/flowdoc` (parsed, rejected until built). Lowest-priority M5 capability, "last option not the go-to" — fully specced so the build is a clean pick-up. Studio stays low/no-code first.
 - **M5c — Test-mode per-step data capture (ADR-0014) ✅ 2026-07-20.** Live streaming was cut (product decision): test mode reads results from the runner on completion and overlays them (M5d canvas). Delivered the substrate — an engine `Sampler` hook capturing a bounded, secret-redacted sample of each stage's output; runner-side, ephemeral, opt-in (`?capture=1`); `GET /api/tasks/{id}/capture` + inline on the dashboard. Deferred (enterprise): durable **encrypted** payload store + retention TTL + right-to-erasure + Splunk/OTel push + prod-capture audit-gating.
 - **M5d — Studio authoring API + webhook triggers + per-hub connector capability policy** (scope: API + read-only graph view, not a full drag-drop builder; order policy → webhooks → studio):
   - **M5d-1 — connector capability policy (ADR-0015) ✅ 2026-07-20.** Per-deployment allow/deny (`SHIFT_HUB_CONNECTOR_ALLOW`/`_DENY`); disallowed connectors rejected at deploy (422), hidden from list, 404 on resolve. Name-based (capability-metadata deferred); per-deployment (per-tenant deferred).
@@ -65,8 +65,27 @@ M5 is milestone-scale, split into sub-milestones (each lands green through `make
   - **M5d-3 — studio: read-only flow graph view ✅ 2026-07-20.** `flowdoc.GraphView()` (nodes + typed edges, data-free) → hub `GET /api/v1/flows/{name}/graph`; hub dashboard renders the step graph as SVG (green success/complete, red failure → dead-letter) in a modal, plus a direct-executions panel. `make up` demo is now a v2 graph so the view has content out of the box. Test-run overlay (per-step capture pulled from the runner onto the canvas) deferred — needs the studio→runner cross-service read.
 - **M5e — Tiered benchmark suite ✅ 2026-07-20.** Graded process shapes — simple (passthrough), standard (filter+coerce+project), complex (flatten+aggregate/spill-capable), extreme (multi-stage, very high cardinality) — each measured single + concurrent through the production path (gen source → discard sink, lowered via the v2 Plan), reported per tier on the runner dashboard. `POST/GET /api/benchmark/tiers`. Http-sink "extreme" profile deferred (needs a live target; would couple the numbers to an unrelated endpoint).
 
-- **Studio is low/no-code first**; the escape hatch for custom logic is **sandboxed WASM user transforms** (no filesystem/network, fuel-metered), not embedded scripting engines. Guest-language candidates in preference order: Starlark (Python-like syntax, deterministic, cheap), JS (QuickJS-wasm), Python (micro-Python/RustPython-wasm) — decided by ADR when M5 starts. (Boomi-style custom steps, done safely.)
-- **Tiered benchmark suite** (done — M5e above): graded process shapes reported per tier on the runner dashboard; the basis for honest incumbent comparisons (M6 collateral). The *extreme* tier ships as multi-stage + very-high-cardinality on the reproducible gen→discard path; an http-sink variant is deferred (would couple numbers to an external target).
+**M5 exit met (ADRs 0013–0017).** Flow model v2 (step graph + outcome edges),
+tiered benchmark, test-mode data capture, connector capability policy,
+webhook/direct execution end-to-end (proven live on the bundle), hub-authored
+webhook config synced to runners, and the read-only studio graph view.
+Custom code (M5b) is designed (ADR-0017) with the build deferred as the
+lowest-priority, "last option" capability.
+
+**Deferred out of M5 (pick up as their own tasks, ADR-backed where noted):**
+- Custom-code **build** — `starlark` + `python` tiers (ADR-0017).
+- **Sub-flows** and a true **parallel-fan-out / merge / multi-sink DAG**
+  (ADR-0013 deferred these; the current engine is single-path pull); also
+  per-record content routing.
+- **Studio**: full drag-drop authoring (M5d shipped read-only) + the
+  **test-run overlay** (per-step capture pulled from the runner onto the
+  canvas — needs a studio→runner cross-service read).
+- **Durable payload storage** (enterprise): runner-local **encrypted** store
+  + retention TTL + right-to-erasure + Splunk/OTel push + prod-capture
+  audit-gating (ADR-0014 consequences).
+- **Synchronous webhooks** + HMAC verification; connector **capability
+  metadata** (vs name-based policy) + **per-tenant** capability scope
+  (ADR-0015/0016); http-sink "extreme" benchmark profile.
 
 ### M6 — Enterprise hardening
 Observability (OpenTelemetry + Prometheus), audit log, billing aggregation from telemetry, rate limiting, connector marketplace plumbing, migration tooling (OpenAPI importer), benchmark-vs-incumbent collateral.
