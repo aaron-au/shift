@@ -120,7 +120,31 @@ Proof: FireDue contention test (N schedules, 2 stores, exactly N tasks)
 - `adminOrRunner` guards the endpoints both need (artifact resolve/fetch,
   trusted keys).
 - Unauthenticated: `/` (static dashboard page), `/healthz`, `/readyz`,
-  `/api/v1/authinfo` (which login methods exist — nothing more).
+  `/metrics` (M6a), `/api/v1/authinfo` (which login methods exist — nothing
+  more).
+
+## Audit log (M6b)
+
+`Store.Audit(actor, action, entity, detail)` appends an `audit_log` row;
+every human/admin **mutating** endpoint calls it (deploy/publish/execute,
+schedules, secrets + KEK rotate, webhooks, publisher keys, connector
+publish, runner-token create, runner register). The `actor` comes from
+`actor(r)` — `user:<email>`, `admin:break-glass`, or `runner:<id>`.
+
+- **Read path:** `GET /api/v1/audit` (admin realm) — newest-first,
+  account-scoped, keyset-paginated by descending id. Filters: `action`
+  (exact, or a trailing-dot family like `secret.`), `actor`, `entity`,
+  `before` (id cursor), `limit` (≤500). `?format=csv` streams a CSV export.
+  Surfaced as the studio **Audit** window (+ Export CSV via authenticated
+  fetch).
+- **Account-scoped:** migration 0009 added `audit_log.account_id` (it was
+  the one un-scoped control-plane table); `Audit` writes `accountID(ctx)`,
+  `ListAudit` filters on it like every other list.
+- **Deliberately not audited:** the runner task-lifecycle endpoints
+  (`lease`, `heartbeat`, `complete`, `fail`, `reportExecution`). These are
+  high-frequency **machine** actions (constant lease polling, heartbeats at
+  TTL/3) already captured in the `task_attempts` history and the M6a
+  metrics — auditing them is noise, not an audit trail.
 
 ## Secrets (ADR-0010)
 

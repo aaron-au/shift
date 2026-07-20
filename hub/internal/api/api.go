@@ -104,6 +104,7 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 		})
 	})
 	mux.Handle("GET /api/v1/stats", a.admin(a.stats))
+	mux.Handle("GET /api/v1/audit", a.admin(a.listAudit)) // M6b
 
 	if opts.MetricsHandler != nil {
 		mux.Handle("GET /metrics", opts.MetricsHandler) // Prometheus scrape (M6a, ADR-0020)

@@ -155,8 +155,8 @@ func (s *Store) Audit(ctx context.Context, actor, action, entity string, detail 
 		}
 	}
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO audit_log (actor, action, entity, detail) VALUES ($1,$2,$3,$4)`,
-		actor, action, entity, raw)
+		`INSERT INTO audit_log (account_id, actor, action, entity, detail) VALUES ($1,$2,$3,$4,$5)`,
+		accountID(ctx), actor, action, entity, raw)
 	return err
 }
 

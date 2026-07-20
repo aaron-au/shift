@@ -170,6 +170,16 @@
         <div class="hint">Write-only; reference in configs as {"$secret":"name"}.</div></div>
       <div class="resize"></div>
     </div>
+    <div class="win" id="win-audit" data-title="Audit" data-icon="🛡">
+      <div class="titlebar"><span class="wtitle">Audit log</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
+      <div class="winbody">
+        <div class="gtoolbar"><button class="ghost" onclick="exportAudit()">Export CSV</button>
+          <span class="hint">newest 100 control-plane actions</span></div>
+        <table><thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Entity</th><th>Detail</th></tr></thead>
+        <tbody id="audit"></tbody></table>
+      </div>
+      <div class="resize"></div>
+    </div>
   </div>
 </div>
 
@@ -215,6 +225,7 @@ const WIN_DEFAULT = {
   'win-tasks': {w: 620, h: 320}, 'win-executions': {w: 560, h: 260},
   'win-overview': {w: 560, h: 180}, 'win-runners': {w: 460, h: 240},
   'win-connectors': {w: 620, h: 260}, 'win-secrets': {w: 460, h: 240},
+  'win-audit': {w: 680, h: 300},
 };
 function wmState() { try { return JSON.parse(localStorage.getItem(WM.key)) || {}; } catch (e) { return {}; } }
 function wmSave(st) { try { localStorage.setItem(WM.key, JSON.stringify(st)); } catch (e) {} }
@@ -308,18 +319,19 @@ async function boot() {
 
 async function refresh() {
   try {
-    const [ov, flows, tasks, runners, conns, secrets, scheds, execs] = await Promise.all([
+    const [ov, flows, tasks, runners, conns, secrets, scheds, execs, audit] = await Promise.all([
       api('/api/v1/stats'), api('/api/v1/flows'), api('/api/v1/tasks?limit=30'),
       api('/api/v1/runners'), api('/api/v1/connectors'),
       api('/api/v1/secrets').catch(() => ({secrets: []})),
       api('/api/v1/schedules'),
       api('/api/v1/executions?limit=20').catch(() => ({executions: []})),
+      api('/api/v1/audit?limit=100').catch(() => ({audit: []})),
     ]);
     if (ov.oidc_login) $('oidcbox').style.display = 'block';
     renderOverview(ov); renderFlows(flows.flows || [], scheds.schedules || []);
     renderTasks(tasks.tasks || []); renderRunners(runners.runners || []);
     renderConnectors(conns.connectors || []); renderSecrets(secrets.secrets || []);
-    renderExecutions(execs.executions || []);
+    renderExecutions(execs.executions || []); renderAudit(audit.audit || []);
   } catch (e) { /* auth handled in api() */ }
 }
 
@@ -429,6 +441,29 @@ function renderExecutions(es) {
       <td>${st}${err}</td><td class="mono">${e.records_in}→${e.records_out}</td>
       <td class="mono">${new Date(e.created_at).toLocaleTimeString()}</td></tr>`;
   }).join('') || '<tr><td colspan="5" class="hint">no direct executions yet</td></tr>';
+}
+
+function renderAudit(rows) {
+  $('audit').innerHTML = rows.map(a => {
+    const detail = a.detail ? `<span class="mono">${esc(JSON.stringify(a.detail))}</span>` : '';
+    return `<tr><td class="mono">${new Date(a.at).toLocaleString()}</td>
+      <td class="mono">${esc(a.actor)}</td><td>${esc(a.action)}</td>
+      <td class="mono">${esc(a.entity || '')}</td><td>${detail}</td></tr>`;
+  }).join('') || '<tr><td colspan="5" class="hint">no audit entries</td></tr>';
+}
+
+// exportAudit downloads a CSV via authenticated fetch (a plain link can't
+// carry the bearer token).
+async function exportAudit() {
+  try {
+    const r = await fetch('/api/v1/audit?format=csv&limit=500',
+      {headers: bearer ? {Authorization: 'Bearer ' + bearer} : {}});
+    if (!r.ok) throw new Error(r.status);
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement('a');
+    a.href = url; a.download = 'audit.csv'; a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) { alert('export failed: ' + e.message); }
 }
 
 // --- studio: flow builder canvas (edit + drag + deploy, ADR-0019) ---

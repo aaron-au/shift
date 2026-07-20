@@ -304,3 +304,73 @@ func TestAuditAndPing(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestListAudit(t *testing.T) {
+	s := open(t)
+	ctx := t.Context()
+	writes := []struct{ action, entity string }{
+		{"flow.deploy", "a"}, {"flow.publish", "a"}, {"secret.put", "k"}, {"flow.deploy", "b"},
+	}
+	for _, w := range writes {
+		if err := s.Audit(ctx, "admin:break-glass", w.action, w.entity, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Newest-first, all rows.
+	all, err := s.ListAudit(ctx, store.AuditFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 4 || all[0].Action != "flow.deploy" || all[0].Entity != "b" {
+		t.Fatalf("list = %+v", all)
+	}
+	if all[0].ID <= all[3].ID {
+		t.Fatal("not ordered by descending id")
+	}
+
+	// Family prefix filter.
+	flows, err := s.ListAudit(ctx, store.AuditFilter{Action: "flow."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flows) != 3 {
+		t.Fatalf("flow.* = %d, want 3", len(flows))
+	}
+	// Exact filter.
+	exact, _ := s.ListAudit(ctx, store.AuditFilter{Action: "secret.put"})
+	if len(exact) != 1 || exact[0].Entity != "k" {
+		t.Fatalf("exact = %+v", exact)
+	}
+	// Keyset pagination.
+	page1, _ := s.ListAudit(ctx, store.AuditFilter{Limit: 2})
+	if len(page1) != 2 {
+		t.Fatalf("page1 = %d", len(page1))
+	}
+	page2, _ := s.ListAudit(ctx, store.AuditFilter{Limit: 2, BeforeID: page1[1].ID})
+	if len(page2) != 2 || page2[0].ID >= page1[1].ID {
+		t.Fatalf("page2 = %+v", page2)
+	}
+}
+
+func TestAuditAccountScoped(t *testing.T) {
+	s := open(t)
+	// Rows in another account must not leak into this account's list.
+	otherID, err := s.CreateAccount(t.Context(), "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := store.WithAccount(t.Context(), otherID)
+	if err := s.Audit(other, "x", "flow.deploy", "leak", nil); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.ListAudit(t.Context(), store.AuditFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Entity == "leak" {
+			t.Fatal("audit row leaked across accounts")
+		}
+	}
+}
