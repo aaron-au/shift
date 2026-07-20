@@ -119,6 +119,7 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("PUT /api/v1/flows/{name}", a.admin(a.deployFlow))
 	mux.Handle("GET /api/v1/flows", a.admin(a.listFlows))
 	mux.Handle("GET /api/v1/flows/{name}", a.admin(a.getFlow))
+	mux.Handle("GET /api/v1/flows/{name}/graph", a.admin(a.getFlowGraph))
 	mux.Handle("POST /api/v1/flows/{name}/versions/{version}/publish", a.admin(a.publishFlow))
 	mux.Handle("POST /api/v1/flows/{name}/execute", a.admin(a.executeFlow))
 	mux.Handle("PUT /api/v1/flows/{name}/schedule", a.admin(a.putSchedule))
@@ -287,6 +288,31 @@ func (a *api) getFlow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"flow": f, "document": json.RawMessage(doc)})
+}
+
+// getFlowGraph returns the published flow's render graph (nodes + typed
+// outcome edges) for the studio — data-free, no payload.
+func (a *api) getFlowGraph(w http.ResponseWriter, r *http.Request) {
+	_, doc, err := a.st.GetFlow(r.Context(), r.PathValue("name"), 0)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	parsed, err := flowdoc.Parse(doc)
+	if err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	g, err := parsed.GraphView()
+	if err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, g)
 }
 
 // publishFlow marks a version published (POST .../versions/{version}/publish).

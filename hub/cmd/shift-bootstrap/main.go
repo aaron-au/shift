@@ -204,9 +204,14 @@ func seed(args []string) error {
 	log.Print("seed: minted runner registration token")
 
 	if os.Getenv("SHIFT_BOOTSTRAP_DEMO") == "1" {
-		demo := `{"name":"demo","source":{"connector":"gen","action":"gen","config":{"records":10000}},` +
-			`"ops":[{"type":"filter","path":"$.active","op":"eq","value":true}],` +
-			`"sink":{"connector":"gen","action":"discard"}}`
+		// A v2 step graph so the studio graph view has real content out of
+		// the box: source → filter → sink on the happy path, with a
+		// dead-letter handler off the source's onFailure.
+		demo := `{"name":"demo","start":"in","steps":[` +
+			`{"id":"in","type":"source","connector":"gen","action":"gen","config":{"records":10000},"onSuccess":"keep","onFailure":"dead"},` +
+			`{"id":"keep","type":"filter","path":"$.active","op":"eq","value":true,"onComplete":"out"},` +
+			`{"id":"out","type":"sink","connector":"gen","action":"discard"},` +
+			`{"id":"dead","type":"sink","connector":"gen","action":"discard"}]}`
 		if err := hub.put("/api/v1/flows/demo", demo); err != nil {
 			return err
 		}

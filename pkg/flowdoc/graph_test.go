@@ -1,6 +1,9 @@
 package flowdoc
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // A well-formed graph: source → filter → sink, with a dead-letter handler
 // hung off the source's onFailure (a catch-all for the whole flow).
@@ -120,6 +123,58 @@ func TestGraphValidation(t *testing.T) {
 	for name, doc := range bad {
 		if _, err := Parse([]byte(doc)); err == nil {
 			t.Errorf("%s: accepted, want rejection", name)
+		}
+	}
+}
+
+func TestGraphView(t *testing.T) {
+	d, err := Parse([]byte(goodGraph)) // in→keep→out, source onFailure→dead
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := d.GraphView()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Start != "in" {
+		t.Fatalf("start = %q", g.Start)
+	}
+	wantMain := []string{"in", "keep", "out"}
+	if len(g.Main) != 3 || g.Main[0] != "in" || g.Main[2] != "out" {
+		t.Fatalf("main = %v, want %v", g.Main, wantMain)
+	}
+	if len(g.Nodes) != 4 { // in, keep, out, dead
+		t.Fatalf("nodes = %d, want 4", len(g.Nodes))
+	}
+	roles := map[string]string{}
+	for _, n := range g.Nodes {
+		roles[n.ID] = n.Role
+	}
+	if roles["dead"] != "handler" || roles["in"] != "main" {
+		t.Fatalf("roles = %v", roles)
+	}
+	var kinds []string
+	for _, e := range g.Edges {
+		kinds = append(kinds, e.Kind)
+	}
+	// success (in→keep), complete (keep→out), failure (in→dead)
+	if !slices.Contains(kinds, "success") || !slices.Contains(kinds, "complete") || !slices.Contains(kinds, "failure") {
+		t.Fatalf("edge kinds = %v", kinds)
+	}
+
+	// Linear form: synthesized nodes chained by complete edges.
+	lin, _ := Parse([]byte(`{"name":"x","source":{"connector":"gen","action":"gen"},
+	  "ops":[{"type":"flatten","sep":"."}],"sink":{"connector":"gen","action":"discard"}}`))
+	lg, err := lin.GraphView()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lg.Main) != 3 || len(lg.Edges) != 2 {
+		t.Fatalf("linear graph main=%v edges=%d", lg.Main, len(lg.Edges))
+	}
+	for _, e := range lg.Edges {
+		if e.Kind != "complete" {
+			t.Fatalf("linear edge kind = %q, want complete", e.Kind)
 		}
 	}
 }

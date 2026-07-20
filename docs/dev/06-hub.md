@@ -164,6 +164,16 @@ document, no payload**). `GET /api/v1/executions` (admin) lists them. This
 gives the hub fleet load + history for work it never queued, without ever
 touching payload.
 
+## Studio: flow graph view (M5d-3)
+
+`GET /api/v1/flows/{name}/graph` (admin) returns the published flow's render
+graph — `flowdoc.GraphView()`: nodes (steps, with role main|handler) + typed
+outcome edges (success / complete / failure). Data-free, like everything
+hub-side. The dashboard renders it as an SVG in a modal (green success/
+complete edges, red failure edges to the dead-letter handler), reachable
+from each flow row's "Graph" button. Read-only; authoring a graph in the
+browser and the test-run capture overlay are later studio work.
+
 ## Dashboard
 
 `GET /` serves the embedded single-file page (runner pattern): overview

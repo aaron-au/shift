@@ -71,6 +71,37 @@ const goodFlow = `{"name":"orders",
   "source":{"connector":"gen","action":"gen","config":{"records":10}},
   "sink":{"connector":"gen","action":"discard"}}`
 
+// TestFlowGraph: the studio graph endpoint returns nodes + edges for a
+// published flow.
+func TestFlowGraph(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs postgres")
+	}
+	srv := newServer(t)
+	if c := call(t, "PUT", srv.URL+"/api/v1/flows/orders", adminToken, goodFlow, nil); c != 201 {
+		t.Fatalf("deploy = %d", c)
+	}
+	if c := call(t, "POST", srv.URL+"/api/v1/flows/orders/versions/1/publish", adminToken, "", nil); c != 200 {
+		t.Fatalf("publish = %d", c)
+	}
+	var g struct {
+		Main  []string `json:"main"`
+		Nodes []struct {
+			ID, Role string
+		} `json:"nodes"`
+		Edges []struct{ Kind string } `json:"edges"`
+	}
+	if c := call(t, "GET", srv.URL+"/api/v1/flows/orders/graph", adminToken, "", &g); c != 200 {
+		t.Fatalf("graph = %d", c)
+	}
+	if len(g.Main) != 2 || g.Main[0] != "source" || g.Main[1] != "sink" {
+		t.Fatalf("main = %v, want [source sink]", g.Main)
+	}
+	if len(g.Edges) != 1 || g.Edges[0].Kind != "complete" {
+		t.Fatalf("edges = %+v", g.Edges)
+	}
+}
+
 // TestConnectorPolicy: a restricted hub rejects a deploy that uses a
 // disallowed connector (422) and hides it from resolution (404).
 func TestConnectorPolicy(t *testing.T) {

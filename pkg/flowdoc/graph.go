@@ -192,6 +192,81 @@ func (d *Document) buildPlan() (*Plan, error) {
 	return &Plan{Main: main, Catch: catch}, nil
 }
 
+// GraphNode is one node in a document's rendering graph.
+type GraphNode struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Connector string `json:"connector,omitempty"`
+	Action    string `json:"action,omitempty"`
+	Role      string `json:"role"` // "main" or "handler"
+}
+
+// GraphEdge is a typed outcome edge for rendering (kind: success, complete,
+// or failure).
+type GraphEdge struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	Kind string `json:"kind"`
+}
+
+// GraphView is a render-oriented projection of the document: nodes plus
+// typed edges, with the happy path ordered in Main for left-to-right
+// layout. It is data-free (studio reads it; the hub never touches payload).
+type GraphView struct {
+	Start string      `json:"start"`
+	Main  []string    `json:"main"` // ordered main step ids
+	Nodes []GraphNode `json:"nodes"`
+	Edges []GraphEdge `json:"edges"`
+}
+
+// GraphView validates the document and returns its rendering graph.
+func (d *Document) GraphView() (*GraphView, error) {
+	plan, err := d.Plan()
+	if err != nil {
+		return nil, err
+	}
+	onMain := map[string]bool{}
+	g := &GraphView{Start: plan.Main[0].ID}
+	for _, s := range plan.Main {
+		onMain[s.ID] = true
+		g.Main = append(g.Main, s.ID)
+	}
+
+	node := func(s *Step) GraphNode {
+		role := "handler"
+		if onMain[s.ID] {
+			role = "main"
+		}
+		return GraphNode{ID: s.ID, Type: s.Type, Connector: s.Connector, Action: s.Action, Role: role}
+	}
+
+	if len(d.Steps) > 0 {
+		for i := range d.Steps {
+			s := &d.Steps[i]
+			g.Nodes = append(g.Nodes, node(s))
+			if s.OnSuccess != "" {
+				g.Edges = append(g.Edges, GraphEdge{s.ID, s.OnSuccess, "success"})
+			}
+			if s.OnComplete != "" {
+				g.Edges = append(g.Edges, GraphEdge{s.ID, s.OnComplete, "complete"})
+			}
+			if s.OnFailure != "" {
+				g.Edges = append(g.Edges, GraphEdge{s.ID, s.OnFailure, "failure"})
+			}
+		}
+		return g, nil
+	}
+
+	// Linear form: synthesized nodes chained by complete edges.
+	for i, s := range plan.Main {
+		g.Nodes = append(g.Nodes, node(s))
+		if i+1 < len(plan.Main) {
+			g.Edges = append(g.Edges, GraphEdge{s.ID, plan.Main[i+1].ID, "complete"})
+		}
+	}
+	return g, nil
+}
+
 // validate checks one step's own fields (edges are checked while building
 // the plan, which has the whole step set for reference).
 func (s *Step) validate() error {

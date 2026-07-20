@@ -37,6 +37,11 @@
   .ops td{border:0;padding:.15rem .5rem;color:var(--dim)} .ops td:first-child{color:var(--text)}
   #login{max-width:420px;margin:4rem auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1.5rem;display:none}
   #login input{width:100%;background:#10141b;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:.5rem .7rem;margin:.6rem 0}
+  #modal{position:fixed;inset:0;background:rgba(4,8,14,.75);display:none;align-items:center;justify-content:center;z-index:10}
+  #modal .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:1.2rem;max-width:92vw;max-height:88vh;overflow:auto}
+  #modal .card h2{display:flex;justify-content:space-between;align-items:center}
+  .glegend{display:flex;gap:1rem;font-size:.72rem;color:var(--dim);margin:.2rem 0 .8rem}
+  .glegend b{font-weight:600}
 </style>
 </head>
 <body>
@@ -69,6 +74,11 @@
     <div class="hint">Publish promotes a version to the default execute path and the scheduler. Cron is UTC, 5-field.</div>
   </section>
   <section class="wide">
+    <h2>Direct executions (webhook / direct API)</h2>
+    <table><thead><tr><th>Flow</th><th>Trigger</th><th>State</th><th>Records</th><th>When</th></tr></thead>
+    <tbody id="executions"></tbody></table>
+  </section>
+  <section class="wide">
     <h2>Recent tasks</h2>
     <table><thead><tr><th>Flow</th><th>v</th><th>State</th><th>Attempt</th><th>Enqueued</th><th>Error</th></tr></thead>
     <tbody id="tasks"></tbody></table>
@@ -87,6 +97,17 @@
     <div class="hint">Values are write-only; reference them in flow configs as {"$secret":"name"}.</div>
   </section>
 </main>
+
+<div id="modal" onclick="if(event.target===this)closeGraph()">
+  <div class="card">
+    <h2><span id="graphtitle"></span><button class="ghost" onclick="closeGraph()">Close</button></h2>
+    <div class="glegend">
+      <span><b style="color:var(--ok)">──</b> success / complete</span>
+      <span><b style="color:var(--bad)">──</b> failure (error handler)</span>
+    </div>
+    <div id="graph"></div>
+  </div>
+</div>
 
 <script>
 'use strict';
@@ -132,16 +153,18 @@ async function boot() {
 
 async function refresh() {
   try {
-    const [ov, flows, tasks, runners, conns, secrets, scheds] = await Promise.all([
+    const [ov, flows, tasks, runners, conns, secrets, scheds, execs] = await Promise.all([
       api('/api/v1/stats'), api('/api/v1/flows'), api('/api/v1/tasks?limit=30'),
       api('/api/v1/runners'), api('/api/v1/connectors'),
       api('/api/v1/secrets').catch(() => ({secrets: []})),
       api('/api/v1/schedules'),
+      api('/api/v1/executions?limit=20').catch(() => ({executions: []})),
     ]);
     if (ov.oidc_login) $('oidcbox').style.display = 'block';
     renderOverview(ov); renderFlows(flows.flows || [], scheds.schedules || []);
     renderTasks(tasks.tasks || []); renderRunners(runners.runners || []);
     renderConnectors(conns.connectors || []); renderSecrets(secrets.secrets || []);
+    renderExecutions(execs.executions || []);
   } catch (e) { /* auth handled in api() */ }
 }
 
@@ -176,6 +199,7 @@ function renderFlows(flows, scheds) {
     return `<tr><td>${esc(f.name)}</td><td>v${f.latest_version}</td><td>${pubChip}</td>
       <td>${schedTxt}</td>
       <td style="white-space:nowrap">${canPublish}
+        <button class="ghost" onclick="openGraph('${esc(f.name)}')">Graph</button>
         <button class="ghost" onclick="editSchedule('${esc(f.name)}')">Schedule…</button>
         <button class="ghost" onclick="runNow('${esc(f.name)}')">Run</button></td></tr>`;
   }).join('') || '<tr><td colspan="5" class="hint">no flows deployed</td></tr>';
@@ -233,6 +257,65 @@ function renderSecrets(ss) {
   $('secrets').innerHTML = ss.map(s =>
     `<tr><td>${esc(s.name)}</td><td>v${s.version}</td><td class="mono">${new Date(s.updated_at).toLocaleString()}</td></tr>`
   ).join('') || '<tr><td colspan="3" class="hint">no secrets (or no KEK configured)</td></tr>';
+}
+
+function renderExecutions(es) {
+  $('executions').innerHTML = es.map(e => {
+    const st = `<span class="chip ${e.state}">${e.state}</span>`;
+    const err = e.error ? ` <span class="err">${esc(e.error)}</span>` : '';
+    return `<tr><td>${esc(e.flow_name)}</td><td class="mono">${esc(e.trigger)}</td>
+      <td>${st}${err}</td><td class="mono">${e.records_in}→${e.records_out}</td>
+      <td class="mono">${new Date(e.created_at).toLocaleTimeString()}</td></tr>`;
+  }).join('') || '<tr><td colspan="5" class="hint">no direct executions yet</td></tr>';
+}
+
+// --- studio: read-only flow graph ---
+const NODE_FILL = {source:'#12283f', sink:'#12352a'};
+async function openGraph(name) {
+  try {
+    const g = await api('/api/v1/flows/' + encodeURIComponent(name) + '/graph');
+    $('graphtitle').textContent = 'Flow: ' + name;
+    $('graph').innerHTML = renderGraph(g);
+    $('modal').style.display = 'flex';
+  } catch (e) { alert('graph unavailable: ' + e.message); }
+}
+function closeGraph() { $('modal').style.display = 'none'; }
+
+function renderGraph(g) {
+  const W = 150, H = 52, DX = 200, DY = 130, X0 = 20, YM = 30, YH = 30 + DY;
+  const pos = {}, main = g.main || [];
+  main.forEach((id, i) => pos[id] = {x: X0 + i * DX, y: YM});
+  // Handlers sit on a lower row, aligned under the step that references them.
+  const handlers = (g.nodes || []).filter(n => n.role === 'handler');
+  handlers.forEach((n, i) => {
+    const ref = (g.edges || []).find(e => e.kind === 'failure' && e.to === n.id);
+    const under = ref && pos[ref.from] ? pos[ref.from].x : X0 + i * DX;
+    pos[n.id] = {x: under, y: YH};
+  });
+  const width = Math.max(...Object.values(pos).map(p => p.x)) + W + X0;
+  const height = (handlers.length ? YH : YM) + H + 30;
+
+  const byId = {}; (g.nodes || []).forEach(n => byId[n.id] = n);
+  const edges = (g.edges || []).map(e => {
+    const a = pos[e.from], b = pos[e.to]; if (!a || !b) return '';
+    const col = e.kind === 'failure' ? 'var(--bad)' : 'var(--ok)';
+    let x1, y1, x2, y2;
+    if (b.y > a.y) { x1 = a.x + W/2; y1 = a.y + H; x2 = b.x + W/2; y2 = b.y; }   // down to handler
+    else { x1 = a.x + W; y1 = a.y + H/2; x2 = b.x; y2 = b.y + H/2; }             // along the main row
+    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col}" stroke-width="2" marker-end="url(#arr-${e.kind==='failure'?'r':'g'})"/>`;
+  }).join('');
+  const nodes = (g.nodes || []).map(n => {
+    const p = pos[n.id]; if (!p) return '';
+    const fill = NODE_FILL[n.type] || '#1b2230';
+    const sub = n.connector ? esc(n.connector + '/' + (n.action||'')) : esc(n.type);
+    return `<g><rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="8" fill="${fill}" stroke="var(--line)"/>
+      <text x="${p.x+10}" y="${p.y+21}" fill="var(--text)" font-size="13" font-weight="600">${esc(n.id)}</text>
+      <text x="${p.x+10}" y="${p.y+38}" fill="var(--dim)" font-size="11">${sub}</text></g>`;
+  }).join('');
+  const arrow = c => `<marker id="arr-${c[0]}" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto">
+    <path d="M0,0 L6,3 L0,6 Z" fill="${c==='green'?'var(--ok)':'var(--bad)'}"/></marker>`;
+  return `<svg width="${width}" height="${height}" style="max-width:none">
+    <defs>${arrow('green')}${arrow('red')}</defs>${edges}${nodes}</svg>`;
 }
 
 boot();
