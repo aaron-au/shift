@@ -39,9 +39,18 @@ Runner (`shift_runner_*`): `governor_budget_bytes`, `governor_used_bytes`,
 `tasks_waiting`, `tasks_submitted_total`, `tasks_completed_total`,
 `tasks_failed_total`, `records_in_total`, `connector_in_use{connector}`.
 
-## Traces — OTLP (Stage 2, pending)
+## Traces — OTLP (deferred)
 
-Distributed traces across the control plane (enqueue → lease → execute →
-per-step → report), trace context propagated in lease/report metadata, span
-attributes metadata-only and secret-redacted. **Off by default** — no OTLP
-endpoint ⇒ a no-op tracer, zero overhead. Not yet wired; see ADR-0020.
+Distributed tracing is designed (ADR-0020) but **deferred (2026-07-20)**, not
+wired. Why: the per-task causal story is largely already available — the
+`task_attempts` history (attempt trail, lease-expiry → re-dispatch) plus the
+per-step `OpStats` captured on completed tasks — and metrics cover the
+aggregate/alerting need. Tracing's unique marginal value is cross-service
+**timing** not measured today (queue-sit, lease-wait) and standard trace
+tooling; that doesn't yet justify instrumenting the request path + running a
+collector + sampling.
+
+Revisit when operators need per-task queue-sit/lease-wait tail latency, a
+support flow wants to drill one execution in Jaeger/Tempo, or multi-hop flows
+outgrow the attempts table. A lighter first step (just the missing timing
+spans, OTLP off-by-default) is noted in ADR-0020.

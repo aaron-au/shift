@@ -156,15 +156,19 @@ Milestone-scale; split into sub-milestones (each lands green through `make check
 Build order chosen 2026-07-20 — observability first (the substrate billing +
 rate limiting lean on):
 - **M6a — Observability (ADR-0020).** OpenTelemetry (Go SDK) as the single
-  telemetry stack: traces via OTLP, metrics via a Prometheus `/metrics`
-  endpoint on hubd + runnerd. Spans model a task across the control plane
-  (enqueue → lease → execute → per-step → report; trace context propagated in
-  lease/report metadata). **Metadata only — no payload, secret-redacted**
-  (two-plane split, ADR-0016). **Honest metrics** sourced from the engine's
-  real per-op accounting; **engine + `pkg/` stay telemetry-free** — OTel lives
-  only in `hub/`+`runner/`. Bounded cardinality (task/trace id never a metric
-  label). Off by default (no OTLP endpoint ⇒ no-op tracer). A metric-naming
-  convention doc under `docs/dev/` precedes wide instrumentation.
+  telemetry stack; OTel lives only in `hub/`+`runner/` (engine + `pkg/` stay
+  telemetry-free); metadata only, secret-redacted (two-plane split, ADR-0016).
+  - **Metrics ✅ 2026-07-20.** Prometheus `/metrics` on hubd + runnerd
+    (`shift_hub_*` from `store.PlatformStats`; `shift_runner_*` from
+    `service.Status()`). **Honest metrics** from the engine's real per-op
+    accounting. Bounded cardinality (task/trace id never a metric label).
+    Naming convention + catalog in `docs/dev/07-observability.md`.
+  - **Tracing (OTLP) — deferred 2026-07-20.** The per-task causal story is
+    largely already in the hub (`task_attempts` history + per-step `OpStats`);
+    metrics cover the aggregate need. Tracing's unique value (cross-service
+    queue-sit/lease-wait timing + standard trace tooling) doesn't yet justify
+    the request-path instrumentation + collector + sampling versus other M6
+    work. Design retained in ADR-0020; revisit triggers documented there.
 - **M6b — Audit log completion.** `Audit()` + table already exist; round out
   coverage of every mutating action, a query/export API, and a studio window.
 - **M6c — Rate limiting.** Hub control API + public runner webhook surface

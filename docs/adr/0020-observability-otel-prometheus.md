@@ -1,7 +1,8 @@
 # ADR-0020: Observability — OpenTelemetry traces + Prometheus metrics
 
 Date: 2026-07-20
-Status: Accepted (design); implementation in M6
+Status: Accepted. Metrics implemented (M6a stage 1). **Tracing deferred**
+(2026-07-20) — see "Tracing" below.
 
 ## Context
 
@@ -50,7 +51,27 @@ it lives **only in `hub/` and `runner/`**, never in `engine/` or `pkg/`.
   connector, action, state, route, realm — all low-cardinality. **Task id and
   trace id are never metric labels** (unbounded) — they live on spans.
 
-### Traces (OpenTelemetry / OTLP)
+### Traces (OpenTelemetry / OTLP) — DEFERRED 2026-07-20
+
+**Deferred after metrics shipped.** Rationale: much of the per-task causal
+story tracing would provide **already exists in the hub** — the
+`task_attempts` history (attempt trail, outcomes, lease-expiry → re-dispatch)
+and the per-step `OpStats` captured on completed tasks (records in/out +
+per-op nanos, ADR-0013/0014). Metrics (stage 1) cover the aggregate/alerting
+need. So tracing's *unique* marginal value is narrower than metrics': (1)
+**cross-service timing** not measured today (queue-sit and lease-wait
+durations), and (2) integration with standard trace tooling (Jaeger/Tempo) —
+against the cost of instrumenting the request path, a collector dependency,
+and sampling. Not worth it right now versus other M6 work (audit log, rate
+limiting).
+
+**Revisit when** any of: operators need queue-sit / lease-wait tail latency
+per task; a support workflow wants to drill a single slow/failed execution in
+standard trace tooling; or multi-hop flows (sub-flows/fan-out) make the causal
+graph too complex for the attempts table. A lighter first step is available —
+add only the timing spans that don't already exist (queue-sit, lease-wait,
+per-step durations), OTLP off-by-default, without elaborate attribute
+modelling. The design below stands for whenever it is picked up.
 
 - Spans model a task's life: hub `enqueue` → `lease-claim` → runner
   `execute` → per-**step** spans → `report`. Trace context propagates across
