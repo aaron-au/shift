@@ -15,6 +15,7 @@
 # land green; Workstream B raises the weak packages, then `make cover-bump`
 # tightens these floors. See docs/adr/0022-testing-and-benchmark-policy.md.
 
+
 default 0
 
 github.com/aaron-au/shift/connectors/internal/genconn 78
@@ -30,7 +31,7 @@ github.com/aaron-au/shift/hub/internal/connpolicy 98
 github.com/aaron-au/shift/hub/internal/kek 86
 github.com/aaron-au/shift/hub/internal/oidcauth 94
 github.com/aaron-au/shift/hub/internal/ratelimit 85
-github.com/aaron-au/shift/hub/internal/scheduler 18
+github.com/aaron-au/shift/hub/internal/scheduler 83
 github.com/aaron-au/shift/hub/internal/secrets 77
 github.com/aaron-au/shift/hub/internal/store 74
 github.com/aaron-au/shift/pkg/buildinfo 81

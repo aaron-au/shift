@@ -6,32 +6,55 @@ rewrite this file when you pick up.
 
 ## Where we are
 
-Milestones **M0–M5 + M5.5 (Studio Builder)** shipped; **M6 (enterprise
-hardening) in progress**. Just completed on `main` (7 commits, **NOT pushed**
-— `main` is 7 ahead of `origin/main`; push when the user asks):
+Milestones **M0–M5 + M5.5** shipped; **M6a/b/c** done; **M7 (testing &
+benchmark hardening, ADR-0022) just completed** (pivot from M6d–f, Aaron's
+call). Prior M5.5 + M6a/b/c work is already on `main` (unpushed). M7 adds:
 
-- **M5.5 Studio Builder** (ADR-0018/0019): canvas flow builder in an OS-lite
-  windowed shell + connector config-schema discovery (signed descriptors).
-  Vanilla JS, no build step, single embedded `hub/internal/api/ui.html`.
-- **M6a Observability** (ADR-0020): Prometheus `/metrics` on hubd + runnerd.
-  **OTLP tracing deferred** (rationale in ADR-0020 — attempt-history already
-  covers the causal story).
-- **M6b Audit log** (`GET /api/v1/audit` + CSV + studio window).
-- **M6c Rate limiting** (ADR-0021): token-bucket on hub API + runner webhook
-  ingress; off by default.
+- **Hard per-package coverage gate** (ADR-0022). `make cover`
+  (`scripts/coverage.sh`) = race + `-coverpkg` per module, count-merged,
+  per-package floors in `coverage.thresholds` (ratchet: `make cover-bump`).
+  `check` runs BOTH `test` (full `-race`, incl. subprocess/e2e for behavior)
+  and `cover` (deterministic gate — `SHIFT_COVERAGE=1` skips the timing-flaky
+  connector-subprocess + e2e tests so coverage never flakes). **Total 68.9%**
+  (was unmeasured). New tests lifted: scheduler 20→85, hub/api 39→77,
+  oidcauth 35→97, ratelimit 62→87 (both), webhook →100, sdk/host 58→89,
+  leaseloop 0→85, hubclient 19→88.
+- **Latent bug fixed:** `sdk/host` `Process.Close` was not idempotent — a
+  second call blocked forever (found via a new idempotency test).
+- **Benchmark suite.** `shift-bench` gained `-json`/`-runs`/`-warmup`;
+  `make bench-report` → `docs/bench-M7/results.md`. RSS ceilings stay hard.
+- **CI.** coverage HTML/JSON artifact + per-package table in the job summary
+  + README coverage badge (`badges/coverage.json`, updated by the `badge` job
+  on main) + engine benchstat base-vs-PR on PRs.
+- **Full-stack e2e.** `hub/e2e/webhook_test.go`: webhook → runner exec →
+  metadata-only hub report; asserts payload never reaches the hub (ADR-0016).
 
-`make check` is green (fmt, vet, golangci-lint, govulncheck, gitleaks,
-`-race` across all modules incl hub e2e). Postgres-backed tests need
-`SHIFT_TEST_PG` — see below.
+Coverage gate is DETERMINISTIC by design: two back-to-back `make cover` runs
+were byte-identical. Only `-short`/deterministic tests gate; integration/e2e
+prove behavior in `make test`. Postgres-backed tests need `SHIFT_TEST_PG`.
+
+### Coverage workflow (for the next agent)
+
+- `make cover` — run the gate + emit `coverage/{html,md,json}`.
+- Add tests → `make cover-bump` → review + commit `coverage.thresholds`
+  (floors only rise).
+- Flaky/subprocess tests: guard with `testing.Short() || coverageRun()` so
+  they run in `make test` but skip in the coverage pass (see the
+  `coverage_skip_test.go` helpers in runner service/leaseloop + hub/e2e).
+- Excluded from the gate (measured, not gated): `cmd/*`, `*/telemetry`,
+  `connectorpb`, `pgtest`/`oidctest`/`sdktest`, `e2e`.
 
 ## What's next (M6 remaining — user's call which)
 
 - **M6d** billing aggregation from the M6a telemetry substrate.
 - **M6e** connector marketplace plumbing.
 - **M6f** migration tooling (OpenAPI importer) + benchmark-vs-incumbent.
+- **Coverage backlog:** `runner/internal/service` (45%) + `runner/internal/api`
+  (65%) lean on subprocess integration tests for real coverage; more unit
+  tests would raise their deterministic floors. scheduler error-logging
+  branches (~15%) need a fault-injection seam to cover.
 - **Deferred, own series:** studio **visual polish** (see memory
-  `shift-studio-visual-polish` — snapping, maximise, light/dark palette,
-  styled scrollbars, resize indicator, merge close/minimise). NOT a blocker.
+  `shift-studio-visual-polish`). NOT a blocker.
 - **Deferred:** M6a OTLP tracing (ADR-0020 has triggers + a lighter option).
 
 ## How to run the dev stack (throwaway hubd + runner, no compose/TLS)
