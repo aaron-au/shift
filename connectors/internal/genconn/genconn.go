@@ -20,6 +20,12 @@ func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "gen",
 		Version: "0.1.0",
+		Meta: &sdk.ConnectorMeta{
+			Description: "Generate synthetic records (source) and discard records (sink). For benchmarks and testing.",
+			Category:    "testing",
+			Icon:        "🧪",
+			Tags:        []string{"test", "benchmark", "synthetic"},
+		},
 		Sources: map[string]func() sdk.SourceAction{
 			"gen": func() sdk.SourceAction { return &source{} },
 		},

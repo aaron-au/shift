@@ -186,6 +186,24 @@ as body (cap 128 MiB). The hub verifies the consign manifest signature
 key-trust + signature + digest fail-closed (see 04-runner.md). Blobs
 live in Postgres, content-addressed, deduped; "latest" = newest publish.
 
+**Marketplace (M6e).** On top of the signed registry:
+- **Version history:** `GET /api/v1/connectors/{name}/versions` lists every
+  published version (all os/arch, newest first, **including yanked** ones for
+  provenance). `GET /api/v1/connectors` stays latest-per-name for the summary.
+- **Yank / restore:** `POST /api/v1/connectors/{name}/versions/{version}/yank`
+  (`{os,arch,yanked}`) withdraws a version — excluded from resolve/download
+  **fail-closed**, still visible in history — or restores it. Admin, audited
+  (`connector.yank`/`connector.unyank`).
+- **Discovery metadata** (description/category/icon/tags) rides **in the signed
+  descriptor** (`sdk.ConnectorMeta`, ADR-0018) — tamper-evident, and the hub
+  still **never parses** it; the studio decodes it client-side to render the
+  browse cards. A metadata-free descriptor stays byte-identical (v1 parity).
+- **Publish tool:** `shift-consign publish` signs (v2 when a descriptor is
+  bound, via `-descriptor` or `-describe`) and uploads in one step — the
+  end-to-end path that previously lived only in an e2e test.
+- **Studio:** the **Marketplace** window (searchable cards, categories, tags,
+  per-connector version history + yank/restore).
+
 **Capability policy (M5d, ADR-0015).** A per-deployment allow/deny list
 (`SHIFT_HUB_CONNECTOR_ALLOW` / `SHIFT_HUB_CONNECTOR_DENY`) restricts which
 connectors flows may use: a deploy referencing a disallowed connector is

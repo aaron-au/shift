@@ -200,17 +200,30 @@ rate limiting lean on):
   hub) and **engine bytes-processed** (needs byte accounting added to
   `stream.OpStats` and threaded runner→hub — a hot-path change; strong billing
   signal, its own task).
-- **M6e — Connector marketplace plumbing.** Scope (2026-07-21): the signed,
-  content-addressed, versioned registry (ADR-0011/0018) is solid; add the
-  marketplace layer on top — signed **discovery metadata** (description/category/
-  icon/tags, bound into the descriptor so it stays tamper-evident), a
-  **version-list + yank** API (DB already keys by version; only latest is
-  listed today), an **end-to-end publish tool** (`shift-consign` v2 descriptor
-  + upload — today it signs v1 only and can't upload), and a searchable
-  **browse/install** studio window.
+- **M6e — Connector marketplace plumbing ✅ 2026-07-21.** On top of the signed,
+  content-addressed, versioned registry (ADR-0011/0018): signed **discovery
+  metadata** (`sdk.ConnectorMeta` — description/category/icon/tags — bound into
+  the descriptor so it stays tamper-evident; hub still never parses it, studio
+  decodes client-side; nil Meta keeps the descriptor byte-identical); a
+  **version-list** API (`GET …/connectors/{name}/versions`, all os/arch incl.
+  yanked) + **yank/restore** (`POST …/versions/{version}/yank`, fail-closed on
+  resolve/download, audited); an **end-to-end publish tool** (`shift-consign
+  publish` — v2 descriptor via `-describe`/`-descriptor` + upload, replacing the
+  e2e-only path); and a searchable **Marketplace** studio window (cards with
+  icon/description/category/tags + per-connector version history + yank/restore).
+  Not built: a literal "install" step — connectors auto-resolve to runners on
+  demand, so browse/discovery + use-in-builder is the whole surface.
 - **M6f — Migration tooling** (OpenAPI importer) + **benchmark-vs-incumbent**
   collateral. **Deferred 2026-07-21** — migration/GTM-focused, least tied to the
   near-term usable-state UI; revisit as its own milestone after M6 closes on b/d/e.
+
+**M6 substantially complete 2026-07-21.** Observability metrics (M6a), audit
+(M6b), rate limiting (M6c), usage metering (M6d), and marketplace plumbing (M6e)
+all shipped; each surfaces in the studio (Overview/Audit/Usage/Marketplace
+windows) — the "initial usable state" the UI push was aiming at. Deliberately
+deferred, each its own future task: OTLP tracing (M6a), OpenAPI importer +
+incumbent-bench (M6f), plus the M6d follow-ups (quota enforcement on the external
+account platform; engine bytes-processed metering).
 
 ### M7 — Testing & benchmark hardening (ADR-0022) ✅ 2026-07-20
 

@@ -52,6 +52,24 @@ type Connector struct {
 	// config authority. Keyed by action name (a name shared by a source
 	// and a sink shares one schema).
 	Schemas map[string][]byte
+	// Meta is optional marketplace discovery metadata (M6e). It travels in
+	// the signed descriptor (tamper-evident) and is rendered by the studio;
+	// the hub never parses it. Absent Meta keeps the descriptor byte-identical
+	// to a metadata-free one (ADR-0018 parity).
+	Meta *ConnectorMeta
+}
+
+// ConnectorMeta is marketplace discovery metadata for a connector: human
+// description, a category, an icon (emoji/short glyph), free-form tags, and a
+// docs URL. All fields optional; it is descriptive only. Because it rides in
+// the descriptor whose digest is bound into the signed manifest (ADR-0018), it
+// cannot be altered without invalidating the signature.
+type ConnectorMeta struct {
+	Description string   `json:"description,omitempty"`
+	Category    string   `json:"category,omitempty"`
+	Icon        string   `json:"icon,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	DocsURL     string   `json:"docsURL,omitempty"`
 }
 
 // ActionDescriptor is one action's public shape within a Descriptor.
@@ -70,13 +88,16 @@ type Descriptor struct {
 	Name    string             `json:"name"`
 	Version string             `json:"version"`
 	Actions []ActionDescriptor `json:"actions"`
+	// Meta is optional discovery metadata (M6e); omitted (nil) keeps the
+	// canonical bytes identical to a metadata-free descriptor.
+	Meta *ConnectorMeta `json:"meta,omitempty"`
 }
 
 // BuildDescriptor assembles a connector's Descriptor from its declared
 // actions and schemas, actions sorted by (direction, action). Shared by
 // the Describe RPC and the `describe` CLI mode so both report identically.
 func BuildDescriptor(c Connector) Descriptor {
-	d := Descriptor{Name: c.Name, Version: c.Version}
+	d := Descriptor{Name: c.Name, Version: c.Version, Meta: c.Meta}
 	for name := range c.Sources {
 		d.Actions = append(d.Actions, ActionDescriptor{Action: name, Direction: "source", ConfigSchema: schemaOrNil(c.Schemas[name])})
 	}
@@ -104,6 +125,14 @@ func CanonicalDescriptor(d Descriptor) ([]byte, error) {
 	slices.SortFunc(d.Actions, func(a, b ActionDescriptor) int {
 		return cmp.Or(cmp.Compare(a.Direction, b.Direction), cmp.Compare(a.Action, b.Action))
 	})
+	// Sort tags so re-hash is independent of the publisher's declared order.
+	if d.Meta != nil && len(d.Meta.Tags) > 0 {
+		tags := slices.Clone(d.Meta.Tags)
+		slices.Sort(tags)
+		metaCopy := *d.Meta
+		metaCopy.Tags = tags
+		d.Meta = &metaCopy
+	}
 	return json.Marshal(d)
 }
 

@@ -560,6 +560,95 @@ func TestPublisherKeysAndConnectors(t *testing.T) {
 	}
 }
 
+// TestConnectorVersionsAndYank (M6e) covers the version-history listing and
+// the yank/restore lifecycle: a yanked version disappears from resolve/list
+// (fail closed) but stays in the history; restore brings it back.
+func TestConnectorVersionsAndYank(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs postgres")
+	}
+	srv := newServer(t)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := call(t, "POST", srv.URL+"/api/v1/publisher-keys", adminToken,
+		`{"name":"pub1","public_key":"`+base64.StdEncoding.EncodeToString(pub)+`"}`, nil); c != 201 {
+		t.Fatalf("addPublisherKey = %d", c)
+	}
+	upload := func(version string) {
+		art := []byte("artifact-" + version)
+		sum := sha256.Sum256(art)
+		m := consign.Manifest{Name: "myconn", Version: version, OS: "linux", Arch: "amd64"}
+		copy(m.Digest[:], sum[:])
+		h := map[string]string{
+			"Authorization":         "Bearer " + adminToken,
+			"X-Shift-Publisher-Key": "pub1",
+			"X-Shift-Signature":     base64.StdEncoding.EncodeToString(consign.Sign(priv, m)),
+		}
+		url := srv.URL + "/api/v1/connectors/myconn/versions/" + version + "?os=linux&arch=amd64"
+		if _, c := callHdr(t, "PUT", url, h, art); c != 201 {
+			t.Fatalf("upload %s = %d", version, c)
+		}
+	}
+	upload("1.0.0")
+	upload("1.1.0")
+
+	// Version history lists both, newest first.
+	var vs struct {
+		Versions []struct {
+			Version  string `json:"version"`
+			YankedAt string `json:"yanked_at"`
+		} `json:"versions"`
+	}
+	if c := call(t, "GET", srv.URL+"/api/v1/connectors/myconn/versions", adminToken, "", &vs); c != 200 {
+		t.Fatalf("versions = %d", c)
+	}
+	if len(vs.Versions) != 2 || vs.Versions[0].Version != "1.1.0" {
+		t.Fatalf("versions = %+v", vs.Versions)
+	}
+	// Unknown connector → 404.
+	if c := call(t, "GET", srv.URL+"/api/v1/connectors/ghost/versions", adminToken, "", nil); c != 404 {
+		t.Fatalf("versions ghost = %d, want 404", c)
+	}
+
+	// Yank 1.1.0 → resolve now falls back to 1.0.0 (fail closed on the yanked).
+	if c := call(t, "POST", srv.URL+"/api/v1/connectors/myconn/versions/1.1.0/yank", adminToken,
+		`{"os":"linux","arch":"amd64","yanked":true}`, nil); c != 200 {
+		t.Fatalf("yank = %d", c)
+	}
+	var res struct {
+		Version string `json:"version"`
+	}
+	if c := call(t, "GET", srv.URL+"/api/v1/connectors/myconn/resolve?os=linux&arch=amd64", adminToken, "", &res); c != 200 || res.Version != "1.0.0" {
+		t.Fatalf("resolve after yank = %d %q, want 1.0.0", c, res.Version)
+	}
+	// History still shows 1.1.0, now marked yanked.
+	call(t, "GET", srv.URL+"/api/v1/connectors/myconn/versions", adminToken, "", &vs)
+	var found bool
+	for _, v := range vs.Versions {
+		if v.Version == "1.1.0" {
+			found = v.YankedAt != ""
+		}
+	}
+	if !found {
+		t.Fatalf("1.1.0 not marked yanked in history: %+v", vs.Versions)
+	}
+	// Yank a nonexistent version → 404.
+	if c := call(t, "POST", srv.URL+"/api/v1/connectors/myconn/versions/9.9.9/yank", adminToken,
+		`{"os":"linux","arch":"amd64"}`, nil); c != 404 {
+		t.Fatalf("yank missing = %d, want 404", c)
+	}
+	// Restore 1.1.0 → resolve returns it again.
+	if c := call(t, "POST", srv.URL+"/api/v1/connectors/myconn/versions/1.1.0/yank", adminToken,
+		`{"os":"linux","arch":"amd64","yanked":false}`, nil); c != 200 {
+		t.Fatalf("restore = %d", c)
+	}
+	if c := call(t, "GET", srv.URL+"/api/v1/connectors/myconn/resolve?os=linux&arch=amd64", adminToken, "", &res); c != 200 || res.Version != "1.1.0" {
+		t.Fatalf("resolve after restore = %d %q, want 1.1.0", c, res.Version)
+	}
+}
+
 type dlmeta struct {
 	status      int
 	digest, sig string

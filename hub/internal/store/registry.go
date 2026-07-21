@@ -35,6 +35,10 @@ type ConnectorVersion struct {
 	// nil for pre-descriptor (v1) artifacts. Stored and served verbatim;
 	// the hub never parses it.
 	Descriptor []byte `json:"-"`
+	// Yanked is set when this version has been withdrawn (marketplace M6e):
+	// resolve/download exclude it, but it stays listed for provenance.
+	// Populated only by ConnectorVersions (the version-history listing).
+	Yanked *time.Time `json:"yanked_at,omitempty"`
 }
 
 // AddPublisherKey registers a trusted Ed25519 public key.
@@ -158,6 +162,69 @@ func (s *Store) ResolveConnector(ctx context.Context, name, version, osName, arc
 		return ConnectorVersion{}, ErrNotFound
 	}
 	return cv, err
+}
+
+// ConnectorVersions lists every published version of one connector (all
+// os/arch), newest first, including yanked ones (the Yanked field is set) so
+// the marketplace can show full history. Excludes revoked-key rows only for
+// the public_key join; a revoked key yields no row.
+func (s *Store) ConnectorVersions(ctx context.Context, name string) ([]ConnectorVersion, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT c.name, v.version, v.os, v.arch, v.digest, v.signature, k.public_key, b.size_bytes, v.created_at, v.descriptor, v.yanked_at
+		   FROM connector_versions v
+		   JOIN connectors c ON c.id = v.connector_id
+		   JOIN publisher_keys k ON k.id = v.publisher_key_id
+		   JOIN connector_blobs b ON b.digest = v.digest
+		  WHERE c.account_id = $1 AND c.name = $2
+		  ORDER BY v.created_at DESC`, accountID(ctx), name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ConnectorVersion
+	for rows.Next() {
+		var cv ConnectorVersion
+		if err := rows.Scan(&cv.Name, &cv.Version, &cv.OS, &cv.Arch, &cv.Digest,
+			&cv.Signature, &cv.PublisherKey, &cv.SizeBytes, &cv.Created, &cv.Descriptor, &cv.Yanked); err != nil {
+			return nil, err
+		}
+		out = append(out, cv)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, ErrNotFound
+	}
+	return out, nil
+}
+
+// SetConnectorYanked yanks (yank=true) or restores (yank=false) one artifact
+// version. A yanked version is excluded from resolve/download (fail closed)
+// but stays visible in the version history.
+func (s *Store) SetConnectorYanked(ctx context.Context, name, version, osName, arch string, yank bool) error {
+	// Two fixed statements (no string-built SQL): yank sets the timestamp on a
+	// live row, restore clears it on a yanked row.
+	const yankSQL = `UPDATE connector_versions v SET yanked_at = now()
+		   FROM connectors c
+		  WHERE v.connector_id = c.id AND c.account_id = $1 AND c.name = $2
+		    AND v.version = $3 AND v.os = $4 AND v.arch = $5 AND v.yanked_at IS NULL`
+	const restoreSQL = `UPDATE connector_versions v SET yanked_at = NULL
+		   FROM connectors c
+		  WHERE v.connector_id = c.id AND c.account_id = $1 AND c.name = $2
+		    AND v.version = $3 AND v.os = $4 AND v.arch = $5 AND v.yanked_at IS NOT NULL`
+	q := yankSQL
+	if !yank {
+		q = restoreSQL
+	}
+	tag, err := s.pool.Exec(ctx, q, accountID(ctx), name, version, osName, arch)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // ConnectorBlob fetches artifact bytes by content digest (account-gated

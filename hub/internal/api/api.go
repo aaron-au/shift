@@ -175,6 +175,8 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("DELETE /api/v1/publisher-keys/{id}", a.admin(a.revokePublisherKey))
 	mux.Handle("PUT /api/v1/connectors/{name}/versions/{version}", a.admin(a.uploadConnector))
 	mux.Handle("GET /api/v1/connectors", a.admin(a.listConnectors))
+	mux.Handle("GET /api/v1/connectors/{name}/versions", a.admin(a.listConnectorVersions))               // M6e
+	mux.Handle("POST /api/v1/connectors/{name}/versions/{version}/yank", a.admin(a.setConnectorYanked)) // M6e
 	mux.Handle("GET /api/v1/connectors/{name}/resolve", a.adminOrRunner(a.resolveConnector))
 	mux.Handle("GET /api/v1/connectors/{name}/versions/{version}/artifact", a.adminOrRunner(a.downloadConnector))
 

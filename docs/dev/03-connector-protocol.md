@@ -88,6 +88,20 @@ The descriptor is opaque signed bytes end to end — treated exactly like the
 artifact digest, never re-marshaled (re-marshaling would change the bytes
 and break the digest).
 
+**Discovery metadata (M6e).** A connector may set `Meta *sdk.ConnectorMeta`
+(description, category, icon, tags) — optional marketplace metadata that rides
+*in* the descriptor, so it is signed and tamper-evident, and the hub still
+never parses it (the studio decodes it client-side for the Marketplace browse
+cards). `CanonicalDescriptor` sorts tags so re-hash is independent of declared
+order; an absent `Meta` (nil) keeps the descriptor byte-identical to a
+metadata-free one (v1/parity preserved).
+
+**Publishing.** `shift-consign publish -key … -name … -version … -hub … \
+-publisher-key … [-describe | -descriptor <file>] <artifact>` signs (v2 when a
+descriptor is bound) and uploads in one step (`-describe` runs `<artifact>
+describe` to extract the descriptor; the host must match the artifact's
+os/arch). `shift-consign sign` still just prints the digest + signature.
+
 ## Writing a connector
 
 Implement one or both interfaces (they mirror the engine's stream

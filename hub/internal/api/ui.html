@@ -33,6 +33,20 @@
   .hint{color:var(--dim);font-size:.78rem;margin-top:.6rem}
   .err{color:var(--bad);font-size:.78rem}
   .mono{font-family:ui-monospace,Menlo,monospace;font-size:.78rem;color:var(--dim)}
+  /* --- connector marketplace (M6e) --- */
+  #mkt-search{background:#10141b;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:.3rem .6rem;font-size:.8rem;flex:1}
+  .mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.6rem;margin-top:.4rem}
+  .mcard{background:#10141b;border:1px solid var(--line);border-radius:10px;padding:.7rem;display:flex;flex-direction:column;gap:.35rem}
+  .mcard .mhead{display:flex;gap:.5rem;align-items:baseline}
+  .mcard .icon{font-size:1.3rem;line-height:1}
+  .mcard .mname{font-weight:600}
+  .mcard .mver{color:var(--dim);font-size:.75rem}
+  .mcard .mdesc{font-size:.78rem;color:var(--text);opacity:.85;flex:1}
+  .mcard .tags{display:flex;gap:.3rem;flex-wrap:wrap}
+  .tag{background:#12283f;color:var(--accent);border-radius:6px;padding:.05rem .4rem;font-size:.68rem}
+  .tag.cat{background:#1c1630;color:#b79bff}
+  .mvlist td{font-size:.78rem}
+  .mvlist .yk{color:var(--warn)}
   .ops{background:#10141b;border-radius:8px;margin:.3rem 0 .6rem;padding:.5rem .7rem;font-size:.78rem}
   .ops td{border:0;padding:.15rem .5rem;color:var(--dim)} .ops td:first-child{color:var(--text)}
   #login{max-width:420px;margin:4rem auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1.5rem;display:none}
@@ -159,9 +173,14 @@
       <div class="winbody"><table><thead><tr><th>Name</th><th>Registered</th><th>Last seen</th></tr></thead><tbody id="runners"></tbody></table></div>
       <div class="resize"></div>
     </div>
-    <div class="win" id="win-connectors" data-title="Connectors" data-icon="⧉">
-      <div class="titlebar"><span class="wtitle">Connectors (registry)</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
-      <div class="winbody"><table><thead><tr><th>Name</th><th>Version</th><th>Platform</th><th>Digest</th><th>Size</th></tr></thead><tbody id="connectors"></tbody></table></div>
+    <div class="win" id="win-connectors" data-title="Marketplace" data-icon="🛒">
+      <div class="titlebar"><span class="wtitle">Connector marketplace</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
+      <div class="winbody">
+        <div class="gtoolbar"><input id="mkt-search" placeholder="search name, category, tag…" oninput="renderMarketplace()">
+          <span class="hint" id="mkt-count"></span></div>
+        <div class="mgrid" id="connectors"></div>
+        <div id="mkt-detail"></div>
+      </div>
       <div class="resize"></div>
     </div>
     <div class="win" id="win-secrets" data-title="Secrets" data-icon="🔑">
@@ -246,7 +265,7 @@ const WIN_DEFAULT = {
   'win-builder': {w: 780, h: 500}, 'win-flows': {w: 620, h: 300},
   'win-tasks': {w: 620, h: 320}, 'win-executions': {w: 560, h: 260},
   'win-overview': {w: 560, h: 180}, 'win-runners': {w: 460, h: 240},
-  'win-connectors': {w: 620, h: 260}, 'win-secrets': {w: 460, h: 240},
+  'win-connectors': {w: 640, h: 400}, 'win-secrets': {w: 460, h: 240},
   'win-audit': {w: 680, h: 300}, 'win-usage': {w: 560, h: 320},
 };
 function wmState() { try { return JSON.parse(localStorage.getItem(WM.key)) || {}; } catch (e) { return {}; } }
@@ -449,11 +468,75 @@ function renderRunners(rs) {
   ).join('') || '<tr><td colspan="3" class="hint">no runners registered</td></tr>';
 }
 
-function renderConnectors(cs) {
-  $('connectors').innerHTML = cs.map(c =>
-    `<tr><td>${esc(c.name)}</td><td>${esc(c.version)}</td><td class="mono">${esc(c.os)}/${esc(c.arch)}</td>
-     <td class="mono">${esc(c.digest.slice(0, 12))}…</td><td class="mono">${(c.size_bytes / 1048576).toFixed(1)} MiB</td></tr>`
-  ).join('') || '<tr><td colspan="5" class="hint">registry empty (operator-provisioned connectors don\'t appear here)</td></tr>';
+// renderConnectors caches the latest registry list, then paints the
+// marketplace. refresh() calls this; the search box calls renderMarketplace().
+function renderConnectors(cs) { window._conns = cs; renderMarketplace(); }
+
+// decodeMeta pulls the marketplace discovery metadata out of a connector's
+// signed descriptor (base64 canonical bytes, ADR-0018). The hub never parses
+// the descriptor — the studio does, client-side. Missing/v1 → empty meta.
+function decodeMeta(c) {
+  if (!c.descriptor) return {};
+  try { return (JSON.parse(atob(c.descriptor)).meta) || {}; } catch (e) { return {}; }
+}
+
+// renderMarketplace paints connector cards (icon, description, category, tags)
+// filtered by the search box. All descriptor-sourced text is escaped — it is
+// third-party publisher content.
+function renderMarketplace() {
+  const cs = window._conns || [];
+  const q = ($('mkt-search').value || '').toLowerCase().trim();
+  const cards = cs.map(c => ({c, m: decodeMeta(c)})).filter(({c, m}) => {
+    if (!q) return true;
+    const hay = [c.name, m.category, m.description, (m.tags || []).join(' ')].join(' ').toLowerCase();
+    return hay.includes(q);
+  });
+  $('mkt-count').textContent = cards.length + (cards.length === 1 ? ' connector' : ' connectors');
+  $('connectors').innerHTML = cards.map(({c, m}) => {
+    const icon = m.icon ? esc(m.icon) : '⧉';
+    const cat = m.category ? `<span class="tag cat">${esc(m.category)}</span>` : '';
+    const tags = (m.tags || []).slice(0, 6).map(t => `<span class="tag">${esc(t)}</span>`).join('');
+    const desc = m.description ? `<div class="mdesc">${esc(m.description)}</div>` : '<div class="mdesc hint">no description</div>';
+    return `<div class="mcard">
+      <div class="mhead"><span class="icon">${icon}</span><span class="mname">${esc(c.name)}</span>
+        <span class="mver">v${esc(c.version)}</span></div>
+      ${desc}
+      <div class="tags">${cat}${tags}</div>
+      <button class="ghost" onclick="openVersions('${esc(c.name)}')">Versions</button>
+    </div>`;
+  }).join('') || `<div class="hint">${q ? 'no connectors match' : 'registry empty (operator-provisioned connectors do not appear here)'}</div>`;
+}
+
+// openVersions loads a connector's full version history (all os/arch, incl.
+// yanked) into the inline detail panel, with per-version yank/restore.
+async function openVersions(name) {
+  const box = $('mkt-detail');
+  try {
+    const r = await api('/api/v1/connectors/' + encodeURIComponent(name) + '/versions');
+    const rows = (r.versions || []).map(v => {
+      const yanked = !!v.yanked_at;
+      const state = yanked ? '<span class="yk">yanked</span>' : '<span class="chip published">live</span>';
+      const btn = yanked
+        ? `<button class="ghost" onclick="yankVersion('${esc(name)}','${esc(v.version)}','${esc(v.os)}','${esc(v.arch)}',false)">Restore</button>`
+        : `<button class="ghost" onclick="yankVersion('${esc(name)}','${esc(v.version)}','${esc(v.os)}','${esc(v.arch)}',true)">Yank</button>`;
+      return `<tr><td>${esc(v.version)}</td><td class="mono">${esc(v.os)}/${esc(v.arch)}</td>
+        <td class="mono">${(v.size_bytes / 1048576).toFixed(1)} MiB</td><td>${state}</td><td>${btn}</td></tr>`;
+    }).join('');
+    box.innerHTML = `<div class="ops"><b>${esc(name)}</b> — versions
+      <table class="mvlist"><thead><tr><th>Version</th><th>Platform</th><th>Size</th><th>State</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+// yankVersion withdraws (or restores) one artifact version, then refreshes the
+// detail panel. Yanked versions are excluded from resolve/download (fail closed).
+async function yankVersion(name, version, os, arch, yank) {
+  try {
+    await api('/api/v1/connectors/' + encodeURIComponent(name) + '/versions/' + encodeURIComponent(version) + '/yank',
+      {method: 'POST', headers: {'Content-Type': 'application/json'},
+       body: JSON.stringify({os, arch, yanked: yank})});
+    openVersions(name);
+  } catch (e) { alert('yank failed: ' + e.message); }
 }
 
 function renderSecrets(ss) {

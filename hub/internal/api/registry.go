@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -205,7 +206,78 @@ func connectorManifestJSON(cv store.ConnectorVersion) map[string]any {
 	if len(cv.Descriptor) > 0 {
 		m["descriptor"] = base64.StdEncoding.EncodeToString(cv.Descriptor)
 	}
+	// yanked_at present only in the version-history listing (M6e).
+	if cv.Yanked != nil {
+		m["yanked_at"] = cv.Yanked
+	}
 	return m
+}
+
+// listConnectorVersions: GET /api/v1/connectors/{name}/versions — the full
+// version history for one connector (all os/arch, including yanked ones so the
+// marketplace can show provenance), newest first (M6e).
+func (a *api) listConnectorVersions(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !a.opts.ConnectorPolicy.Allowed(name) {
+		writeErr(w, http.StatusNotFound, store.ErrNotFound) // hidden by policy
+		return
+	}
+	cvs, err := a.st.ConnectorVersions(r.Context(), name)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(cvs))
+	for _, cv := range cvs {
+		out = append(out, connectorManifestJSON(cv))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"name": name, "versions": out})
+}
+
+// setConnectorYanked: POST /api/v1/connectors/{name}/versions/{version}/yank
+// body {"os":..,"arch":..,"yanked":true|false} (default true). Admin, audited.
+// A yanked version is excluded from resolve/download (fail closed) but stays
+// in the version history.
+func (a *api) setConnectorYanked(w http.ResponseWriter, r *http.Request) {
+	name, version := r.PathValue("name"), r.PathValue("version")
+	var req struct {
+		OS     string `json:"os"`
+		Arch   string `json:"arch"`
+		Yanked *bool  `json:"yanked"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.OS == "" {
+		req.OS = runtime.GOOS
+	}
+	if req.Arch == "" {
+		req.Arch = runtime.GOARCH
+	}
+	yank := true
+	if req.Yanked != nil {
+		yank = *req.Yanked
+	}
+	if err := a.st.SetConnectorYanked(r.Context(), name, version, req.OS, req.Arch, yank); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	action := "connector.yank"
+	if !yank {
+		action = "connector.unyank"
+	}
+	_ = a.st.Audit(r.Context(), actor(r), action, name,
+		map[string]any{"version": version, "os": req.OS, "arch": req.Arch})
+	writeJSON(w, http.StatusOK, map[string]any{"name": name, "version": version, "os": req.OS, "arch": req.Arch, "yanked": yank})
 }
 
 // --- publisher keys ----------------------------------------------------------

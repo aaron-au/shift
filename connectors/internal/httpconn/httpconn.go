@@ -20,6 +20,12 @@ func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "http",
 		Version: "0.1.0",
+		Meta: &sdk.ConnectorMeta{
+			Description: "Stream records from an HTTP GET (NDJSON) and POST records to an HTTP endpoint. SSRF-guarded.",
+			Category:    "protocol",
+			Icon:        "🌐",
+			Tags:        []string{"http", "rest", "api", "ndjson"},
+		},
 		Sources: map[string]func() sdk.SourceAction{
 			"get": func() sdk.SourceAction { return &getSource{} },
 		},
