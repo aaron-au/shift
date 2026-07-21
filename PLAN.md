@@ -225,6 +225,29 @@ deferred, each its own future task: OTLP tracing (M6a), OpenAPI importer +
 incumbent-bench (M6f), plus the M6d follow-ups (quota enforcement on the external
 account platform; engine bytes-processed metering).
 
+**Validated live 2026-07-21** via a full `make up` bundle dry-run (signed
+connectors, TLS, OIDC): published a connector with the new `shift-consign
+publish -describe`, browsed the Marketplace + version history + yank/restore,
+watched Usage metering + Audit — all confirmed on the real stack (+ studio
+screenshots). One bug found+fixed (descriptor base64 UTF-8 mojibake in the
+studio, `b64utf8`).
+
+## Future milestones (post-M6, not yet scheduled)
+
+- **Hub RBAC (issue #16) — milestone-sized, BLOCKED on the central identity/
+  account platform.** The hub is **open access** today: a minimal `users.role
+  ∈ {admin,viewer}` model exists but JIT-provisions every OIDC user as `admin`
+  (migration 0002 `DEFAULT 'admin'`) and has only two coarse tiers. Real RBAC
+  (what roles exist, who holds them, custom vs standard) is the central
+  platform's responsibility — building it in the hub re-creates the
+  account-management surface the hub explicitly is NOT ([[shift-hub-is-task-control]]).
+  Likely shape: fixed standard tiers on the hub assigned from OIDC claims,
+  least-privilege default; custom roles live in the central platform. Decision
+  deferred (Aaron, 2026-07-21) — needs its own milestone + that platform.
+- **Base connector library** — HTTP exists; need many more first-class
+  connectors (SFTP, DB source/CDC, file/CSV, S3, SMTP, message queues…) to turn
+  the platform into real integration workloads. Likely the next active track.
+
 ### M7 — Testing & benchmark hardening (ADR-0022) ✅ 2026-07-20
 
 Pivot (Aaron's call) from remaining M6 feature work to provable reliability —
