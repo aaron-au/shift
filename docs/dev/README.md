@@ -27,7 +27,11 @@ is wrong in the same PR.
    crash-recovery guarantee.
 7. [07-observability.md](07-observability.md) — telemetry (M6a): the
    OpenTelemetry/Prometheus `/metrics` endpoints, the metric catalog +
-   naming convention, and the (pending) OTLP tracing.
+   naming convention, structured logging + correlation ids (#7), and the
+   (pending) OTLP tracing.
+8. [08-release-ops.md](08-release-ops.md) — release checklist (digest-pinning,
+   supply-chain tier, SBOM/signing), staging, rollback, backup/restore drill,
+   and incident basics (#9).
 
 ## Where decisions live
 

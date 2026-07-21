@@ -1,6 +1,10 @@
 # SHIFT bundle images (M4b "just runs"). One multi-stage file, three
 # targets: hubd, runnerd, tools (bootstrap + connectors + consign).
 #   docker build -f deploy/docker/Dockerfile --target hubd -t shift/hubd .
+#
+# RELEASE: pin every base image below by digest (tag@sha256:…). Tags are
+# mutable; a release must be reproducible. See docs/dev/08-release-ops.md
+# (issue #9) for the checklist and how to resolve digests.
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 # The whole workspace: go.work resolves cross-module replaces.
