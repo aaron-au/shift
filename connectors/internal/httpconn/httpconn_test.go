@@ -178,3 +178,22 @@ func TestConfigValidation(t *testing.T) {
 		t.Fatal("want unknown-auth error")
 	}
 }
+
+// TestGetSourceSSRFPrivateRanges pins issue #5: the SSRF guard refuses
+// RFC1918, CGNAT (and by extension ULA) targets when allow_local is false.
+// The dialer Control hook rejects pre-connect on the literal IP, so no real
+// connection is attempted.
+func TestGetSourceSSRFPrivateRanges(t *testing.T) {
+	for _, target := range []string{
+		"http://10.0.0.1/", "http://192.168.1.1/", "http://172.16.0.1/", "http://100.64.0.1/",
+	} {
+		s := &getSource{}
+		if err := s.Open(context.Background(), fmt.Appendf(nil, `{"url":%q}`, target)); err != nil {
+			t.Fatalf("%s: open: %v", target, err)
+		}
+		_, err := s.Next(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "private/internal") {
+			t.Fatalf("%s: err = %v, want private/internal refusal", target, err)
+		}
+	}
+}

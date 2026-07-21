@@ -55,7 +55,7 @@ const configSchema = `{
         "token": {"type": "string", "title": "Token", "x-shift-secret": true}
       }
     },
-    "allow_local": {"type": "boolean", "title": "Allow local/loopback targets", "default": false},
+    "allow_local": {"type": "boolean", "title": "Allow local/loopback and private/internal targets (SSRF guard off)", "default": false},
     "timeout_seconds": {"type": "integer", "title": "Timeout (seconds)", "default": 300}
   }
 }`
@@ -72,8 +72,9 @@ type commonConfig struct {
 		Pass  string `json:"pass"`
 		Token string `json:"token"`
 	} `json:"auth"`
-	// AllowLocal permits loopback/link-local targets (off by default:
-	// SSRF guard, ADR-0007).
+	// AllowLocal permits internal-network targets — loopback, link-local,
+	// unspecified, RFC1918/ULA private, and CGNAT (off by default: SSRF guard,
+	// ADR-0007, issue #5). Self-hosted runners set it to reach internal APIs.
 	AllowLocal bool `json:"allow_local"`
 	// TimeoutSeconds bounds the whole request (default 300).
 	TimeoutSeconds int `json:"timeout_seconds"`
@@ -106,9 +107,20 @@ func (c *commonConfig) apply(req *http.Request) {
 	}
 }
 
-// client builds an http.Client whose dialer refuses loopback and
-// link-local (cloud metadata) addresses unless AllowLocal is set. The
-// check runs post-resolution, so DNS names cannot smuggle a blocked IP.
+// cgNAT is the RFC 6598 carrier-grade-NAT range (100.64.0.0/10). It is NOT
+// covered by net.IP.IsPrivate but is an internal-network range (and hosts
+// Alibaba/Oracle cloud metadata at 100.100.100.200), so the SSRF guard blocks
+// it alongside the RFC1918/ULA ranges IsPrivate does cover.
+var cgNAT = func() *net.IPNet { _, n, _ := net.ParseCIDR("100.64.0.0/10"); return n }()
+
+// client builds an http.Client whose dialer refuses internal-network targets
+// unless AllowLocal is set: loopback, link-local (incl. 169.254.169.254 cloud
+// metadata), unspecified, RFC1918/ULA private ranges, and CGNAT. The check runs
+// post-resolution on the concrete dialed IP (and on redirect targets), so a DNS
+// name — or a rebind — cannot smuggle a blocked IP past it. This is the core
+// SSRF guard; default-deny is safe for a multi-tenant cloud hub, and a
+// self-hosted runner that legitimately targets internal services sets
+// allow_local (issue #5).
 func (c *commonConfig) client() *http.Client {
 	dialer := &net.Dialer{
 		Timeout: 30 * time.Second,
@@ -124,8 +136,11 @@ func (c *commonConfig) client() *http.Client {
 			if ip == nil {
 				return fmt.Errorf("http: unresolvable address %q", host)
 			}
-			if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			switch {
+			case ip.IsLoopback(), ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast(), ip.IsUnspecified():
 				return fmt.Errorf("http: refusing %s (loopback/link-local; set allow_local for dev use)", ip)
+			case ip.IsPrivate(), cgNAT.Contains(ip):
+				return fmt.Errorf("http: refusing %s (private/internal range; set allow_local to reach internal targets)", ip)
 			}
 			return nil
 		},
