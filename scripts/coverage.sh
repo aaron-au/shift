@@ -112,8 +112,17 @@ NR == 1 { next }                       # skip "mode: count"
 	total[pkg] += stmts
 	if (cnt > 0) covered[pkg] += stmts
 	seen[pkg] = 1
-	gtotal += stmts
-	if (cnt > 0) gcovered += stmts
+	# Headline total counts GATED packages only — the same set the gate
+	# enforces. cmd/* main wiring, telemetry registration, generated
+	# connectorpb, and test helpers are excluded from gating (they carry no
+	# logic worth gating; see ADR-0022), so folding their statements into the
+	# headline understates the coverage that is actually enforced. They still
+	# appear per-package in the table (measured + reported), just not in the
+	# top-line number or the badge.
+	if (pkg !~ exclude_re) {
+		gtotal += stmts
+		if (cnt > 0) gcovered += stmts
+	}
 }
 END {
 	# Stable ordering.

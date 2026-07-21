@@ -16,6 +16,7 @@
 # tightens these floors. See docs/adr/0022-testing-and-benchmark-policy.md.
 
 
+
 default 0
 
 github.com/aaron-au/shift/connectors/internal/genconn 78
@@ -30,22 +31,22 @@ github.com/aaron-au/shift/hub/internal/api 74
 github.com/aaron-au/shift/hub/internal/connpolicy 98
 github.com/aaron-au/shift/hub/internal/kek 86
 github.com/aaron-au/shift/hub/internal/oidcauth 94
-github.com/aaron-au/shift/hub/internal/ratelimit 85
+github.com/aaron-au/shift/hub/internal/ratelimit 86
 github.com/aaron-au/shift/hub/internal/scheduler 83
 github.com/aaron-au/shift/hub/internal/secrets 77
 github.com/aaron-au/shift/hub/internal/store 74
 github.com/aaron-au/shift/pkg/buildinfo 81
 github.com/aaron-au/shift/pkg/consign 91
-github.com/aaron-au/shift/pkg/flowdoc 87
-github.com/aaron-au/shift/runner/internal/api 63
+github.com/aaron-au/shift/pkg/flowdoc 88
+github.com/aaron-au/shift/runner/internal/api 85
 github.com/aaron-au/shift/runner/internal/auth 96
 github.com/aaron-au/shift/runner/internal/connpool 86
 github.com/aaron-au/shift/runner/internal/connstore 79
-github.com/aaron-au/shift/runner/internal/flow 71
+github.com/aaron-au/shift/runner/internal/flow 91
 github.com/aaron-au/shift/runner/internal/hubclient 86
 github.com/aaron-au/shift/runner/internal/leaseloop 72
-github.com/aaron-au/shift/runner/internal/ratelimit 85
-github.com/aaron-au/shift/runner/internal/service 45
+github.com/aaron-au/shift/runner/internal/ratelimit 86
+github.com/aaron-au/shift/runner/internal/service 49
 github.com/aaron-au/shift/runner/internal/task 86
 github.com/aaron-au/shift/runner/internal/webhook 98
 github.com/aaron-au/shift/sdk 83

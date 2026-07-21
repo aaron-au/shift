@@ -45,6 +45,15 @@ no product-behavior change.
   wiring), `*/telemetry` (metric registration), generated `connectorpb`, and
   test helpers (`pgtest`, `oidctest`, `sdktest`, the `e2e` package itself).
   These carry no logic worth gating; gating them would invite coverage theatre.
+- **Headline total is gated-only.** The top-line coverage number (and the
+  README badge) is computed over the *gated* set — the same packages the gate
+  enforces — not over every package. Folding the excluded `main`/generated/
+  telemetry statements into the headline understates the coverage that is
+  actually enforced (their statements are real but deliberately untested), so
+  the excluded packages appear per-package in the table but not in the top-line
+  figure. This matches the standard practice of omitting `main`/generated code
+  from a coverage percentage; it is a reporting choice, not a change to what is
+  gated.
 - **Ratchet.** `make cover-bump` rewrites `coverage.thresholds` to
   achieved-minus-epsilon (2 pp of slack for nondeterministic tests). Floors
   only ever rise — an existing floor is never lowered. Run it after adding
