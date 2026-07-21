@@ -31,7 +31,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.x"
-      - name: Install protoc + plugins (TODO: pin protoc version)
+      - name: "Install protoc + plugins (TODO: pin protoc version)"
         run: |
           echo "TODO: install a pinned protoc + protoc-gen-go/-go-grpc"
           # sudo apt-get install -y protobuf-compiler=<pinned>
@@ -51,7 +51,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Build images
         run: make images VERSION=scan
-      - name: Trivy scan (TODO: pin action SHA)
+      - name: "Trivy scan (TODO: pin action SHA)"
         uses: aquasecurity/trivy-action@master # TODO: pin to a release SHA
         with:
           image-ref: shift/hubd:scan
@@ -63,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: hadolint (TODO: pin action SHA)
+      - name: "hadolint (TODO: pin action SHA)"
         uses: hadolint/hadolint-action@master # TODO: pin to a release SHA
         with:
           dockerfile: deploy/docker/Dockerfile
@@ -79,11 +79,11 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.x"
-      - name: Init CodeQL (TODO: pin action SHA)
+      - name: "Init CodeQL (TODO: pin action SHA)"
         uses: github/codeql-action/init@main # TODO: pin to a release SHA
         with:
           languages: go
       - name: Build
         run: make build
-      - name: Analyze (TODO: pin action SHA)
+      - name: "Analyze (TODO: pin action SHA)"
         uses: github/codeql-action/analyze@main # TODO: pin to a release SHA
