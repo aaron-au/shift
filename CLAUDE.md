@@ -25,7 +25,7 @@ Hub-and-spoke Integration Platform as a Service. Goal: a provisionable, enterpri
 
 ## Doctrine (non-negotiable for new code)
 
-- **Hub-and-spoke:** the HA Hub is the control plane (identity, design studio, durable task queue, registry) and never touches payload data; stateless Runners lease work, execute streams, and are disposable at any moment.
+- **Hub-and-spoke:** the HA Hub is the control plane (identity, design studio, durable task queue, registry) and never touches payload data; stateless Runners lease work, execute streams, and are disposable at any moment. The hub↔runner wire is **HTTP/JSON long-poll** (`POST /lease`, pull/lease model — ADR-0009), and the dashboard **polls**; there are **no WebSockets** in the control plane. This is deliberate (v0's WebSocket hub was the pain documented in "Lessons"); don't reintroduce WS without a superseding ADR. See `docs/reviews/2026-07-external-checklists.md`.
 - **Streaming data plane:** inter-step data moves as `io.Reader`-based streams / typed record batches. No whole-payload `map[string]interface{}` buffering. Spill to disk only above an explicit memory watermark, into a single spill store — never thousands of small files.
 - **Container-first:** everything ships as OCI images; low disk footprint by default. A self-contained "just runs" mode may persist artifacts, but efficiently (single embedded store, not file sprawl).
 - **Connectors are out-of-process:** never compiled into the runner binary, never Go native `plugin` `.so` (the prototype proved that a dead end — toolchain lock-in, no unload, RCE-shaped distribution).
