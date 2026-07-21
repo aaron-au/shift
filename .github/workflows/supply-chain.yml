@@ -1,0 +1,89 @@
+# Release/scheduled supply-chain tier (ADR-0006 amendment 2026-07-21).
+#
+# STUB — NOT wired into the merge gate. Runs only on release tags and manual
+# dispatch, never on push/PR, so it cannot block ordinary development. Each job
+# is a candidate from the 2026-07-21 tooling review; enable them one at a time
+# once the prerequisites (digest-pinned bases, pinned protoc, CodeQL validated
+# on the go.work layout) are met.
+#
+# BEFORE FIRST REAL RUN: pin every third-party action to a full commit SHA
+# (supply-chain hygiene, ADR-0006) — the tag refs below are marked TODO.
+name: supply-chain
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags: ["v*"]
+  # schedule:            # optional weekly drift/scan once the jobs are trusted
+  #   - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  proto-drift:
+    # Fails if the committed connectorpb generated code is stale vs proto/.
+    # Requires protoc + the Go plugins at PINNED versions or it flags spurious
+    # diffs — set them explicitly before enabling.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.x"
+      - name: Install protoc + plugins (TODO: pin protoc version)
+        run: |
+          echo "TODO: install a pinned protoc + protoc-gen-go/-go-grpc"
+          # sudo apt-get install -y protobuf-compiler=<pinned>
+          # go install google.golang.org/protobuf/cmd/protoc-gen-go@<pinned>
+          # go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@<pinned>
+      - name: Regenerate + assert no drift
+        run: |
+          make proto
+          git diff --exit-code -- sdk/connectorpb \
+            || { echo "connectorpb is stale — run 'make proto' and commit"; exit 1; }
+
+  image-scan:
+    # Build the OCI images and scan for OS/package CVEs (govulncheck only covers
+    # Go deps). Pin base images by digest in deploy/docker/ before relying on it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Build images
+        run: make images VERSION=scan
+      - name: Trivy scan (TODO: pin action SHA)
+        uses: aquasecurity/trivy-action@master # TODO: pin to a release SHA
+        with:
+          image-ref: shift/hubd:scan
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: "true"
+
+  dockerfile-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: hadolint (TODO: pin action SHA)
+        uses: hadolint/hadolint-action@master # TODO: pin to a release SHA
+        with:
+          dockerfile: deploy/docker/Dockerfile
+
+  codeql:
+    # Deeper taint-flow SAST (complements gosec). Validate the build step against
+    # the multi-module go.work layout before trusting results.
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.x"
+      - name: Init CodeQL (TODO: pin action SHA)
+        uses: github/codeql-action/init@main # TODO: pin to a release SHA
+        with:
+          languages: go
+      - name: Build
+        run: make build
+      - name: Analyze (TODO: pin action SHA)
+        uses: github/codeql-action/analyze@main # TODO: pin to a release SHA

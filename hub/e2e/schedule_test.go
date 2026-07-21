@@ -66,15 +66,24 @@ func TestScheduleFiresExactlyOnce(t *testing.T) {
 	r1 := newReplica(true)
 	r2 := newReplica(false)
 
-	// Deploy + publish + schedule every minute via replica 1's API.
+	// Deploy + publish + schedule via replica 1's API. The cron is a
+	// far-future annual tick ("0 4 1 1 *" — Jan 1 04:00) ON PURPOSE: every
+	// fire in this test is driven explicitly by backdate() below, and after a
+	// fire the scheduler advances next_fire_at to the cron's NEXT occurrence.
+	// A once-a-minute cron would advance to the next minute boundary, which can
+	// arrive during the test's settle window and fire a spurious third tick —
+	// a wall-clock flake. A yearly cron advances ~a year out, so no natural
+	// fire ever races the assertions; the exactly-once property is tested
+	// purely against the two backdated ticks.
+	const cron = "0 4 1 1 *"
 	doJSON(t, r1.hub.URL, "PUT", "/api/v1/flows/tick", fastFlow, nil)
 	doJSON(t, r1.hub.URL, "POST", "/api/v1/flows/tick/versions/1/publish", "", nil)
-	doJSON(t, r1.hub.URL, "PUT", "/api/v1/flows/tick/schedule", `{"cron":"* * * * *"}`, nil)
+	doJSON(t, r1.hub.URL, "PUT", "/api/v1/flows/tick/schedule", `{"cron":"`+cron+`"}`, nil)
 
 	// Backdate the schedule so the next passes (on both replicas) see it
-	// due immediately — no minute-long test.
+	// due immediately — no wall-clock wait.
 	backdate := func() {
-		if _, err := r1.st.UpsertSchedule(t.Context(), "tick", "* * * * *", true, 3,
+		if _, err := r1.st.UpsertSchedule(t.Context(), "tick", cron, true, 3,
 			time.Now().Add(-time.Second)); err != nil {
 			t.Fatal(err)
 		}

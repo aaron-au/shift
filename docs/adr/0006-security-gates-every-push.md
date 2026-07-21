@@ -27,3 +27,27 @@ Rules:
 ## Consequences
 - Pushes are slower by the gate's runtime — accepted; keep the gate fast enough that nobody is tempted to `--no-verify` (target < a couple of minutes; benchmarks are a separate non-blocking job).
 - `.githooks/pre-push` requires each clone to run `git config core.hooksPath .githooks` once — documented in README and Makefile `setup` target.
+
+## Amendment 2026-07-21: a release/scheduled supply-chain tier
+The "one identical gate, no CI-only checks" rule (above) governs the
+**correctness & code-security** gate — the things a developer must be able to
+reproduce before pushing. Some genuinely valuable **supply-chain** checks
+cannot live in pre-push at all: they need infrastructure a developer checkout
+doesn't have (a built OCI image, a Docker daemon, protoc + pinned plugins) or
+runtimes measured in minutes (deep SAST). Forcing them into `make check` would
+either break loopback developers or blow the fast-gate budget; leaving them out
+of `make check` while running them in CI would violate the rule above.
+
+Resolution: a **separate, explicitly-scoped tier** — `.github/workflows/supply-chain.yml`
+— run on release tags and `workflow_dispatch` (and optionally scheduled), NOT on
+every push/PR. It is not part of `make check` and does not gate ordinary merges;
+it is a distinct release-hardening surface. This is a conscious extension of
+ADR-0006, not a loophole: the fast gate stays identical everywhere; the release
+tier is additive and clearly labelled.
+
+Candidate tier contents (each added only when it earns its keep — see the
+2026-07-21 tooling review): Trivy image scan + digest-pinned base images,
+hadolint Dockerfile lint, a `proto-check` generated-code drift gate (with pinned
+protoc), CodeQL, SBOM generation, and artifact signing. Local/pre-push gains
+`tidy-check` (module hygiene) and `-shuffle=on -count=1` on the test run, which
+DO belong in the identical gate because every developer can run them.

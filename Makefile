@@ -1,4 +1,4 @@
-.PHONY: setup build test bench bench-report cover cover-bump fmt fmt-check vet lint vuln leaks check tidy clean fuzz
+.PHONY: setup build test bench bench-report cover cover-bump fmt fmt-check vet lint vuln leaks check tidy tidy-check clean fuzz
 
 MODULES := engine sdk pkg runner hub connectors
 VERSION ?= dev
@@ -25,9 +25,11 @@ proto:
 	       --go-grpc_out=. --go-grpc_opt=module=github.com/aaron-au/shift \
 	       proto/connector/v1/connector.proto
 
-## test: run all tests with the race detector (always on — ADR-0006)
+## test: run all tests with the race detector (always on — ADR-0006).
+## -shuffle=on surfaces order-dependent / shared-state tests; -count=1 defeats
+## the test cache so a gate never trusts a stale pass.
 test:
-	@for m in $(MODULES); do echo "--- test $$m"; (cd $$m && go test -race ./...) || exit 1; done
+	@for m in $(MODULES); do echo "--- test $$m"; (cd $$m && go test -race -shuffle=on -count=1 ./...) || exit 1; done
 
 ## cover: per-package coverage gate (coverage.thresholds) + coverage/ artifacts
 ## (coverage.html browsable, coverage.md job summary, coverage.json badge). Runs
@@ -93,11 +95,22 @@ leaks:
 ## check: THE gate (ADR-0006) — identical locally, pre-push, and in CI.
 ## `test` = full `-race` suite incl. subprocess integration tests (behavior);
 ## `cover` = deterministic per-package coverage gate (SHIFT_COVERAGE).
-check: fmt-check vet lint vuln leaks test cover
+## Supply-chain scans that cannot run in pre-push (image/Dockerfile/SAST) live
+## in the separate release/scheduled tier (.github/workflows/supply-chain.yml),
+## an explicit ADR-0006 extension — not smuggled in as CI-only correctness.
+check: fmt-check tidy-check vet lint vuln leaks test cover
 	@echo "check: all gates green"
 
 tidy:
 	@for m in $(MODULES); do (cd $$m && go mod tidy); done
+
+## tidy-check: prove go.mod/go.sum are already tidy (part of the gate). Runs
+## `go mod tidy` per module then fails on any diff — on a clean CI checkout the
+## mutation is discarded; locally the diff IS the fix, ready to commit.
+tidy-check:
+	@for m in $(MODULES); do echo "--- tidy-check $$m"; (cd $$m && go mod tidy) || exit 1; done
+	@git diff --exit-code -- $(foreach m,$(MODULES),$(m)/go.mod $(m)/go.sum) \
+	  || { echo "go.mod/go.sum not tidy — commit the changes shown above"; exit 1; }
 
 ## images: OCI images for the compose bundle (hubd, runnerd, tools)
 images:
