@@ -19,6 +19,24 @@ via async observable callbacks:
 - **runner** — `runner/internal/telemetry`, sourced from `service.Status()`
   (in-memory governor + task totals + connector pool; no I/O).
 
+**Per-request HTTP metrics (hub, issue #7):** synchronous instruments
+`shift_hub_http_requests_total` + `shift_hub_http_request_duration_seconds`,
+recorded by the API's `observe` middleware and labelled `method` / `route` /
+`status`. The `route` is the **matched mux pattern** (`GET /api/v1/flows/{name}`),
+read from `r.Pattern` after routing — bounded cardinality, never the raw path.
+The middleware records via a func on `api.Options` (`RecordHTTP`) so the `api`
+package stays free of the telemetry dependency.
+
+## Structured logging + correlation ids (hub, issue #7)
+
+`hubd` sets a JSON `slog` default (level via `SHIFT_HUB_LOG_LEVEL`). The
+`observe` middleware assigns each request a short correlation id, echoes it as
+`X-Request-Id`, puts it on the request context (`api.RequestID(ctx)` for
+handlers), and emits one structured access line (`id`/`method`/`route`/`status`/
+`dur_ms`). Payload/secret values never enter a log. **Not yet done:** the runner
+control API's mirror and propagating the id into runner→hub reports for full
+cross-plane correlation — a follow-up on #7.
+
 ### Naming convention (follow for all future metrics)
 
 - `shift_<component>_<subject>[_<unit>]` — component is `hub` or `runner`.

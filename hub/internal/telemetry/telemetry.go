@@ -31,12 +31,36 @@ type Snapshot struct {
 	Flows           int64
 }
 
-// NewHub builds the Prometheus /metrics handler. statsFn is invoked once per
-// scrape (async observable callback) to source live values; it must be
-// cheap and safe to call from a background context (no tenant scope).
-// rejectedFn returns cumulative rate-limit rejections by class (M6c); may
-// be nil (no limiter).
-func NewHub(statsFn func(context.Context) (Snapshot, error), rejectedFn func() map[string]int64) (http.Handler, error) {
+// Hub bundles the /metrics handler with the synchronous instruments the API
+// records into per request (per-route HTTP metrics, issue #7).
+type Hub struct {
+	Handler http.Handler
+	reqs    metric.Int64Counter
+	dur     metric.Float64Histogram
+}
+
+// RecordHTTP records one served request. route is the matched mux pattern
+// (bounded cardinality — never the raw path), status the response code. Safe
+// on a nil *Hub (metrics disabled).
+func (h *Hub) RecordHTTP(ctx context.Context, method, route string, status int, seconds float64) {
+	if h == nil {
+		return
+	}
+	attrs := metric.WithAttributes(
+		attribute.String("method", method),
+		attribute.String("route", route),
+		attribute.Int("status", status),
+	)
+	h.reqs.Add(ctx, 1, attrs)
+	h.dur.Record(ctx, seconds, attrs)
+}
+
+// NewHub builds the Prometheus /metrics handler + HTTP recorder. statsFn is
+// invoked once per scrape (async observable callback) to source live values;
+// it must be cheap and safe to call from a background context (no tenant
+// scope). rejectedFn returns cumulative rate-limit rejections by class (M6c);
+// may be nil (no limiter).
+func NewHub(statsFn func(context.Context) (Snapshot, error), rejectedFn func() map[string]int64) (*Hub, error) {
 	reg := prometheus.NewRegistry()
 	exp, err := otelprom.New(otelprom.WithRegisterer(reg))
 	if err != nil {
@@ -85,6 +109,19 @@ func NewHub(statsFn func(context.Context) (Snapshot, error), rejectedFn func() m
 		return nil, err
 	}
 
+	// Synchronous per-request HTTP instruments (issue #7). Labelled by method,
+	// matched route pattern (bounded), and status — never the raw path.
+	httpReqs, err := m.Int64Counter("shift_hub_http_requests_total",
+		metric.WithDescription("HTTP requests served, by method/route/status."))
+	if err != nil {
+		return nil, err
+	}
+	httpDur, err := m.Float64Histogram("shift_hub_http_request_duration_seconds",
+		metric.WithDescription("HTTP request handling duration."))
+	if err != nil {
+		return nil, err
+	}
+
 	// One callback, one stats query per scrape — observes every instrument.
 	_, err = m.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
 		s, err := statsFn(ctx)
@@ -111,5 +148,9 @@ func NewHub(statsFn func(context.Context) (Snapshot, error), rejectedFn func() m
 		return nil, fmt.Errorf("telemetry: register callback: %w", err)
 	}
 
-	return promhttp.HandlerFor(reg, promhttp.HandlerOpts{}), nil
+	return &Hub{
+		Handler: promhttp.HandlerFor(reg, promhttp.HandlerOpts{}),
+		reqs:    httpReqs,
+		dur:     httpDur,
+	}, nil
 }

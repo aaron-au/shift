@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -65,6 +66,15 @@ func main() {
 		fmt.Println("hubd", version)
 		return
 	}
+
+	// Structured logs (issue #7): JSON to stderr, level from
+	// SHIFT_HUB_LOG_LEVEL (debug|info|warn|error, default info). The API's
+	// access log + correlation ids ride this; startup log.* lines stay plain.
+	var lvl slog.Level
+	if err := lvl.UnmarshalText([]byte(envOr("SHIFT_HUB_LOG_LEVEL", "info"))); err != nil {
+		lvl = slog.LevelInfo
+	}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: lvl})))
 	if *dsn == "" {
 		log.Fatal("hubd: -db (or SHIFT_HUB_DB) is required")
 	}
@@ -164,7 +174,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("hubd: metrics: %v", err)
 	}
-	opts.MetricsHandler = metricsH
+	opts.MetricsHandler = metricsH.Handler
+	opts.RecordHTTP = metricsH.RecordHTTP
 
 	h, err := api.Handler(st, opts)
 	if err != nil {

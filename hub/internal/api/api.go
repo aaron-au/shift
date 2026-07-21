@@ -6,11 +6,15 @@
 package api
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -60,6 +64,10 @@ type Options struct {
 	// RateLimit throttles the control API per identity/IP (M6c, ADR-0021).
 	// Optional; nil (or a class with RPS<=0) disables limiting.
 	RateLimit *ratelimit.Limiter
+	// RecordHTTP records per-request metrics (method, matched route, status,
+	// duration seconds). Optional; nil disables HTTP metrics. Passed as a func
+	// so the api package stays free of the telemetry dependency (issue #7).
+	RecordHTTP func(ctx context.Context, method, route string, status int, seconds float64)
 }
 
 func (o *Options) defaults() error {
@@ -187,7 +195,66 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("POST /api/v1/tasks/{id}/fail", a.runner(a.fail))
 	mux.Handle("POST /api/v1/executions", a.runner(a.reportExecution))
 
-	return mux, nil
+	return a.observe(mux), nil
+}
+
+type reqIDKey struct{}
+
+// newRequestID returns a short random correlation id for one request.
+func newRequestID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// RequestID returns the correlation id attached to a request context (""
+// if none). Handlers/logs use it to tie work to one request.
+func RequestID(ctx context.Context) string {
+	id, _ := ctx.Value(reqIDKey{}).(string)
+	return id
+}
+
+// statusRecorder captures the response status for the access log + metrics.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+// observe wraps the mux with a correlation id (echoed as X-Request-Id and put
+// on the context), a structured access log, and per-route HTTP metrics
+// (issue #7). The route label is the matched mux pattern (bounded), read after
+// routing; never the raw path. Payload/secret values never enter a log or a
+// metric label (two-plane split).
+func (a *api) observe(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rid := newRequestID()
+		w.Header().Set("X-Request-Id", rid)
+		ctx := context.WithValue(r.Context(), reqIDKey{}, rid)
+		sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		start := time.Now()
+		next.ServeHTTP(sr, r.WithContext(ctx))
+		dur := time.Since(start)
+
+		route := r.Pattern // matched pattern, e.g. "GET /api/v1/flows/{name}"
+		if route == "" {
+			route = "other"
+		}
+		if a.opts.RecordHTTP != nil {
+			a.opts.RecordHTTP(ctx, r.Method, route, sr.status, dur.Seconds())
+		}
+		slog.LogAttrs(ctx, slog.LevelInfo, "http",
+			slog.String("id", rid),
+			slog.String("method", r.Method),
+			slog.String("route", route),
+			slog.Int("status", sr.status),
+			slog.Int64("dur_ms", dur.Milliseconds()),
+		)
+	})
 }
 
 // --- auth -----------------------------------------------------------------
