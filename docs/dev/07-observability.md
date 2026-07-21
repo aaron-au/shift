@@ -60,6 +60,12 @@ Runner (`shift_runner_*`): `governor_budget_bytes`, `governor_used_bytes`,
 
 Hub also exports `shift_hub_ratelimited_total{class}` (M6c, ADR-0021).
 
+**Not a metric label:** per-account **usage** (M6d) is deliberately *not* on the
+Prometheus surface — per-tenant labels blow cardinality. It lives in the
+`usage_events` ledger, queried via `GET /api/v1/usage` (rollup) and pulled via
+`GET /api/v1/usage/events` (cursor export for the external billing platform).
+See [06-hub.md](06-hub.md) → Usage metering.
+
 ## Traces — OTLP (deferred)
 
 Distributed tracing is designed (ADR-0020) but **deferred (2026-07-20)**, not

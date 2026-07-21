@@ -23,20 +23,34 @@ type DirectExecution struct {
 }
 
 // RecordDirectExecution stores a runner-reported direct execution under the
-// caller's account. runnerID is the reporting runner ("" if unknown).
+// caller's account. runnerID is the reporting runner ("" if unknown). The
+// operational history row and its metering row (M6d) are written atomically.
 func (s *Store) RecordDirectExecution(ctx context.Context, runnerID string, e DirectExecution) (string, error) {
 	id := newUUID()
+	acct := accountID(ctx)
 	var runner any
 	if runnerID != "" {
 		runner = runnerID
 	}
-	_, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx,
 		`INSERT INTO direct_executions
 		   (id, account_id, runner_id, flow_name, trigger, state, records_in, records_out, error, started_at, finished_at)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11)`,
-		id, accountID(ctx), runner, e.FlowName, e.Trigger, e.State,
-		e.RecordsIn, e.RecordsOut, e.Error, e.Started, e.Finished)
-	return id, err
+		id, acct, runner, e.FlowName, e.Trigger, e.State,
+		e.RecordsIn, e.RecordsOut, e.Error, e.Started, e.Finished); err != nil {
+		return "", err
+	}
+	// source is the trigger (webhook|api); outcome mirrors the reported state.
+	if err := recordUsage(ctx, tx, acct, e.Trigger, e.FlowName, e.State,
+		e.RecordsIn, e.RecordsOut, execSeconds(e.Started, e.Finished)); err != nil {
+		return "", err
+	}
+	return id, tx.Commit(ctx)
 }
 
 // DirectExecutions lists the account's recent direct executions, newest first.

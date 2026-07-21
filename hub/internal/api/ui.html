@@ -180,6 +180,17 @@
       </div>
       <div class="resize"></div>
     </div>
+    <div class="win" id="win-usage" data-title="Usage" data-icon="📊">
+      <div class="titlebar"><span class="wtitle">Usage (last 30 days)</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
+      <div class="winbody">
+        <div class="gtoolbar"><button class="ghost" onclick="exportUsage()">Export CSV</button>
+          <span class="hint">metering substrate — counts only, never payload</span></div>
+        <div class="stats" id="usage-totals"></div>
+        <table><thead><tr><th>Flow</th><th>Runs</th><th>Records in→out</th><th>Exec s</th></tr></thead>
+        <tbody id="usage-flows"></tbody></table>
+      </div>
+      <div class="resize"></div>
+    </div>
   </div>
 </div>
 
@@ -236,7 +247,7 @@ const WIN_DEFAULT = {
   'win-tasks': {w: 620, h: 320}, 'win-executions': {w: 560, h: 260},
   'win-overview': {w: 560, h: 180}, 'win-runners': {w: 460, h: 240},
   'win-connectors': {w: 620, h: 260}, 'win-secrets': {w: 460, h: 240},
-  'win-audit': {w: 680, h: 300},
+  'win-audit': {w: 680, h: 300}, 'win-usage': {w: 560, h: 320},
 };
 function wmState() { try { return JSON.parse(localStorage.getItem(WM.key)) || {}; } catch (e) { return {}; } }
 function wmSave(st) { try { localStorage.setItem(WM.key, JSON.stringify(st)); } catch (e) {} }
@@ -330,19 +341,21 @@ async function boot() {
 
 async function refresh() {
   try {
-    const [ov, flows, tasks, runners, conns, secrets, scheds, execs, audit] = await Promise.all([
+    const [ov, flows, tasks, runners, conns, secrets, scheds, execs, audit, usage] = await Promise.all([
       api('/api/v1/stats'), api('/api/v1/flows'), api('/api/v1/tasks?limit=30'),
       api('/api/v1/runners'), api('/api/v1/connectors'),
       api('/api/v1/secrets').catch(() => ({secrets: []})),
       api('/api/v1/schedules'),
       api('/api/v1/executions?limit=20').catch(() => ({executions: []})),
       api('/api/v1/audit?limit=100').catch(() => ({audit: []})),
+      api('/api/v1/usage').catch(() => null),
     ]);
     if (ov.oidc_login) $('oidcbox').style.display = 'block';
     renderOverview(ov); renderFlows(flows.flows || [], scheds.schedules || []);
     renderTasks(tasks.tasks || []); renderRunners(runners.runners || []);
     renderConnectors(conns.connectors || []); renderSecrets(secrets.secrets || []);
     renderExecutions(execs.executions || []); renderAudit(audit.audit || []);
+    renderUsage(usage);
   } catch (e) { /* auth handled in api() */ }
 }
 
@@ -478,6 +491,39 @@ async function exportAudit() {
     const url = URL.createObjectURL(await r.blob());
     const a = document.createElement('a');
     a.href = url; a.download = 'audit.csv'; a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) { alert('export failed: ' + e.message); }
+}
+
+// renderUsage paints the metering rollup: account-wide totals + per-flow rows.
+// Counts + seconds only — the hub is task control, not the billing platform.
+const num = n => Number(n || 0).toLocaleString();
+function renderUsage(u) {
+  if (!u) { $('usage-totals').innerHTML = '<span class="hint">usage unavailable</span>'; return; }
+  const t = u.totals || {};
+  $('usage-totals').innerHTML =
+    stat(num(t.executions), 'executions') + stat(num(t.completed), 'completed') +
+    stat(num(t.failed), 'failed') + stat(num(t.records_in), 'records in') +
+    stat(num(t.records_out), 'records out') +
+    stat((t.exec_seconds || 0).toFixed(1), 'exec seconds');
+  const flows = u.by_flow || [];
+  $('usage-flows').innerHTML = flows.map(f =>
+    `<tr><td>${esc(f.flow_name || '(unnamed)')}</td><td class="mono">${num(f.executions)}</td>
+      <td class="mono">${num(f.records_in)}→${num(f.records_out)}</td>
+      <td class="mono">${(f.exec_seconds || 0).toFixed(1)}</td></tr>`
+  ).join('') || '<tr><td colspan="4" class="hint">no usage in range</td></tr>';
+}
+
+// exportUsage downloads the raw metering ledger as CSV (the same rows the
+// external billing platform pulls via /usage/events).
+async function exportUsage() {
+  try {
+    const r = await fetch('/api/v1/usage/events?format=csv&limit=1000',
+      {headers: bearer ? {Authorization: 'Bearer ' + bearer} : {}});
+    if (!r.ok) throw new Error(r.status);
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement('a');
+    a.href = url; a.download = 'usage.csv'; a.click();
     URL.revokeObjectURL(url);
   } catch (e) { alert('export failed: ' + e.message); }
 }

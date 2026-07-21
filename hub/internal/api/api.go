@@ -154,6 +154,8 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("GET /api/v1/webhooks/sync", a.runner(a.syncWebhooks))
 	mux.Handle("GET /api/v1/tasks", a.admin(a.listTasks))
 	mux.Handle("GET /api/v1/executions", a.admin(a.listDirectExecutions))
+	mux.Handle("GET /api/v1/usage", a.admin(a.usageReport))               // M6d
+	mux.Handle("GET /api/v1/usage/events", a.admin(a.usageEventsExport)) // M6d export pull
 	mux.Handle("GET /api/v1/tasks/{id}", a.admin(a.getTask))
 	mux.Handle("GET /api/v1/me", a.admin(a.me))
 

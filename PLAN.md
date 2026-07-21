@@ -169,8 +169,14 @@ rate limiting lean on):
     queue-sit/lease-wait timing + standard trace tooling) doesn't yet justify
     the request-path instrumentation + collector + sampling versus other M6
     work. Design retained in ADR-0020; revisit triggers documented there.
-- **M6b — Audit log completion.** `Audit()` + table already exist; round out
-  coverage of every mutating action, a query/export API, and a studio window.
+- **M6b — Audit log completion ✅ 2026-07-21.** Every mutating admin action
+  audits (`api/*.go` call sites: flow deploy/publish, task enqueue, runner
+  token/register, secret put/delete + KEK rotate + per-secret access, schedule
+  put/delete, webhook upsert/delete, connector publish, publisher-key add/revoke);
+  runner hot-path endpoints (lease/heartbeat/complete/fail/report) deliberately
+  excluded. `audit_log` tenant-scoped (migration 0009 `account_id`); read API
+  `GET /api/v1/audit` (keyset pagination, action-family filter, `?format=csv`
+  export with formula-injection guard); studio Audit window (`ui.html`).
 - **M6c — Rate limiting ✅ 2026-07-20 (ADR-0021).** Token-bucket
   (`golang.org/x/time/rate`), per-process/per-key. Hub control API: keyed by
   identity (admin/runner class) in the auth wrappers + by client IP (public
@@ -179,10 +185,32 @@ rate limiting lean on):
   `/metrics` exempt; idle buckets swept. Per-replica by design (overload/abuse
   protection, not global quota). Off by default (rps<=0). Rejections exported
   as `shift_{hub,runner}_ratelimited_total{class}`.
-- **M6d — Billing aggregation** from the telemetry substrate (M6a).
-- **M6e — Connector marketplace plumbing.**
+- **M6d — Usage metering substrate ✅ 2026-07-21** (telemetry substrate, M6a).
+  **Boundary (2026-07-21, Aaron):** the hub is **task control**, NOT the central
+  account-management / billing platform — that is a separate global system that
+  does not exist yet. So M6d on the hub is *metering + an export point*, not a
+  billing system of record: `account_id` here is a tenant key, and the future
+  billing platform *pulls* usage from the hub. Scope: per-account **metering +
+  visibility** — the runner already reports records-in/out + per-op seconds
+  (today dumped opaquely into `tasks.result` JSONB) and `direct_executions`
+  carries typed records for the push path; promote to an append-only
+  `usage_events` ledger + aggregation API (studio Usage window) + a cursor-based
+  raw-events export endpoint (the external billing platform's ingest). Deferred:
+  **quota/plan enforcement** (belongs to the external account platform, not the
+  hub) and **engine bytes-processed** (needs byte accounting added to
+  `stream.OpStats` and threaded runner→hub — a hot-path change; strong billing
+  signal, its own task).
+- **M6e — Connector marketplace plumbing.** Scope (2026-07-21): the signed,
+  content-addressed, versioned registry (ADR-0011/0018) is solid; add the
+  marketplace layer on top — signed **discovery metadata** (description/category/
+  icon/tags, bound into the descriptor so it stays tamper-evident), a
+  **version-list + yank** API (DB already keys by version; only latest is
+  listed today), an **end-to-end publish tool** (`shift-consign` v2 descriptor
+  + upload — today it signs v1 only and can't upload), and a searchable
+  **browse/install** studio window.
 - **M6f — Migration tooling** (OpenAPI importer) + **benchmark-vs-incumbent**
-  collateral.
+  collateral. **Deferred 2026-07-21** — migration/GTM-focused, least tied to the
+  near-term usable-state UI; revisit as its own milestone after M6 closes on b/d/e.
 
 ### M7 — Testing & benchmark hardening (ADR-0022) ✅ 2026-07-20
 

@@ -252,11 +252,13 @@ func (s *Store) Fail(ctx context.Context, taskID, runnerID, errMsg string) (requ
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var attempt, maxAttempts int
+	var acct, flowName string
+	var started, finished *time.Time
 	err = tx.QueryRow(ctx,
-		`SELECT attempt, max_attempts FROM tasks
+		`SELECT attempt, max_attempts, account_id, flow_name, started_at FROM tasks
 		 WHERE id = $1 AND leased_by = $2 AND state = 'leased'
 		 FOR UPDATE`,
-		taskID, runnerID).Scan(&attempt, &maxAttempts)
+		taskID, runnerID).Scan(&attempt, &maxAttempts, &acct, &flowName, &started)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, ErrLeaseLost
 	}
@@ -270,9 +272,9 @@ func (s *Store) Fail(ctx context.Context, taskID, runnerID, errMsg string) (requ
 			`UPDATE tasks SET state = 'queued', leased_by = NULL, lease_expires_at = NULL, error = $2
 			 WHERE id = $1`, taskID, errMsg)
 	} else {
-		_, err = tx.Exec(ctx,
+		err = tx.QueryRow(ctx,
 			`UPDATE tasks SET state = 'failed', finished_at = now(), leased_by = NULL, lease_expires_at = NULL, error = $2
-			 WHERE id = $1`, taskID, errMsg)
+			 WHERE id = $1 RETURNING finished_at`, taskID, errMsg).Scan(&finished)
 	}
 	if err != nil {
 		return false, err
@@ -282,6 +284,14 @@ func (s *Store) Fail(ctx context.Context, taskID, runnerID, errMsg string) (requ
 		 WHERE task_id = $1 AND attempt = $2`,
 		taskID, attempt, errMsg); err != nil {
 		return false, err
+	}
+	// Meter only the terminal failure (M6d): a requeued attempt is not a
+	// billable execution outcome — it will meter once it reaches a terminal
+	// state. No result payload on failure, so record counts are zero.
+	if !requeued {
+		if err := recordUsage(ctx, tx, acct, UsageSourceTask, flowName, "failed", 0, 0, execSeconds(started, finished)); err != nil {
+			return false, err
+		}
 	}
 	return requeued, tx.Commit(ctx)
 }
@@ -294,12 +304,14 @@ func (s *Store) finish(ctx context.Context, taskID, runnerID, state, errMsg stri
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var attempt int
+	var acct, flowName string
+	var started, finished *time.Time
 	err = tx.QueryRow(ctx,
 		`UPDATE tasks SET state = $3, finished_at = now(), result = $4, error = NULLIF($5,''),
 		        leased_by = NULL, lease_expires_at = NULL
 		 WHERE id = $1 AND leased_by = $2 AND state = 'leased'
-		 RETURNING attempt`,
-		taskID, runnerID, state, result, errMsg).Scan(&attempt)
+		 RETURNING attempt, account_id, flow_name, started_at, finished_at`,
+		taskID, runnerID, state, result, errMsg).Scan(&attempt, &acct, &flowName, &started, &finished)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrLeaseLost
 	}
@@ -310,6 +322,13 @@ func (s *Store) finish(ctx context.Context, taskID, runnerID, state, errMsg stri
 		`UPDATE task_attempts SET finished_at = now(), outcome = $3, error = NULLIF($4,'')
 		 WHERE task_id = $1 AND attempt = $2`,
 		taskID, attempt, state, errMsg); err != nil {
+		return err
+	}
+	// Metering row in the same tx: a terminal task always has its usage record
+	// (M6d). Counts come from the runner's result; the task's own account_id is
+	// authoritative over the request context.
+	in, out := parseResultMetrics(result)
+	if err := recordUsage(ctx, tx, acct, UsageSourceTask, flowName, state, in, out, execSeconds(started, finished)); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

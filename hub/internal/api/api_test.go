@@ -315,6 +315,97 @@ func TestLeaseProtocol(t *testing.T) {
 	}
 }
 
+// TestUsageEndpoints (M6d) drives a full lease→complete flow through the API,
+// then asserts the usage rollup + cursor export reflect it, plus auth and
+// bad-parameter handling.
+func TestUsageEndpoints(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs postgres")
+	}
+	srv := newServer(t)
+
+	// Empty account: well-formed zero report, no auth → 401, bad since → 400.
+	var empty struct {
+		Totals struct {
+			Executions int64 `json:"executions"`
+		} `json:"totals"`
+	}
+	if code := call(t, "GET", srv.URL+"/api/v1/usage", adminToken, "", &empty); code != 200 {
+		t.Fatalf("usage (empty) = %d", code)
+	}
+	if empty.Totals.Executions != 0 {
+		t.Fatalf("empty usage executions = %d", empty.Totals.Executions)
+	}
+	if code := call(t, "GET", srv.URL+"/api/v1/usage", "", "", nil); code != 401 {
+		t.Fatalf("usage without token = %d, want 401", code)
+	}
+	if code := call(t, "GET", srv.URL+"/api/v1/usage?since=notatime", adminToken, "", nil); code != 400 {
+		t.Fatalf("usage bad since = %d, want 400", code)
+	}
+
+	// Register + publish + execute + lease + complete one task with counts.
+	var tok struct{ Token string }
+	call(t, "POST", srv.URL+"/api/v1/runner-tokens", adminToken, `{}`, &tok)
+	var reg struct {
+		Secret string `json:"secret"`
+	}
+	call(t, "POST", srv.URL+"/api/v1/runners/register", "", `{"token":"`+tok.Token+`","name":"r1"}`, &reg)
+	call(t, "PUT", srv.URL+"/api/v1/flows/orders", adminToken, goodFlow, nil)
+	call(t, "POST", srv.URL+"/api/v1/flows/orders/versions/1/publish", adminToken, "", nil)
+	var acc struct {
+		TaskID string `json:"task_id"`
+	}
+	call(t, "POST", srv.URL+"/api/v1/flows/orders/execute", adminToken, `{"idempotency_key":"k1"}`, &acc)
+	var lease struct {
+		Task struct {
+			ID string `json:"id"`
+		} `json:"task"`
+	}
+	if code := call(t, "POST", srv.URL+"/api/v1/lease", reg.Secret, `{"wait_seconds":5}`, &lease); code != 200 {
+		t.Fatalf("lease = %d", code)
+	}
+	if code := call(t, "POST", srv.URL+"/api/v1/tasks/"+lease.Task.ID+"/complete", reg.Secret,
+		`{"records_in":7,"records_out":7}`, nil); code != 204 {
+		t.Fatalf("complete = %d", code)
+	}
+
+	// Rollup now reflects the completed task.
+	var rep struct {
+		Totals struct {
+			Executions int64 `json:"executions"`
+			Completed  int64 `json:"completed"`
+			RecordsIn  int64 `json:"records_in"`
+		} `json:"totals"`
+		ByFlow []struct {
+			FlowName string `json:"flow_name"`
+		} `json:"by_flow"`
+	}
+	if code := call(t, "GET", srv.URL+"/api/v1/usage", adminToken, "", &rep); code != 200 {
+		t.Fatalf("usage = %d", code)
+	}
+	if rep.Totals.Executions != 1 || rep.Totals.Completed != 1 || rep.Totals.RecordsIn != 7 {
+		t.Fatalf("usage totals = %+v", rep.Totals)
+	}
+	if len(rep.ByFlow) != 1 || rep.ByFlow[0].FlowName != "orders" {
+		t.Fatalf("usage by-flow = %+v", rep.ByFlow)
+	}
+
+	// Cursor export returns the metering row; a caught-up page has next=0.
+	var exp struct {
+		Events []struct {
+			ID     int64  `json:"id"`
+			Source string `json:"source"`
+		} `json:"events"`
+		Next int64 `json:"next"`
+	}
+	if code := call(t, "GET", srv.URL+"/api/v1/usage/events", adminToken, "", &exp); code != 200 {
+		t.Fatalf("usage events = %d", code)
+	}
+	if len(exp.Events) != 1 || exp.Events[0].Source != "task" || exp.Next != 0 {
+		t.Fatalf("usage events = %+v (next %d)", exp.Events, exp.Next)
+	}
+}
+
 // TestErrorEnvelope pins the ADR-0023 error envelope: status + message always,
 // and a finer machine `code` on the sub-status cases that need it.
 func TestErrorEnvelope(t *testing.T) {

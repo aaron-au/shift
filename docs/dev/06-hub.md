@@ -26,7 +26,9 @@ hub/
   cmd/hubd/            flags/env, migrate-at-boot, HTTP(S) serving, scheduler loop
   cmd/shift-bootstrap/ compose-bundle one-shot: certs+KEK ("certs"), seed ("seed")
   internal/store/      pgx pool + embedded migrations + all SQL
-    migrations/000{1..5}_*.sql   schema v1→v5 (see below)
+    migrations/00{01..10}_*.sql  schema (v5 core + 0006 direct_executions,
+                                 0007 webhooks, 0008 connector descriptor,
+                                 0009 audit account, 0010 usage_events)
     runners.go         registration tokens, runner identity, secret auth
     users.go           OIDC users (JIT upsert by issuer+subject), roles
     flows.go           flow upsert, monotonic versions, publish workflow
@@ -201,6 +203,41 @@ never enter the queue, so the runner reports their **metadata** afterwards —
 document, no payload**). `GET /api/v1/executions` (admin) lists them. This
 gives the hub fleet load + history for work it never queued, without ever
 touching payload.
+
+## Usage metering (M6d)
+
+The hub is **task control, not the account/billing platform** — that is a
+separate, external system that does not exist yet. So the hub only *meters and
+exports* usage; the future billing platform *pulls* it. `account_id` here is a
+tenant key, never an account of record, and there is **no quota/plan enforcement
+on the hub** (that belongs to the external platform).
+
+`usage_events` (migration 0010) is an **append-only ledger**: one row per
+terminal execution — queued tasks (`source='task'`) and direct/push runs
+(`source='webhook'|'api'`). Each row is **metadata only** — `account_id`, `at`,
+`source`, `flow_name`, `outcome`, `records_in`, `records_out`, `exec_seconds` —
+never payload. It is written **inside the completion transaction** so a terminal
+task always has its usage record: `finish()` (success), the terminal branch of
+`Fail()` (a requeued attempt is not billed — it meters once it reaches a terminal
+state), and `RecordDirectExecution` (atomic with the history row). Record counts
+come from the runner's result (`parseResultMetrics`, best-effort → zeros on a
+nil/malformed blob); `exec_seconds` from the start/finish timestamps. The ledger
+is deliberately decoupled from `tasks`: the operational task row (and its large
+`result` JSONB) may be pruned, but the usage record must survive, so metrics are
+promoted to typed columns here rather than re-derived from `result`.
+
+- **Read path:** `GET /api/v1/usage?since=&until=` (admin) — account-scoped
+  rollup: totals, per-flow, daily series. RFC3339 bounds; default last 30 days.
+  Surfaced as the studio **Usage** window.
+- **Export pull:** `GET /api/v1/usage/events?since_id=&limit=` (admin) —
+  cursor-based incremental pull the external billing platform ingests; `next` is
+  the cursor for the following page (0 = caught up). `?format=csv` streams.
+  A global/cross-tenant pull is future work (needs a system-scoped credential;
+  the hub is not the account master).
+- **Deferred:** quota/plan enforcement (external platform) and engine
+  **bytes-processed** (the engine measures `ArenaBytes` but never reports it;
+  adding it needs byte accounting in `stream.OpStats` threaded runner→hub — a
+  hot-path change, its own task).
 
 ## Webhook config (M5d-2 s3, ADR-0016)
 
