@@ -216,6 +216,15 @@ func (p *Process) Describe(ctx context.Context) (sdk.Descriptor, error) {
 		}
 		d.Actions = append(d.Actions, ad)
 	}
+	if m := resp.GetMeta(); m != nil {
+		d.Meta = &sdk.ConnectorMeta{
+			Description: m.GetDescription(),
+			Category:    m.GetCategory(),
+			Icon:        m.GetIcon(),
+			Tags:        m.GetTags(),
+			DocsURL:     m.GetDocsUrl(),
+		}
+	}
 	return d, nil
 }
 

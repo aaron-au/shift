@@ -53,6 +53,19 @@ message DescribeResponse {
   string name = 1;
   string version = 2;
   repeated ActionSchema actions = 3;
+  // Optional marketplace discovery metadata (M6e). Absent leaves the
+  // descriptor byte-identical to a metadata-free one (ADR-0018 parity).
+  ConnectorMeta meta = 4;
+}
+
+// ConnectorMeta is optional discovery metadata (M6e): human description,
+// category, icon (emoji/glyph), free-form tags, docs URL. Descriptive only.
+message ConnectorMeta {
+  string description = 1;
+  string category = 2;
+  string icon = 3;
+  repeated string tags = 4;
+  string docs_url = 5;
 }
 
 // ActionSchema describes one action's config document.

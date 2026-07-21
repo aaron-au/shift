@@ -1,4 +1,4 @@
-.PHONY: setup build test bench bench-report cover cover-bump fmt fmt-check vet lint actions vuln leaks check tidy tidy-check clean fuzz
+.PHONY: setup build proto test bench bench-report cover cover-bump fmt fmt-check vet lint actions vuln leaks check tidy tidy-check clean fuzz
 
 MODULES := engine sdk pkg runner hub connectors
 VERSION ?= dev

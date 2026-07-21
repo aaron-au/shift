@@ -175,6 +175,15 @@ func (s *server) Describe(_ context.Context, _ *connectorpb.DescribeRequest) (*c
 			ConfigSchema: a.ConfigSchema,
 		})
 	}
+	if d.Meta != nil {
+		resp.Meta = &connectorpb.ConnectorMeta{
+			Description: d.Meta.Description,
+			Category:    d.Meta.Category,
+			Icon:        d.Meta.Icon,
+			Tags:        d.Meta.Tags,
+			DocsUrl:     d.Meta.DocsURL,
+		}
+	}
 	return resp, nil
 }
 

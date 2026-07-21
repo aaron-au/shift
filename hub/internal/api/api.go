@@ -154,7 +154,7 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("GET /api/v1/webhooks/sync", a.runner(a.syncWebhooks))
 	mux.Handle("GET /api/v1/tasks", a.admin(a.listTasks))
 	mux.Handle("GET /api/v1/executions", a.admin(a.listDirectExecutions))
-	mux.Handle("GET /api/v1/usage", a.admin(a.usageReport))               // M6d
+	mux.Handle("GET /api/v1/usage", a.admin(a.usageReport))              // M6d
 	mux.Handle("GET /api/v1/usage/events", a.admin(a.usageEventsExport)) // M6d export pull
 	mux.Handle("GET /api/v1/tasks/{id}", a.admin(a.getTask))
 	mux.Handle("GET /api/v1/me", a.admin(a.me))
@@ -175,7 +175,7 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("DELETE /api/v1/publisher-keys/{id}", a.admin(a.revokePublisherKey))
 	mux.Handle("PUT /api/v1/connectors/{name}/versions/{version}", a.admin(a.uploadConnector))
 	mux.Handle("GET /api/v1/connectors", a.admin(a.listConnectors))
-	mux.Handle("GET /api/v1/connectors/{name}/versions", a.admin(a.listConnectorVersions))               // M6e
+	mux.Handle("GET /api/v1/connectors/{name}/versions", a.admin(a.listConnectorVersions))              // M6e
 	mux.Handle("POST /api/v1/connectors/{name}/versions/{version}/yank", a.admin(a.setConnectorYanked)) // M6e
 	mux.Handle("GET /api/v1/connectors/{name}/resolve", a.adminOrRunner(a.resolveConnector))
 	mux.Handle("GET /api/v1/connectors/{name}/versions/{version}/artifact", a.adminOrRunner(a.downloadConnector))
