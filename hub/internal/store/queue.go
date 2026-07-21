@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/aaron-au/shift/pkg/flowdoc"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -55,11 +56,23 @@ func (s *Store) Enqueue(ctx context.Context, flowName string, version int, idemp
 	if version <= 0 {
 		version = f.PublishedVersion
 	}
-	if maxAttempts <= 0 {
-		maxAttempts = 3
-	}
+	maxAttempts = effectiveMaxAttempts(doc, maxAttempts)
 
 	return enqueueTx(ctx, s.pool, accountID(ctx), f.ID, f.Name, version, doc, idempotencyKey, maxAttempts)
+}
+
+// effectiveMaxAttempts resolves a task's attempt ceiling. A flow declared
+// at_most_once caps at 1 and cannot be overridden by a trigger requesting more
+// (the flow's non-idempotent safety intent wins — ADR-0002, issue #11);
+// otherwise the trigger's request applies, defaulting when unset.
+func effectiveMaxAttempts(doc json.RawMessage, requested int) int {
+	if flowdoc.DeliveryFromDoc(doc) == flowdoc.DeliveryAtMostOnce {
+		return 1
+	}
+	if requested > 0 {
+		return requested
+	}
+	return flowdoc.DefaultMaxAttempts
 }
 
 // queryExecer is the slice of pgx both *pgxpool.Pool and pgx.Tx satisfy,
@@ -162,10 +175,14 @@ func (s *Store) ReapExpired(ctx context.Context) error {
 		return err
 	}
 
-	// Attempts remain → back to the queue for re-dispatch.
+	// Attempts remain → back to the queue for re-dispatch. The `attempt <
+	// max_attempts` guard MUST be here too, not just on the terminal-fail
+	// statement above: the two are separate round-trips with independent now(),
+	// so a lease expiring in the window between them would otherwise be missed
+	// by terminal-fail and requeued here, exceeding max_attempts by one.
 	rows, err = s.pool.Query(ctx,
 		`UPDATE tasks SET state = 'queued', leased_by = NULL, lease_expires_at = NULL
-		 WHERE state = 'leased' AND lease_expires_at < now()
+		 WHERE state = 'leased' AND lease_expires_at < now() AND attempt < max_attempts
 		 RETURNING id, attempt`)
 	if err != nil {
 		return fmt.Errorf("store: reap requeue: %w", err)

@@ -374,3 +374,46 @@ func TestAuditAccountScoped(t *testing.T) {
 		}
 	}
 }
+
+// TestDeliveryAtMostOnceCapsAttempts pins issue #11: a flow declared
+// at_most_once caps max_attempts at 1 at enqueue, and a trigger requesting
+// more cannot override the flow's non-idempotent safety intent.
+func TestDeliveryAtMostOnceCapsAttempts(t *testing.T) {
+	s := open(t)
+	ctx := t.Context()
+
+	doc := json.RawMessage(`{"name":"once","delivery":"at_most_once",
+	  "source":{"connector":"gen","action":"gen","config":{"records":1}},
+	  "sink":{"connector":"gen","action":"discard"}}`)
+	v, err := s.DeployFlow(ctx, "once", doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PublishFlow(ctx, "once", v); err != nil {
+		t.Fatal(err)
+	}
+
+	// Trigger asks for 5 attempts; the flow's at_most_once policy must win.
+	id, err := s.Enqueue(ctx, "once", 0, "", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetTask(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MaxAttempts != 1 {
+		t.Fatalf("at_most_once flow: max_attempts = %d, want 1", got.MaxAttempts)
+	}
+
+	// A default (at-least-once) flow keeps the trigger's request.
+	deployPublished(t, s, "orders")
+	id2, err := s.Enqueue(ctx, "orders", 0, "", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got2, _ := s.GetTask(ctx, id2)
+	if got2.MaxAttempts != 5 {
+		t.Fatalf("at_least_once flow: max_attempts = %d, want 5", got2.MaxAttempts)
+	}
+}

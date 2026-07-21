@@ -75,3 +75,33 @@ func TestCountAggMalformedPathRejected(t *testing.T) {
 		t.Fatal("count agg with malformed path was accepted; expected rejection")
 	}
 }
+
+// TestDeliveryPolicy pins the at-least-once/at-most-once flow intent (issue
+// #11): validation of the field, the MaxAttempts() mapping, and the
+// no-full-parse DeliveryFromDoc extractor.
+func TestDeliveryPolicy(t *testing.T) {
+	base := `{"name":"f","start":"in","steps":[` +
+		`{"id":"in","type":"source","connector":"http","action":"get","config":{"url":"https://x"},"onComplete":"out"},` +
+		`{"id":"out","type":"sink","connector":"http","action":"post","config":{"url":"https://y"}}]`
+	valid := map[string]int{
+		`,"delivery":"at_least_once"}`: DefaultMaxAttempts,
+		`,"delivery":"at_most_once"}`:  1,
+		`}`:                            DefaultMaxAttempts, // absent → default
+	}
+	for tail, wantMax := range valid {
+		d, err := Parse([]byte(base + tail))
+		if err != nil {
+			t.Errorf("tail %q: parse: %v", tail, err)
+			continue
+		}
+		if got := d.MaxAttempts(); got != wantMax {
+			t.Errorf("tail %q: MaxAttempts = %d, want %d", tail, got, wantMax)
+		}
+		if got := DeliveryFromDoc([]byte(base + tail)); got != d.Delivery {
+			t.Errorf("tail %q: DeliveryFromDoc = %q, want %q", tail, got, d.Delivery)
+		}
+	}
+	if _, err := Parse([]byte(base + `,"delivery":"whenever"}`)); err == nil {
+		t.Error("invalid delivery accepted")
+	}
+}

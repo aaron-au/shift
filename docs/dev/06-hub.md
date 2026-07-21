@@ -90,6 +90,20 @@ fail         requeue while attempt < max_attempts, else terminal
 reap         at claim time AND every scheduler tick (crash visibility)
 ```
 
+Both reap statements (terminal-fail and requeue) carry the
+`attempt < max_attempts` guard: they are separate round-trips with independent
+`now()`, so without the guard on the requeue path a lease expiring in the
+window between them could exceed `max_attempts` by one (issue #12).
+
+**Delivery policy (flow-level, ADR-0002).** A flow document's `delivery` field
+sets its dispatch intent for hub-queued triggers: `at_least_once` (default —
+re-dispatch a dead runner's task; idempotency keys dedupe side effects) or
+`at_most_once` (non-idempotent flow — cap `max_attempts` at 1 so a lost runner
+fails terminally rather than risk a double effect). The cap is applied at
+enqueue (`effectiveMaxAttempts`, shared by `Enqueue` and `FireDue`) and a
+trigger cannot raise it — the flow's safety intent wins. Webhooks are
+runner-direct (ADR-0016), not hub-queued, so this policy does not apply to them.
+
 Timing knobs (api.Options / hubd flags): `LeaseTTL` 30s default —
 runners heartbeat at TTL/3. Long-poll `wait_seconds` capped at 30s.
 

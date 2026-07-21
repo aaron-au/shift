@@ -26,6 +26,16 @@ import (
 type Document struct {
 	Name string `json:"name"`
 
+	// Delivery is the flow's at-least-once vs at-most-once intent for
+	// hub-queued triggers (schedule, API execute). "" / "at_least_once"
+	// (default): a runner that dies mid-task has the task re-dispatched
+	// (idempotency keys dedupe side effects). "at_most_once": the flow is
+	// non-idempotent, so a lost runner fails the task terminally rather than
+	// risk a double side effect — it caps max_attempts at 1 and cannot be
+	// overridden by a trigger requesting retries. The engine ignores this
+	// field; it is a control-plane dispatch policy only. (See ADR-0002.)
+	Delivery string `json:"delivery,omitempty"`
+
 	// Linear form.
 	Source Endpoint `json:"source,omitzero"`
 	Ops    []Op     `json:"ops,omitempty"`
@@ -194,9 +204,43 @@ func Parse(data []byte) (*Document, error) {
 // Validate checks the document without touching connectors. It routes to
 // the graph validator when the document is in v2 (Steps) form, and keeps
 // the linear-form checks otherwise.
+// Delivery modes and the default attempt ceiling (ADR-0002).
+const (
+	DeliveryAtLeastOnce = "at_least_once"
+	DeliveryAtMostOnce  = "at_most_once"
+	DefaultMaxAttempts  = 3
+)
+
+// MaxAttempts is the attempt ceiling implied by the flow's delivery intent.
+// at_most_once caps at 1 (a lost runner fails the task, never retries);
+// everything else uses the default. This is a hard cap the hub applies at
+// enqueue — a trigger cannot raise a non-idempotent flow's attempts.
+func (d *Document) MaxAttempts() int {
+	if d.Delivery == DeliveryAtMostOnce {
+		return 1
+	}
+	return DefaultMaxAttempts
+}
+
+// DeliveryFromDoc extracts the delivery mode from a stored (already-validated)
+// flow document without a full parse, for the hub's enqueue-time attempt
+// resolution. An unreadable/absent field yields "" (at-least-once default).
+func DeliveryFromDoc(raw []byte) string {
+	var d struct {
+		Delivery string `json:"delivery"`
+	}
+	_ = json.Unmarshal(raw, &d)
+	return d.Delivery
+}
+
 func (d *Document) Validate() error {
 	if d.Name == "" {
 		return errors.New("flow: name is required")
+	}
+	switch d.Delivery {
+	case "", DeliveryAtLeastOnce, DeliveryAtMostOnce:
+	default:
+		return fmt.Errorf("flow: delivery %q must be %q or %q", d.Delivery, DeliveryAtLeastOnce, DeliveryAtMostOnce)
 	}
 	if len(d.Steps) > 0 {
 		if d.Source.Connector != "" || len(d.Ops) > 0 || d.Sink.Connector != "" {

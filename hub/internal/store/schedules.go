@@ -218,7 +218,7 @@ func (s *Store) FireDue(ctx context.Context, nextFn func(cronExpr string, after 
 		// ticks and must get distinct keys. A re-dispatched *same* tick
 		// re-reads the identical stored value, so dedup still holds.
 		key := fmt.Sprintf("sched:%s:%s", d.id, d.tick.UTC().Format(time.RFC3339Nano))
-		taskID, err := enqueueTx(ctx, tx, d.account, d.flowID, d.flowName, d.published, doc, key, d.maxAttempts)
+		taskID, err := enqueueTx(ctx, tx, d.account, d.flowID, d.flowName, d.published, doc, key, effectiveMaxAttempts(doc, d.maxAttempts))
 		if err != nil {
 			return fired, err
 		}
