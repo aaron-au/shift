@@ -104,17 +104,29 @@ Admission is the **only queueing**: each task reserves
 `task-watermark + overhead` (defaults 64 MiB + 16 MiB) against the
 runner-wide governor (`-mem-budget`, default 1 GiB). If the reservation
 fails, the task waits for a release broadcast — there is no task-count cap
-anywhere, and never will be. Inside a task, stateful operators (aggregate)
-get their **own** engine governor with the task watermark as budget and
-spill beyond it, so one task's heavy group-by can't starve its siblings.
+anywhere, and never will be. The waiter captures the release channel
+**before** re-testing capacity (condvar order); the reverse would drop a
+release that fired in the gap and strand the task (lost wakeup). Inside a
+task, stateful operators (aggregate) get their **own** engine governor with
+the task watermark as budget and spill beyond it, so one task's heavy
+group-by can't starve its siblings.
+
+Each task runs under its own context derived from a service base context.
+`-task-timeout` (env `SHIFT_RUNNER_TASK_TIMEOUT`, default 0 = off — streaming
+workloads are legitimately long) bounds a single task; and on drain the base
+context is cancelled, so a hung connector's RPC stream is aborted and its
+admission reservation is freed rather than stranded for the process lifetime.
+Task goroutines also `recover`: a panicking plan fails that one task, never
+the shared process (defense in depth behind flow validation).
 
 Every task records honest per-operator stats (records in/out, seconds of
 that operator's own work) visible in the API and dashboard. The result
 ring (`internal/task.Store`, last 500) is **not durable** — restart loses
 history by design; durable truth arrives with the hub.
 
-Draining: SIGTERM stops intake, waits for running tasks (30 s bound), then
-closes the connector pool.
+Draining: SIGTERM stops intake, waits for running tasks (30 s bound); if the
+bound elapses it cancels every task context to force-abort stragglers (with a
+short grace), then closes the connector pool.
 
 ## Connector pool (`internal/connpool`)
 

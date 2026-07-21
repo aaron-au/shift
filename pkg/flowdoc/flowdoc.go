@@ -281,6 +281,14 @@ func (o *Op) validate() error {
 		for _, a := range o.Aggs {
 			switch a.Op {
 			case "count":
+				// count ignores Path, but the compiler still parses it when
+				// set (flow.go) via the panicking MustParsePath — so a malformed
+				// path here must be rejected at validation, not reach the runner.
+				if a.Path != "" {
+					if _, err := record.ParsePath(a.Path); err != nil {
+						return err
+					}
+				}
 			case "sum", "min", "max":
 				if _, err := record.ParsePath(a.Path); err != nil {
 					return err
@@ -325,18 +333,47 @@ func ScalarValue(raw json.RawMessage) (record.Value, error) {
 // given extra fields merged in (used by the runner to inject the task
 // idempotency key before execution).
 func (d *Document) WithSinkConfig(extra map[string]any) (*Document, error) {
+	out := *d
+	// Graph form (canonical, ADR-0013): the executing sink config lives in a
+	// Step, not d.Sink. Merge into EVERY sink step (a flow may have a happy-path
+	// sink and a dead-letter sink; both carry side effects). Writing only to
+	// d.Sink here — as the linear branch does — would silently drop the
+	// idempotency key for graph flows, breaking at-least-once (the primary flow
+	// model produces graph docs).
+	if len(d.Steps) > 0 {
+		steps := make([]Step, len(d.Steps))
+		copy(steps, d.Steps)
+		for i := range steps {
+			if steps[i].Type != "sink" {
+				continue
+			}
+			merged, err := mergeRawConfig(steps[i].Config, extra)
+			if err != nil {
+				return nil, fmt.Errorf("flow: step %q sink config: %w", steps[i].ID, err)
+			}
+			steps[i].Config = merged
+		}
+		out.Steps = steps
+		return &out, nil
+	}
+	// Linear (sugar) form.
+	merged, err := mergeRawConfig(d.Sink.Config, extra)
+	if err != nil {
+		return nil, fmt.Errorf("flow: sink config: %w", err)
+	}
+	out.Sink.Config = merged
+	return &out, nil
+}
+
+// mergeRawConfig unmarshals a JSON object config (may be empty), overlays
+// extra, and re-marshals. extra wins on key collision.
+func mergeRawConfig(cfg json.RawMessage, extra map[string]any) (json.RawMessage, error) {
 	merged := map[string]any{}
-	if len(d.Sink.Config) > 0 {
-		if err := json.Unmarshal(d.Sink.Config, &merged); err != nil {
-			return nil, fmt.Errorf("flow: sink config: %w", err)
+	if len(cfg) > 0 {
+		if err := json.Unmarshal(cfg, &merged); err != nil {
+			return nil, err
 		}
 	}
 	maps.Copy(merged, extra)
-	raw, err := json.Marshal(merged)
-	if err != nil {
-		return nil, err
-	}
-	out := *d
-	out.Sink.Config = raw
-	return &out, nil
+	return json.Marshal(merged)
 }

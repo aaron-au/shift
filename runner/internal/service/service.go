@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +47,12 @@ type Options struct {
 	TaskHistory int
 	// PoolIdleTTL reaps idle connectors (default 5m).
 	PoolIdleTTL time.Duration
+	// TaskTimeout bounds a single task's execution. 0 (default) means no
+	// timeout — streaming workloads (large CSV/EDI, DB sync) are legitimately
+	// long, so a wall-clock cap is opt-in. Regardless of this, every task's
+	// context is cancelled when the service drains, so a hung connector never
+	// strands admission budget past shutdown (ADR-0005).
+	TaskTimeout time.Duration
 }
 
 func (o *Options) defaults() {
@@ -67,6 +74,11 @@ type Service struct {
 	pool  *connpool.Pool
 	store *task.Store
 
+	// baseCtx is the parent of every task context; cancel is fired by Close
+	// so draining force-aborts tasks whose connectors are wedged.
+	baseCtx context.Context
+	cancel  context.CancelFunc
+
 	mu       sync.Mutex
 	released chan struct{} // closed+swapped on every capacity release
 	draining bool
@@ -78,6 +90,7 @@ type Service struct {
 // New builds a service.
 func New(opts Options) *Service {
 	opts.defaults()
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
 		opts: opts,
 		gov:  mem.New(opts.MemBudget),
@@ -90,6 +103,8 @@ func New(opts Options) *Service {
 		store:    task.NewStore(opts.TaskHistory),
 		released: make(chan struct{}),
 		bench:    &benchState{},
+		baseCtx:  ctx,
+		cancel:   cancel,
 	}
 }
 
@@ -151,16 +166,68 @@ func (s *Service) SubmitWith(doc *flow.Document, o SubmitOpts) (string, error) {
 
 func (s *Service) run(id string, doc *flow.Document, o SubmitOpts) {
 	defer s.wg.Done()
-	ctx := context.Background()
+
+	// Build the redactor first so the panic guard can scrub any secret value
+	// out of a recovered panic message before it is recorded/reported.
+	redact := newRedactor(o.SecretValues)
+
+	// Panic safety: a crafted plan (e.g. a validation gap reaching the
+	// panicking record.MustParsePath) must fail THIS task only — never crash
+	// the shared runner process and every other tenant's in-flight work. Task
+	// goroutines have no other recovery boundary.
+	defer func() {
+		if r := recover(); r != nil {
+			end := time.Now()
+			s.store.Update(id, func(t *task.Task) {
+				if t.State == task.StateCompleted {
+					return
+				}
+				t.State = task.StateFailed
+				t.Finished = &end
+				t.Error = redact(fmt.Sprintf("task aborted (panic): %v", r))
+			})
+		}
+	}()
+
+	// Per-task context: derived from the service base context (cancelled on
+	// drain) with an optional wall-clock timeout. Cancelling it aborts the
+	// connector subprocess RPC streams, so a hung connector cannot hold its
+	// admission reservation indefinitely (ADR-0005).
+	var (
+		ctx    context.Context
+		cancel context.CancelFunc
+	)
+	if s.opts.TaskTimeout > 0 {
+		ctx, cancel = context.WithTimeout(s.baseCtx, s.opts.TaskTimeout)
+	} else {
+		ctx, cancel = context.WithCancel(s.baseCtx)
+	}
+	defer cancel()
 
 	// Admission: reserve or wait for a release. The wait is unbounded by
-	// design — capacity, not a count, is the limit (ADR-0005).
+	// design — capacity, not a count, is the limit (ADR-0005) — but honors
+	// ctx so a draining service unblocks it. Capture the wakeup channel BEFORE
+	// testing capacity: a release between the test and the wait would otherwise
+	// fire on the old channel and be missed (lost wakeup), stranding the task.
 	cost := s.taskCost()
-	for !s.gov.TryReserve(cost) {
+	for {
 		s.mu.Lock()
 		ch := s.released
 		s.mu.Unlock()
-		<-ch
+		if s.gov.TryReserve(cost) {
+			break
+		}
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			end := time.Now()
+			s.store.Update(id, func(t *task.Task) {
+				t.State = task.StateFailed
+				t.Finished = &end
+				t.Error = "admission aborted: " + ctx.Err().Error()
+			})
+			return
+		}
 	}
 	defer func() {
 		s.gov.Release(cost)
@@ -176,7 +243,6 @@ func (s *Service) run(id string, doc *flow.Document, o SubmitOpts) {
 		t.Started = &now
 	})
 
-	redact := newRedactor(o.SecretValues)
 	var sampler *captureSampler
 	if o.Capture {
 		sampler = newCaptureSampler(o.CaptureMax, redact)
@@ -236,6 +302,12 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 
 	// Source: a connector subprocess, or the built-in @webhook body
 	// (direct execution, ADR-0016) bound as an in-runner ndjson source.
+	// Connector subprocesses are POOLED and shared across tasks, so their
+	// lifetime is tied to s.baseCtx (the pool's), NOT this task's ctx — else
+	// this task's defer cancel() would kill a process a sibling task is using.
+	// The per-task ctx still flows to p.Run below and drives the Pull/Push
+	// stream RPCs, so cancelling a task aborts its stream (freeing admission)
+	// without terminating the shared process.
 	var src stream.Source
 	if srcStep.Connector == flowdoc.WebhookSource {
 		if webhookBody == nil {
@@ -243,7 +315,7 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 		}
 		src = ndjson.NewReader(bytes.NewReader(webhookBody), ndjson.ReaderOptions{})
 	} else {
-		srcProc, err := s.pool.Get(ctx, srcStep.Connector)
+		srcProc, err := s.pool.Get(s.baseCtx, srcStep.Connector)
 		if err != nil {
 			return execResult{}, err
 		}
@@ -251,7 +323,7 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 		src = srcProc.Source(srcStep.Action, srcStep.Config)
 	}
 
-	sinkProc, err := s.pool.Get(ctx, sinkStep.Connector)
+	sinkProc, err := s.pool.Get(s.baseCtx, sinkStep.Connector)
 	if err != nil {
 		return execResult{}, err
 	}
@@ -297,7 +369,7 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 // sink action). The record is metadata only — flow, failing step, error,
 // timestamp — never the payload the hub must not see (doctrine).
 func (s *Service) runHandler(ctx context.Context, h *flow.Step, flowName, failStep, errMsg string) error {
-	proc, err := s.pool.Get(ctx, h.Connector)
+	proc, err := s.pool.Get(s.baseCtx, h.Connector) // pooled process lifetime, not task ctx
 	if err != nil {
 		return err
 	}
@@ -397,6 +469,14 @@ func (s *Service) Close(timeout time.Duration) error {
 	select {
 	case <-done:
 	case <-time.After(timeout):
+		// Graceful window elapsed: force-abort stragglers by cancelling every
+		// task context (kills wedged connector RPCs), then give them a short
+		// bounded grace to unwind and release their reservations.
+		s.cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
 	}
 	return s.pool.Close()
 }
