@@ -293,6 +293,12 @@ kill -9 crash recovery, two-replica exactly-once schedules, the signed
 artifact supply chain (incl. DB-tamper fail-closed), and
 secrets-never-at-rest.
 
+Failure-mode / load tests (issue #10): `TestStatementTimeoutFires` proves the
+#8 `statement_timeout` actually cancels a runaway query (not just config);
+`TestConcurrentClaimExclusive` hammers the queue with concurrent enqueues + 4
+runners claiming in parallel and asserts `FOR UPDATE SKIP LOCKED` hands each
+task to exactly one runner (none lost, none double-claimed).
+
 ## Operating it
 
 ```
