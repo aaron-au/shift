@@ -13,6 +13,7 @@ permissions:
 env:
   GOLANGCI_LINT_VERSION: v2.12.2
   GITLEAKS_VERSION: v8.30.1
+  ACTIONLINT_VERSION: v1.7.7
 
 jobs:
   check:
@@ -48,9 +49,10 @@ jobs:
       - name: Install gate tools (pinned)
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          go install github.com/zricethezav/gitleaks/v8@${GITLEAKS_VERSION}
+          go install "github.com/zricethezav/gitleaks/v8@${GITLEAKS_VERSION}"
+          go install "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}"
           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
-            | sh -s -- -b "$(go env GOPATH)/bin" ${GOLANGCI_LINT_VERSION}
+            | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
 
       # make check runs `cover` as its (race-enabled) test pass, so this both
       # enforces the coverage gate (coverage.thresholds) and produces the

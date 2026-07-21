@@ -5,8 +5,9 @@
 `make check` is THE gate — identical locally, in the pre-push hook, and in
 CI. It runs: gofmt/goimports drift, `go vet`, golangci-lint (staticcheck,
 errcheck, **gosec**, noctx, errorlint, rowserrcheck, bodyclose…),
-`govulncheck` (reachability-based CVE scan), gitleaks, and `go test -race`
-across every module. Rules:
+`govulncheck` (reachability-based CVE scan), gitleaks, `actionlint`
+(GitHub Actions workflow YAML/expr + shellcheck over `run:` scripts, fail-closed),
+and `go test -race` across every module. Rules:
 
 - Findings are **fixed or suppressed inline** with
   `//nolint:<linter> // reason`. Blanket config exclusions need an ADR.

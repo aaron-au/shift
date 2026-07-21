@@ -17,6 +17,7 @@ One gate, `make check`, runs identically in three places: locally on demand, aut
 | Committed secrets/credentials | `gitleaks` | standalone, repo-wide |
 | Data races | `go test -race` | per module, always — never an opt-in mode |
 | Formatting drift | `gofmt`/`goimports` | golangci-lint formatters |
+| GitHub Actions workflow errors (YAML/expr/shellcheck) | `actionlint` | standalone, `.github/workflows/` |
 
 Rules:
 - The local and CI gates are the **same make target** — no "CI-only" checks that developers can't reproduce, no local checks CI doesn't enforce.
@@ -51,3 +52,14 @@ hadolint Dockerfile lint, a `proto-check` generated-code drift gate (with pinned
 protoc), CodeQL, SBOM generation, and artifact signing. Local/pre-push gains
 `tidy-check` (module hygiene) and `-shuffle=on -count=1` on the test run, which
 DO belong in the identical gate because every developer can run them.
+
+## Amendment 2026-07-21: actionlint in the core gate
+The gate validates Go but not the CI definition itself. A workflow file with an
+unquoted `name:` value containing a colon parsed as invalid YAML; GitHub rejected
+it as a `startup_failure` (0s, no logs) on every push while `make check` stayed
+green — the exact failure the gate is meant to prevent, in the one file the gate
+didn't cover. `actionlint` (single static binary; also runs shellcheck over `run:`
+scripts) now runs in `make check` (`make actions`, fail-closed) and is pinned in
+CI (`ACTIONLINT_VERSION`), so workflow errors fail locally and pre-push, not only
+after the push lands. It belongs in the identical gate — every developer can run
+it, no infrastructure needed.

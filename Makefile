@@ -1,4 +1,4 @@
-.PHONY: setup build test bench bench-report cover cover-bump fmt fmt-check vet lint vuln leaks check tidy tidy-check clean fuzz
+.PHONY: setup build test bench bench-report cover cover-bump fmt fmt-check vet lint actions vuln leaks check tidy tidy-check clean fuzz
 
 MODULES := engine sdk pkg runner hub connectors
 VERSION ?= dev
@@ -84,6 +84,14 @@ vet:
 lint:
 	@for m in $(MODULES); do echo "--- lint $$m"; (cd $$m && golangci-lint run ./...) || exit 1; done
 
+## actions: lint GitHub Actions workflows (actionlint). Catches YAML/expr
+## errors the Go gate can't see — e.g. an unquoted `name:` value with a colon,
+## which GitHub rejects as a startup_failure that never reaches `make check`.
+## Fail-closed: no actionlint = gate failure, not a silent skip.
+actions:
+	@command -v actionlint >/dev/null || { echo "actionlint not installed: go install github.com/rhysd/actionlint/cmd/actionlint@latest"; exit 1; }
+	actionlint
+
 ## vuln: known-CVE scan with reachability analysis
 vuln:
 	@for m in $(MODULES); do echo "--- govulncheck $$m"; (cd $$m && govulncheck ./...) || exit 1; done
@@ -98,7 +106,7 @@ leaks:
 ## Supply-chain scans that cannot run in pre-push (image/Dockerfile/SAST) live
 ## in the separate release/scheduled tier (.github/workflows/supply-chain.yml),
 ## an explicit ADR-0006 extension — not smuggled in as CI-only correctness.
-check: fmt-check tidy-check vet lint vuln leaks test cover
+check: fmt-check tidy-check vet lint actions vuln leaks test cover
 	@echo "check: all gates green"
 
 tidy:
