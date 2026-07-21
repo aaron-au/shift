@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -48,12 +49,19 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
-// Open connects and pings.
+// Open connects and pings. It sets a per-connection statement_timeout and
+// lock_timeout (issue #8) so a pathological query or lock wait can't hang a
+// connection indefinitely — the hub is the availability keystone (ADR-0002).
+// Both are tunable (SHIFT_HUB_STMT_TIMEOUT / SHIFT_HUB_LOCK_TIMEOUT, Postgres
+// duration syntax e.g. "30s"); an explicit DSN value is not overridden. NB: a
+// very large migration may need a higher statement_timeout.
 func Open(ctx context.Context, dsn string) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("store: parse dsn: %w", err)
 	}
+	setParamDefault(cfg, "statement_timeout", os.Getenv("SHIFT_HUB_STMT_TIMEOUT"), "30s")
+	setParamDefault(cfg, "lock_timeout", os.Getenv("SHIFT_HUB_LOCK_TIMEOUT"), "5s")
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("store: connect: %w", err)
@@ -63,6 +71,20 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		return nil, fmt.Errorf("store: ping: %w", err)
 	}
 	return &Store{pool: pool}, nil
+}
+
+// setParamDefault sets a Postgres connection RuntimeParam to env (if set) else
+// def, but never overrides a value already present in the DSN — an explicit
+// operator choice wins.
+func setParamDefault(cfg *pgxpool.Config, key, env, def string) {
+	if _, ok := cfg.ConnConfig.RuntimeParams[key]; ok {
+		return
+	}
+	v := def
+	if env != "" {
+		v = env
+	}
+	cfg.ConnConfig.RuntimeParams[key] = v
 }
 
 // Close releases the pool.

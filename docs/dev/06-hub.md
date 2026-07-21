@@ -313,3 +313,31 @@ schedule = `PUT …/schedule {"cron":"*/5 * * * *"}`; observe =
 
 The full self-contained stack — Postgres, Dex, TLS certgen, seeded
 registry, signed-only runner — is `make up` (see `deploy/README.md`).
+
+## Postgres operational hardening (issue #8)
+
+The hub is the availability keystone (ADR-0002), so the pool is bounded:
+
+- **Timeouts** — every connection sets `statement_timeout` (default `30s`,
+  `SHIFT_HUB_STMT_TIMEOUT`) and `lock_timeout` (default `5s`,
+  `SHIFT_HUB_LOCK_TIMEOUT`), so a pathological query or lock wait can't hang a
+  connection indefinitely. An explicit value in the DSN is not overridden.
+  Caveat: a very large migration (e.g. a big index build) may exceed
+  `statement_timeout` — raise it for that deploy.
+- **Serialization / deadlock retry** — the queue runs at the default READ
+  COMMITTED isolation with `FOR UPDATE SKIP LOCKED`, so serialization failures
+  (`40001`) don't arise and deadlocks (`40P01`) are very unlikely (claimers skip
+  locked rows rather than block). The scheduler tick already re-runs on the next
+  interval if a pass errors, so a transient deadlock self-heals. Policy: if
+  `40001`/`40P01` are ever observed under load, wrap the affected transaction in
+  a bounded retry (a few attempts with backoff) — do not raise the isolation
+  level platform-wide.
+- **Backups / restore** — operators run regular base backups + WAL archiving
+  (out of scope for the app; a deployment concern). **A backup is not proven
+  until a restore has been tested** — the ops runbook must include a periodic
+  restore drill. (Runbook itself: issue #9.)
+- **Migrations are forward-only + advisory-locked.** For an *unsafe* schema
+  change use **expand/contract** across releases, never a blocking rewrite in
+  one step: release N adds the new shape (nullable column / new table) and
+  backfills; release N+1, once nothing reads the old shape, drops it. This keeps
+  each migration fast and lets a rolling deploy run old and new code at once.
