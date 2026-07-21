@@ -82,7 +82,12 @@ linters:
             - pkg: github.com/aaron-au/shift/hub
             - pkg: github.com/aaron-au/shift/runner
         runner: # spoke worker: imports engine/sdk/pkg, never the hub or connectors
-          files: ["**/runner/**"]
+          # NB: match the module's real subdirs, NOT "**/runner/**". depguard
+          # matches ABSOLUTE paths, and CI checks out under /home/runner/work/…,
+          # so a bare "runner" segment glob spuriously matches every file (via
+          # /home/runner/) and denies the hub's own imports. runner/{internal,cmd}
+          # can only match this module's files under any checkout root.
+          files: ["**/runner/internal/**", "**/runner/cmd/**"]
           deny:
             - pkg: github.com/aaron-au/shift/hub
               desc: "runner leases from the hub over HTTP; it must not import hub code"
