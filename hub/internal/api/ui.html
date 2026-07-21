@@ -222,6 +222,10 @@ const $ = id => document.getElementById(id);
 // (onclick="fn('${esc(x)}')"); without escaping ' a value could break out of
 // the JS string literal (stored XSS). Covers both attribute and JS-string sinks.
 const esc = s => String(s ?? '').replace(/[&<>"'`]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c]));
+// b64utf8 decodes base64 to a proper UTF-8 string. atob() alone yields a byte
+// string, so multibyte content (emoji icons, non-ASCII descriptions/labels in a
+// connector descriptor) would mangle under JSON.parse — decode the bytes first.
+const b64utf8 = b => new TextDecoder().decode(Uint8Array.from(atob(b), c => c.charCodeAt(0)));
 
 async function api(path, opts = {}) {
   opts.headers = Object.assign({}, opts.headers);
@@ -477,7 +481,7 @@ function renderConnectors(cs) { window._conns = cs; renderMarketplace(); }
 // the descriptor — the studio does, client-side. Missing/v1 → empty meta.
 function decodeMeta(c) {
   if (!c.descriptor) return {};
-  try { return (JSON.parse(atob(c.descriptor)).meta) || {}; } catch (e) { return {}; }
+  try { return (JSON.parse(b64utf8(c.descriptor)).meta) || {}; } catch (e) { return {}; }
 }
 
 // renderMarketplace paints connector cards (icon, description, category, tags)
@@ -649,7 +653,7 @@ function buildCatalog(list) {
     const entry = cat[c.name] || (cat[c.name] = {actions: {}});
     if (!c.descriptor) return;
     try {
-      const d = JSON.parse(atob(c.descriptor));
+      const d = JSON.parse(b64utf8(c.descriptor));
       (d.actions || []).forEach(a => { entry.actions[a.direction + '/' + a.action] = a.configSchema || null; });
     } catch (e) { /* descriptor absent/old (v1) — action picker falls back to free text */ }
   });
