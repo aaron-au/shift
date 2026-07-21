@@ -371,14 +371,22 @@ func (c *Client) do(ctx context.Context, method, path, body string) (*http.Respo
 	return c.hc.Do(req)
 }
 
-// readErr extracts the hub's {"error": ...} body for error messages.
+// readErr extracts the hub's error envelope (ADR-0023:
+// {"error":{status,code?,message}}) for diagnostics, falling back to the raw
+// body for any non-envelope response.
 func readErr(resp *http.Response) string {
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	var e struct {
-		Error string `json:"error"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
-	if json.Unmarshal(raw, &e) == nil && e.Error != "" {
-		return fmt.Sprintf("%d: %s", resp.StatusCode, e.Error)
+	if json.Unmarshal(raw, &e) == nil && e.Error.Message != "" {
+		if e.Error.Code != "" {
+			return fmt.Sprintf("%d (%s): %s", resp.StatusCode, e.Error.Code, e.Error.Message)
+		}
+		return fmt.Sprintf("%d: %s", resp.StatusCode, e.Error.Message)
 	}
 	return fmt.Sprintf("%d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 }

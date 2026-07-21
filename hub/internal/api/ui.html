@@ -198,7 +198,14 @@ async function api(path, opts = {}) {
   if (bearer) opts.headers['Authorization'] = 'Bearer ' + bearer;
   const r = await fetch(path, opts);
   if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
+  if (!r.ok) {
+    // Error envelope (ADR-0023): {"error":{status,code?,message}}. Surface the
+    // human message; keep the machine code on the Error for callers that branch.
+    const e = (await r.json().catch(() => ({}))).error;
+    const err = new Error((e && e.message) || r.status);
+    if (e && e.code) err.code = e.code;
+    throw err;
+  }
   return r.status === 204 ? null : r.json();
 }
 

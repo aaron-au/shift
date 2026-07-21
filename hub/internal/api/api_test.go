@@ -314,3 +314,37 @@ func TestLeaseProtocol(t *testing.T) {
 		t.Fatalf("idempotent execute: %q != %q", again.TaskID, acc.TaskID)
 	}
 }
+
+// TestErrorEnvelope pins the ADR-0023 error envelope: status + message always,
+// and a finer machine `code` on the sub-status cases that need it.
+func TestErrorEnvelope(t *testing.T) {
+	srv := newServer(t)
+	type env struct {
+		Error struct {
+			Status  int    `json:"status"`
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	// Generic error: status + message, no code (404 is unambiguous here).
+	var e1 env
+	if c := call(t, "GET", srv.URL+"/api/v1/flows/nope", adminToken, "", &e1); c != 404 {
+		t.Fatalf("unknown flow = %d, want 404", c)
+	}
+	if e1.Error.Status != 404 || e1.Error.Message == "" {
+		t.Fatalf("envelope = %+v, want status 404 + message", e1.Error)
+	}
+	if e1.Error.Code != "" {
+		t.Errorf("unambiguous 404 should carry no code, got %q", e1.Error.Code)
+	}
+
+	// Finer code: invalid flow document → 422 flow_invalid.
+	var e2 env
+	if c := call(t, "PUT", srv.URL+"/api/v1/flows/bad", adminToken, `{"name":"bad"}`, &e2); c != 422 {
+		t.Fatalf("invalid flow = %d, want 422", c)
+	}
+	if e2.Error.Code != "flow_invalid" {
+		t.Fatalf("invalid flow code = %q, want flow_invalid (msg %q)", e2.Error.Code, e2.Error.Message)
+	}
+}

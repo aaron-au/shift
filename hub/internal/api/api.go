@@ -211,8 +211,26 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	}
 }
 
+// apiErr is the stable error envelope (ADR-0023). The HTTP status is the
+// primary, coarse category (also on the status line); `code` is an OPTIONAL
+// finer machine-readable discriminator, present only where several distinct
+// conditions share one status (e.g. 422 = invalid-flow vs not-published vs
+// reserved-key) so a client can branch without matching the human `message`.
+type apiErr struct {
+	Status  int    `json:"status"`
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message"`
+}
+
+// writeErr emits the envelope with status + message (no finer code).
 func writeErr(w http.ResponseWriter, code int, err error) {
-	writeJSON(w, code, map[string]string{"error": err.Error()})
+	writeJSON(w, code, map[string]apiErr{"error": {Status: code, Message: err.Error()}})
+}
+
+// writeErrCode emits the envelope with a finer machine-readable code, for the
+// sub-status cases a client needs to distinguish programmatically.
+func writeErrCode(w http.ResponseWriter, code int, machineCode string, err error) {
+	writeJSON(w, code, map[string]apiErr{"error": {Status: code, Code: machineCode, Message: err.Error()}})
 }
 
 // readBody decodes a bounded JSON body ({} for an empty body).
@@ -264,7 +282,7 @@ func (a *api) deployFlow(w http.ResponseWriter, r *http.Request) {
 	}
 	doc, err := flowdoc.Parse(raw)
 	if err != nil {
-		writeErr(w, http.StatusUnprocessableEntity, err)
+		writeErrCode(w, http.StatusUnprocessableEntity, "flow_invalid", err)
 		return
 	}
 	if doc.Name != name {
@@ -370,7 +388,7 @@ func (a *api) executeFlow(w http.ResponseWriter, r *http.Request) {
 	// The scheduler derives its dedup keys as "sched:<id>:<tick>"; a
 	// user key in that namespace could silently absorb a tick.
 	if strings.HasPrefix(req.IdempotencyKey, "sched:") {
-		writeErr(w, http.StatusUnprocessableEntity, errors.New(`idempotency keys may not use the reserved "sched:" prefix`))
+		writeErrCode(w, http.StatusUnprocessableEntity, "idempotency_key_reserved", errors.New(`idempotency keys may not use the reserved "sched:" prefix`))
 		return
 	}
 	id, err := a.st.Enqueue(r.Context(), r.PathValue("name"), req.Version, req.IdempotencyKey, req.MaxAttempts)
@@ -379,7 +397,7 @@ func (a *api) executeFlow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if errors.Is(err, store.ErrNotPublished) {
-		writeErr(w, http.StatusConflict, err)
+		writeErrCode(w, http.StatusConflict, "flow_not_published", err)
 		return
 	}
 	if err != nil {
@@ -435,7 +453,7 @@ func (a *api) register(w http.ResponseWriter, r *http.Request) {
 	}
 	id, secret, err := a.st.RegisterRunner(r.Context(), req.Token, req.Name)
 	if errors.Is(err, store.ErrTokenInvalid) {
-		writeErr(w, http.StatusUnauthorized, err)
+		writeErrCode(w, http.StatusUnauthorized, "registration_token_invalid", err)
 		return
 	}
 	if err != nil {
@@ -491,7 +509,7 @@ func (a *api) lease(w http.ResponseWriter, r *http.Request) {
 func (a *api) heartbeat(w http.ResponseWriter, r *http.Request) {
 	err := a.st.Heartbeat(r.Context(), r.PathValue("id"), runnerID(r), a.opts.LeaseTTL)
 	if errors.Is(err, store.ErrLeaseLost) {
-		writeErr(w, http.StatusConflict, err)
+		writeErrCode(w, http.StatusConflict, "lease_lost", err)
 		return
 	}
 	if err != nil {
@@ -552,7 +570,7 @@ func (a *api) complete(w http.ResponseWriter, r *http.Request) {
 	}
 	err = a.st.Complete(r.Context(), r.PathValue("id"), runnerID(r), raw)
 	if errors.Is(err, store.ErrLeaseLost) {
-		writeErr(w, http.StatusConflict, err)
+		writeErrCode(w, http.StatusConflict, "lease_lost", err)
 		return
 	}
 	if err != nil {
@@ -572,7 +590,7 @@ func (a *api) fail(w http.ResponseWriter, r *http.Request) {
 	}
 	requeued, err := a.st.Fail(r.Context(), r.PathValue("id"), runnerID(r), req.Error)
 	if errors.Is(err, store.ErrLeaseLost) {
-		writeErr(w, http.StatusConflict, err)
+		writeErrCode(w, http.StatusConflict, "lease_lost", err)
 		return
 	}
 	if err != nil {
