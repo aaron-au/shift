@@ -277,6 +277,13 @@ studio, `b64utf8`).
     plus always-visible config summary on the node body (studio visual series).
     Likely its own ADR (shared connection config, per-account, secret-ref
     binding).
+  - **http JSON-array/object source ✅ (2026-07-22)** — the http `get` source
+    now parses standard REST responses, not just NDJSON: `engine/format/ndjson.
+    JSONReader` streams a top-level JSON array (element per record), a single
+    object, or a stream of concatenated values, reusing the ndjson value parser
+    (no whole-body buffering). The source picks NDJSON vs JSON by response
+    `Content-Type`. Proven live: `http get https://jsonplaceholder.typicode.com/
+    comments → @response` returns all 500 records (±a project op).
   - Next candidates: filesystem, DB source/CDC + upsert sink, S3, SMTP,
     message queues. XML/EDI is adjacent engine-format work (M1.5).
 

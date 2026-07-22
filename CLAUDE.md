@@ -55,7 +55,8 @@ Hub-and-spoke Integration Platform as a Service. Goal: a provisionable, enterpri
 engine/     Streaming data plane (M1, done — see docs/bench-M1.md for proven numbers):
   record/     hierarchical typed Values in arena-backed Batches; 0-alloc steady state; compiled Paths
   stream/     pull pipelines: Project/Filter/Coerce/Flatten + spillable Aggregate; per-op metrics
-  format/     ndjson (hand-rolled tokenizer, differential-tested vs encoding/json), csvf
+  format/     ndjson (hand-rolled tokenizer, differential-tested vs encoding/json; + JSONReader:
+              streams a standard JSON array/object/value stream, reusing the ndjson value parser), csvf
   spill/      single-file unlinked scratch store + compact binary Value codec
   mem/        watermark Governor (TryReserve fail == spill signal)
   cmd/shift-bench/  the proof harness; run with -max-rss to enforce exit criteria
@@ -67,7 +68,8 @@ sdk/        Connector SDK (M2, done — see docs/bench-M2.md: 1.32x subprocess o
                      Describe/ExtractDescriptor (publisher-side schema extraction)
   sdktest/           in-process wire-protocol test harness for connector authors
   connectorpb/       generated from proto/connector/v1 (make proto to regenerate)
-connectors/ Connector binaries: gen (bench/test), http (streaming GET source, NDJSON POST sink, SSRF guard),
+connectors/ Connector binaries: gen (bench/test), http (streaming GET source — NDJSON or standard
+            JSON array/object, chosen by response Content-Type; NDJSON POST sink; SSRF guard),
             sftp (M6+ base-connector track, v0.2.0: get source + atomic put sink (ndjson/csv via
             engine/format) + list source + config-driven delete/mkdir/rmdir/rename sources (path/from-to
             on the node, emit a status record, idempotent); mandatory host-key verification + network

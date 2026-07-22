@@ -63,6 +63,47 @@ func TestGetSourceStreamsNDJSON(t *testing.T) {
 	}
 }
 
+// TestGetSourceJSONArray covers the REST shape: a Content-Type of
+// application/json carrying a (pretty-printed) top-level array. The source must
+// select the JSON reader and stream each element as a record — the shape the
+// line-based NDJSON reader cannot parse.
+func TestGetSourceJSONArray(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = io.WriteString(w, "[\n  {\"id\": 1, \"email\": \"a@x.io\"},\n  {\"id\": 2, \"email\": \"b@x.io\"},\n  {\"id\": 3, \"email\": \"c@x.io\"}\n]")
+	}))
+	defer srv.Close()
+
+	s := &getSource{}
+	cfg := fmt.Sprintf(`{"url":%q,"allow_local":true}`, srv.URL)
+	if err := s.Open(context.Background(), []byte(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+
+	var count int64
+	ctx := context.Background()
+	for {
+		b, err := s.Next(ctx)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, rec := range b.Records() {
+			id, _ := rec.Field("id")
+			count++
+			if id.Int() != count {
+				t.Fatalf("record %d has id=%d", count, id.Int())
+			}
+		}
+	}
+	if count != 3 {
+		t.Fatalf("streamed %d records from JSON array, want 3", count)
+	}
+}
+
 func TestGetSourceSSRFGuard(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprintln(w, `{}`)
