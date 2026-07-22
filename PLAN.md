@@ -244,9 +244,16 @@ studio, `b64utf8`).
   Likely shape: fixed standard tiers on the hub assigned from OIDC claims,
   least-privilege default; custom roles live in the central platform. Decision
   deferred (Aaron, 2026-07-21) — needs its own milestone + that platform.
-- **Base connector library** — HTTP exists; need many more first-class
-  connectors (SFTP, DB source/CDC, file/CSV, S3, SMTP, message queues…) to turn
-  the platform into real integration workloads. Likely the next active track.
+- **Base connector library** — turn the platform into real integration
+  workloads. Started 2026-07-21 (Aaron's call, after RBAC deferred). Shipped:
+  - **sftp ✅** — streaming `get` source (remote file → ndjson/csv → batches)
+    + atomic `put` sink (temp-then-`PosixRename`); mandatory SSH host-key
+    verification (pinned `host_key`, or unverified only under `allow_local`);
+    network guard fail-closed mirroring http's SSRF guard; creds are
+    `{"$secret":…}`-resolved before spawn. Real in-process SSH+SFTP round-trip
+    tests. Deps `pkg/sftp` + `x/crypto/ssh` (connectors module only).
+  - Next candidates: filesystem, DB source/CDC + upsert sink, S3, SMTP,
+    message queues. XML/EDI is adjacent engine-format work (M1.5).
 
 ### M7 — Testing & benchmark hardening (ADR-0022) ✅ 2026-07-20
 

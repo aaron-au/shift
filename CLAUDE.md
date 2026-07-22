@@ -66,7 +66,9 @@ sdk/        Connector SDK (M2, done — see docs/bench-M2.md: 1.32x subprocess o
                      Describe/ExtractDescriptor (publisher-side schema extraction)
   sdktest/           in-process wire-protocol test harness for connector authors
   connectorpb/       generated from proto/connector/v1 (make proto to regenerate)
-connectors/ Connector binaries: gen (bench/test), http (streaming GET source, NDJSON POST sink, SSRF guard)
+connectors/ Connector binaries: gen (bench/test), http (streaming GET source, NDJSON POST sink, SSRF guard),
+            sftp (M6+ base-connector track: streaming get source + atomic put sink over SFTP, ndjson/csv
+            via engine/format, mandatory host-key verification + network guard fail-closed)
 proto/      gRPC contracts (ADR-0007: batches cross as opaque binary frames, never per-record proto)
 runner/     runnerd (M3a+M3b+M4b, done — see docs/dev/04-runner.md): flow docs → engine pipelines,
   internal/{flow,connpool,task,service,api}   resource-governed admission (ADR-0005), connector pool,
