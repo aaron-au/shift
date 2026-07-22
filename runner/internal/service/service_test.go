@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
 	"os/exec"
 	"path/filepath"
@@ -107,6 +108,37 @@ func TestExecuteFlowDiscardSink(t *testing.T) {
 	}
 	if tk.SinkConfirmed != tk.RecordsIn {
 		t.Errorf("@discard confirmed %d, want %d (all records)", tk.SinkConfirmed, tk.RecordsIn)
+	}
+}
+
+func TestRunSyncResponse(t *testing.T) {
+	if testing.Short() || coverageRun() {
+		t.Skip("spawns connector subprocesses")
+	}
+	svc := newTestService(t, Options{})
+	cfg, _ := json.Marshal(map[string]any{"records": 300})
+	// gen source → built-in @response sink: the output streams back to us.
+	doc := &flow.Document{
+		Name:   "response-flow",
+		Source: flow.Endpoint{Connector: "gen", Action: "gen", Config: cfg},
+		Sink:   flow.Endpoint{Connector: flowdoc.ResponseSink},
+	}
+	var body bytes.Buffer
+	tk, err := svc.RunSync(doc, SubmitOpts{Response: &body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.State != task.StateCompleted {
+		t.Fatalf("state = %s, error = %q", tk.State, tk.Error)
+	}
+	if tk.SinkConfirmed != 300 {
+		t.Errorf("@response confirmed %d, want 300", tk.SinkConfirmed)
+	}
+	if lines := bytes.Count(body.Bytes(), []byte("\n")); lines != 300 {
+		t.Errorf("response body has %d ndjson lines, want 300", lines)
+	}
+	if !bytes.Contains(body.Bytes(), []byte("{")) {
+		t.Error("response body is not JSON")
 	}
 }
 

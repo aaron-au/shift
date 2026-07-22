@@ -1,6 +1,6 @@
 # ADR-0024: Connector operation model — unified verbs, roles, and request-reply
 
-Status: **accepted (Phase 1)** + **designed (Phase 2, build deferred)** — 2026-07-22
+Status: **accepted (Phase 1 + `@response`/sync run)** + **designed (Phase 2 request-reply, build deferred)** — 2026-07-22
 
 ## Context
 
@@ -47,21 +47,30 @@ Most real connector operations come in three shapes:
    auto-appends it when a flow ends on a source. Role-locked (sink only), needs
    no action, exempt from capability policy + signing (like `@webhook`, a
    source). (`pkg/flowdoc`, runner `discardSink`.)
+4. **Built-in `@response` sink + synchronous run (shipped 2026-07-22).** An
+   explicit sink that returns the flow's output to the **caller** rather than
+   dropping it. It serializes the terminal stream as NDJSON into a caller-
+   supplied, **bounded** buffer (mirrors the `@webhook` inbound body cap) so a
+   clean status precedes the body. Paired with a synchronous intake — runner
+   `Service.RunSync` + `POST /api/flows/run` — which runs a flow inline (under
+   normal admission) and returns its result in the same HTTP response: 200 +
+   `application/x-ndjson` body (`X-Shift-Records`, `X-Shift-Task-Id` headers)
+   on success, 422 + error on failure. Runner-side only; **payload never
+   touches the hub** (ADR-0016 data plane). Role-locked (sink only), no action,
+   exempt from capability policy + signing. Degrades to a counting drop when no
+   writer is supplied (async submit of a `@response` flow). (`pkg/flowdoc`
+   `ResponseSink`, runner `responseSink`/`RunSync`, api `boundedBuffer`.)
 
 ### Phase 2 — designed, build deferred
 
-4. **Request-reply action shape.** A new connector action kind (or connector-
+5. **Request-reply action shape.** A new connector action kind (or connector-
    backed Op) that consumes each record, performs a call, and emits the response
    **downstream** — the missing mid-flow shape. Unlocks full-method HTTP with
    responses, API enrichment, SFTP `stat/exists`, DB lookup. Touches the engine
    (a mid-pipeline connector op) + the SDK contract (a third action interface or
    a request-reply variant of Write). ADR-level; scope TBD when picked up.
-5. **`@response` terminal.** An explicit sink that returns the flow's output to
-   the **caller** — the ingress requestor for a sync direct execution
-   (ADR-0016 data plane, runner-side; **payload never touches the hub**) or the
-   parent for a subflow. Distinct from `@discard` (drop). Aaron prefers this be
-   explicit rather than implicit "return by default". Lands with the sync
-   direct-execution response path.
+   (The `@response` **terminal** above is shipped; this is the mid-flow shape,
+   still deferred. A subflow returning to its parent will reuse `@response`.)
 6. **Verb / HTTP-status naming "where it makes sense".** HTTP exposes
    GET/POST/PUT/PATCH/DELETE/QUERY; other connectors keep their natural verbs
    (SFTP: get/put/list/delete/mkdir/rmdir/rename). Connector results carry a

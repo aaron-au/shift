@@ -259,8 +259,24 @@ studio, `b64utf8`).
   - **Connector operation model (ADR-0024) ✅ Phase 1** — one canvas node + verb
     dropdown, node role auto-set from the action's `direction`; built-in
     `@discard` sink (auto-appended so a single source-verb flow terminates
-    validly). **Phase 2 deferred (ADR):** request-reply action shape + explicit
-    `@response` terminal + verb/HTTP-status naming.
+    validly). **Phase 2 deferred (ADR):** request-reply action shape (the
+    remaining engine/SDK addition) + verb/HTTP-status naming.
+  - **Synchronous run + `@response` sink ✅ (2026-07-22)** — runner is now
+    callable request-reply: `POST /api/flows/run` executes a posted flow inline
+    (`Service.RunSync`, under normal admission) and returns its result in the
+    same response. Built-in `@response` sink streams the terminal stream back as
+    NDJSON (bounded, 8 MiB), `X-Shift-Records`/`X-Shift-Task-Id` headers, 422 +
+    error on failure. Runner-side egress twin of `@webhook`: payload never
+    reaches the hub. Basic-test proven live: `gen` source → `@response` returns
+    the generated document (with/without a filter op). Auth inherits the
+    control-surface guard (open on loopback dev, "all internal" today).
+  - **Connection/Operation split (design, TODO)** — Aaron 2026-07-22: re-entering
+    endpoint+auth on every verb node (e.g. SFTP get then delete on the same
+    server) is tedious. Introduce a reusable **connector config / connection**
+    object (host/creds/`$secret` refs authored once) that verb nodes reference,
+    plus always-visible config summary on the node body (studio visual series).
+    Likely its own ADR (shared connection config, per-account, secret-ref
+    binding).
   - Next candidates: filesystem, DB source/CDC + upsert sink, S3, SMTP,
     message queues. XML/EDI is adjacent engine-format work (M1.5).
 

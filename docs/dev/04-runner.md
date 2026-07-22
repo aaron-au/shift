@@ -209,6 +209,20 @@ never reaches the hub (the whole point: the hub holds no payload).
   submitted, and the caller gets `202 + task_id` — poll `/api/tasks/{id}`
   (and `.../capture`) for status/results. A per-execution sync toggle rides
   the same machinery (later stage).
+- **Synchronous run (ADR-0024):** `POST /api/flows/run` runs a posted flow
+  **inline** and returns its result in the **same** response — the
+  request-reply call. `Service.RunSync` executes under normal admission (a
+  busy runner holds the call until capacity frees), then: a flow terminating
+  at the built-in **`@response`** sink streams its output as
+  `application/x-ndjson` (200, headers `X-Shift-Records` + `X-Shift-Task-Id`),
+  buffered into a bounded (8 MiB) `boundedBuffer` so a clean status precedes
+  the body; a non-`@response` terminal returns the task summary JSON; a failed
+  task returns `422` + the redacted error. `@response` (`pkg/flowdoc`,
+  reserved, sink-only, exempt from registry/capability/signing) is the egress
+  twin of `@webhook`: **payload never reaches the hub.** It degrades to a
+  counting drop when no writer is supplied (a `@response` flow on the async
+  path). Basic-test recipe: `gen` source → `@response` sink returns the
+  generated document.
 - **Auth:** hook endpoints authenticate by a per-webhook token
   (`X-Webhook-Token` or `Authorization: Bearer`, constant-time). The
   **control surface** (`/api/*`, dashboard) is guarded separately —

@@ -8,6 +8,7 @@
 package api
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	_ "embed"
@@ -36,6 +37,26 @@ type ExecReporter func(t task.Task, trigger string)
 // maxWebhookBody bounds an inbound webhook payload (buffered before async
 // execution).
 const maxWebhookBody = 8 << 20
+
+// maxResponseBody bounds the body a synchronous @response execution may
+// return, mirroring the inbound cap: the result is collected before the reply
+// is sent so a clean status code can precede it. Overflow fails the task.
+const maxResponseBody = 8 << 20
+
+// boundedBuffer is an io.Writer that accumulates up to limit bytes and errors
+// past it. The @response sink writes into it; overflow surfaces as a task
+// failure rather than an unbounded response allocation.
+type boundedBuffer struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	if b.buf.Len()+len(p) > b.limit {
+		return 0, fmt.Errorf("response body exceeds %d bytes", b.limit)
+	}
+	return b.buf.Write(p)
+}
 
 //go:embed ui.html
 var uiHTML []byte
@@ -90,6 +111,44 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 		}
 		reportWhenDone(svc, id, "api", report)
 		writeJSON(w, http.StatusAccepted, map[string]string{"task_id": id})
+	})
+
+	// Synchronous execution: run the flow inline and return its result in the
+	// same response (ADR-0016 direct execution — payload never touches the hub).
+	// A flow terminating at the built-in @response sink streams its output as
+	// NDJSON (bounded); any other terminal returns the task summary as JSON.
+	// Failures return 422 with the (redacted) error. Blocks until the task is
+	// terminal — admission may hold it if the runner is at capacity.
+	mux.HandleFunc("POST /api/flows/run", func(w http.ResponseWriter, r *http.Request) {
+		doc, err := decodeFlow(r)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		body := &boundedBuffer{limit: maxResponseBody}
+		t, err := svc.RunSync(doc, service.SubmitOpts{Response: body})
+		if err != nil {
+			writeErr(w, http.StatusUnprocessableEntity, err)
+			return
+		}
+		if report != nil {
+			report(t, "api") // terminal already; report metadata to the hub
+		}
+		if t.State == task.StateFailed {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"task_id": t.ID, "state": "failed", "error": t.Error,
+			})
+			return
+		}
+		w.Header().Set("X-Shift-Task-Id", t.ID)
+		w.Header().Set("X-Shift-Records", strconv.FormatInt(t.SinkConfirmed, 10))
+		if body.buf.Len() > 0 { // @response terminal produced a body
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(body.buf.Bytes())
+			return
+		}
+		writeJSON(w, http.StatusOK, t) // non-@response terminal: task summary
 	})
 
 	mux.HandleFunc("GET /api/tasks", func(w http.ResponseWriter, r *http.Request) {

@@ -108,6 +108,20 @@ const WebhookSource = "@webhook"
 // a sink step; needs no action; exempt from capability policy + signing.
 const DiscardSink = "@discard"
 
+// ResponseSink is the reserved built-in sink that returns the flow's output to
+// the caller — the requestor of a synchronous direct execution (ADR-0016 data
+// plane, runner-side: the payload never touches the hub). It is connector-free
+// and side-effect-free (it serializes the terminal stream to the response body,
+// bounded), distinct from @discard (which drops). Valid only on a sink step;
+// needs no action; exempt from capability policy + signing. (ADR-0024 Phase 2.)
+const ResponseSink = "@response"
+
+// isBuiltinSink reports whether name is a built-in that may terminate a flow
+// (the two side-effect-free terminals). @webhook is a source, not a sink.
+func isBuiltinSink(name string) bool {
+	return name == DiscardSink || name == ResponseSink
+}
+
 // IsBuiltinConnector reports whether name is a reserved built-in (the
 // runner binds it directly) rather than a registry connector.
 func IsBuiltinConnector(name string) bool {
@@ -262,7 +276,7 @@ func (d *Document) Validate() error {
 			return fmt.Errorf("flow: %s needs connector and action", label)
 		}
 	}
-	if IsBuiltinConnector(d.Sink.Connector) && d.Sink.Connector != DiscardSink {
+	if IsBuiltinConnector(d.Sink.Connector) && !isBuiltinSink(d.Sink.Connector) {
 		return fmt.Errorf("flow: built-in connector %q cannot be a sink", d.Sink.Connector)
 	}
 	if IsBuiltinConnector(d.Source.Connector) && d.Source.Connector != WebhookSource {

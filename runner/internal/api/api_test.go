@@ -296,6 +296,43 @@ func TestDirectExecutionReported(t *testing.T) {
 }
 
 // do issues a context-bound request and fails the test on transport error.
+func TestSyncRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns connector subprocesses")
+	}
+	srv := httptest.NewServer(testHandler(t))
+	defer srv.Close()
+
+	// gen source → @response sink: the generated document returns in the body.
+	flow := `{"name":"sync","source":{"connector":"gen","action":"gen","config":{"records":50}},"sink":{"connector":"@response"}}`
+	resp := do(t, http.MethodPost, srv.URL+"/api/flows/run", flow)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST run = %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "ndjson") {
+		t.Fatalf("content-type = %q, want ndjson", ct)
+	}
+	if got := resp.Header.Get("X-Shift-Records"); got != "50" {
+		t.Fatalf("X-Shift-Records = %q, want 50", got)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if lines := strings.Count(string(body), "\n"); lines != 50 {
+		t.Fatalf("body has %d ndjson lines, want 50", lines)
+	}
+	if resp.Header.Get("X-Shift-Task-Id") == "" {
+		t.Error("missing X-Shift-Task-Id")
+	}
+
+	// A failing flow (gen rejects 0 records) returns 422 + error, not a body.
+	bad := `{"name":"bad","source":{"connector":"gen","action":"gen","config":{"records":0}},"sink":{"connector":"@response"}}`
+	r2 := do(t, http.MethodPost, srv.URL+"/api/flows/run", bad)
+	defer func() { _ = r2.Body.Close() }()
+	if r2.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("failing sync run = %d, want 422", r2.StatusCode)
+	}
+}
+
 func do(t *testing.T, method, url, body string) *http.Response {
 	t.Helper()
 	var rd io.Reader

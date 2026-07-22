@@ -154,6 +154,34 @@ func TestDiscardSink(t *testing.T) {
 	}
 }
 
+func TestResponseSink(t *testing.T) {
+	// Valid: a source terminating at the built-in @response sink (returns the
+	// flow's output to the caller of a sync direct execution).
+	ok := `{"name":"x","start":"gen","steps":[
+	  {"id":"gen","type":"source","connector":"gen","action":"gen","onSuccess":"reply"},
+	  {"id":"reply","type":"sink","connector":"@response"}]}`
+	d, err := Parse([]byte(ok))
+	if err != nil {
+		t.Fatalf("@response sink rejected: %v", err)
+	}
+	// @response is not a registry connector (excluded from the resolvable set).
+	for _, c := range d.Connectors() {
+		if c == ResponseSink {
+			t.Fatalf("@response leaked into resolvable connectors: %v", d.Connectors())
+		}
+	}
+	// Linear-form @response sink is equally valid.
+	if _, err := Parse([]byte(`{"name":"x","source":{"connector":"gen","action":"gen"},"sink":{"connector":"@response"}}`)); err != nil {
+		t.Fatalf("linear @response sink rejected: %v", err)
+	}
+	// @response is sink-only.
+	if _, err := Parse([]byte(`{"name":"x","start":"r","steps":[
+	  {"id":"r","type":"source","connector":"@response","onComplete":"k"},
+	  {"id":"k","type":"sink","connector":"c","action":"d"}]}`)); err == nil {
+		t.Error("@response as source accepted, want rejection")
+	}
+}
+
 func TestGraphView(t *testing.T) {
 	d, err := Parse([]byte(goodGraph)) // in→keep→out, source onFailure→dead
 	if err != nil {

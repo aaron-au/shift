@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -137,10 +138,44 @@ type SubmitOpts struct {
 	// when its source is the built-in @webhook (ADR-0016 direct execution).
 	// Required for such flows; ignored otherwise.
 	WebhookBody []byte
+	// Response, when set, is where the built-in @response sink streams the
+	// flow's terminal output (NDJSON) to return it to the caller of a
+	// synchronous direct execution (ADR-0016; payload never touches the hub).
+	// The caller bounds it (mirrors the @webhook body cap). Ignored unless the
+	// flow terminates at @response.
+	Response io.Writer
 }
 
-// SubmitWith registers and runs a task with explicit options.
+// SubmitWith registers and runs a task asynchronously with explicit options,
+// returning the task id immediately (poll /api/tasks/{id} for the result).
 func (s *Service) SubmitWith(doc *flow.Document, o SubmitOpts) (string, error) {
+	id, err := s.register(doc, o)
+	if err != nil {
+		return "", err
+	}
+	go s.run(id, doc, o)
+	return id, nil
+}
+
+// RunSync registers and runs a task inline (in the caller's goroutine),
+// blocking until it reaches a terminal state, then returns the recorded task.
+// It is the synchronous request-reply intake: paired with a @response sink and
+// SubmitOpts.Response, the pipeline output is streamed to the caller before
+// this returns (ADR-0016 direct execution; payload never touches the hub).
+// Admission still applies — a busy runner holds the call until capacity frees.
+func (s *Service) RunSync(doc *flow.Document, o SubmitOpts) (task.Task, error) {
+	id, err := s.register(doc, o)
+	if err != nil {
+		return task.Task{}, err
+	}
+	s.run(id, doc, o)
+	t, _ := s.store.Get(id)
+	return t, nil
+}
+
+// register validates the flow, rejects work while draining, and adds a waiting
+// task to the store. It reserves the WaitGroup slot both run paths release.
+func (s *Service) register(doc *flow.Document, o SubmitOpts) (string, error) {
 	if err := doc.Validate(); err != nil {
 		return "", err
 	}
@@ -160,7 +195,6 @@ func (s *Service) SubmitWith(doc *flow.Document, o SubmitOpts) (string, error) {
 		Submitted: time.Now(),
 	}
 	s.store.Add(t)
-	go s.run(t.ID, doc, o)
 	return t.ID, nil
 }
 
@@ -247,7 +281,7 @@ func (s *Service) run(id string, doc *flow.Document, o SubmitOpts) {
 	if o.Capture {
 		sampler = newCaptureSampler(o.CaptureMax, redact)
 	}
-	res, err := s.execute(ctx, doc, redact, sampler, o.WebhookBody)
+	res, err := s.execute(ctx, doc, redact, sampler, o)
 	end := time.Now()
 	s.store.Update(id, func(t *task.Task) {
 		t.Finished = &end
@@ -292,7 +326,7 @@ type execResult struct {
 // execute binds connectors, runs the compiled pipeline, and on failure
 // routes to the failing step's error handler (v2 onFailure), if any. When
 // sampler is non-nil, per-step INPUT/OUTPUT samples are collected.
-func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(string) string, sampler *captureSampler, webhookBody []byte) (execResult, error) {
+func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(string) string, sampler *captureSampler, o SubmitOpts) (execResult, error) {
 	plan, err := doc.Plan()
 	if err != nil {
 		return execResult{}, err
@@ -310,10 +344,10 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 	// without terminating the shared process.
 	var src stream.Source
 	if srcStep.Connector == flowdoc.WebhookSource {
-		if webhookBody == nil {
+		if o.WebhookBody == nil {
 			return execResult{}, errors.New("service: @webhook flow requires a request body")
 		}
-		src = ndjson.NewReader(bytes.NewReader(webhookBody), ndjson.ReaderOptions{})
+		src = ndjson.NewReader(bytes.NewReader(o.WebhookBody), ndjson.ReaderOptions{})
 	} else {
 		srcProc, err := s.pool.Get(s.baseCtx, srcStep.Connector)
 		if err != nil {
@@ -323,14 +357,18 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 		src = srcProc.Source(srcStep.Action, srcStep.Config)
 	}
 
-	// Sink: the built-in @discard terminal (connector-free, drops the stream)
-	// or a connector subprocess (pooled, s.baseCtx lifetime).
+	// Sink: a built-in terminal (@discard drops; @response streams the output
+	// back to the caller) or a connector subprocess (pooled, s.baseCtx lifetime).
 	var sink stream.Sink
 	var confirmed func() int64
-	if sinkStep.Connector == flowdoc.DiscardSink {
+	switch sinkStep.Connector {
+	case flowdoc.DiscardSink:
 		ds := &discardSink{}
 		sink, confirmed = ds, func() int64 { return ds.n }
-	} else {
+	case flowdoc.ResponseSink:
+		rs := newResponseSink(o.Response)
+		sink, confirmed = rs, func() int64 { return rs.n }
+	default:
 		sinkProc, err := s.pool.Get(s.baseCtx, sinkStep.Connector)
 		if err != nil {
 			return execResult{}, err
@@ -387,6 +425,34 @@ func (d *discardSink) Write(_ context.Context, b *record.Batch) error {
 }
 
 func (d *discardSink) Close() error { return nil }
+
+// responseSink is the built-in @response terminal: it serializes the flow's
+// terminal stream as NDJSON to the caller-supplied writer (bounded by the
+// caller), so a synchronous direct execution returns its result to the
+// requestor. When no writer is supplied (e.g. a @response flow submitted on the
+// async path), it degrades to a counting drop — same as @discard — so the flow
+// still runs validly. The payload never touches the hub (runner-side egress).
+type responseSink struct {
+	w *ndjson.Writer
+	n int64
+}
+
+func newResponseSink(w io.Writer) *responseSink {
+	if w == nil {
+		w = io.Discard
+	}
+	return &responseSink{w: ndjson.NewWriter(w)}
+}
+
+func (r *responseSink) Write(ctx context.Context, b *record.Batch) error {
+	if err := r.w.Write(ctx, b); err != nil {
+		return err
+	}
+	r.n += int64(b.Len())
+	return nil
+}
+
+func (r *responseSink) Close() error { return r.w.Close() }
 
 // runHandler delivers a single error record to a v2 onFailure handler (a
 // sink action). The record is metadata only — flow, failing step, error,
