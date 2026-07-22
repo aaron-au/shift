@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aaron-au/shift/pkg/flowdoc"
 	"github.com/aaron-au/shift/runner/internal/flow"
 	"github.com/aaron-au/shift/runner/internal/task"
 )
@@ -78,6 +79,34 @@ func TestExecuteFlowEndToEnd(t *testing.T) {
 	}
 	if got := svc.Status(); got.Totals.Completed != 1 || got.Governor.Used != 0 {
 		t.Errorf("status after completion: %+v", got)
+	}
+}
+
+func TestExecuteFlowDiscardSink(t *testing.T) {
+	if testing.Short() || coverageRun() {
+		t.Skip("spawns connector subprocesses")
+	}
+	svc := newTestService(t, Options{})
+	cfg, _ := json.Marshal(map[string]any{"records": 5000})
+	// gen source → built-in @discard sink (no sink connector spawned).
+	doc := &flow.Document{
+		Name:   "discard-flow",
+		Source: flow.Endpoint{Connector: "gen", Action: "gen", Config: cfg},
+		Sink:   flow.Endpoint{Connector: flowdoc.DiscardSink},
+	}
+	id, err := svc.Submit(doc, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk, err := svc.awaitTask(id, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.RecordsIn != 5000 {
+		t.Errorf("records in = %d, want 5000", tk.RecordsIn)
+	}
+	if tk.SinkConfirmed != tk.RecordsIn {
+		t.Errorf("@discard confirmed %d, want %d (all records)", tk.SinkConfirmed, tk.RecordsIn)
 	}
 }
 

@@ -22,6 +22,7 @@ Hub-and-spoke Integration Platform as a Service. Goal: a provisionable, enterpri
 13. Custom code (designed, build deferred): two tiers — `starlark` inline (fuel-metered, no I/O) + `python` out-of-process (connector subprocess, wheels-only, signed bundles). Step types `starlark`/`python`/`subflow` reserved. (ADR-0017)
 14. Connector config-schema discovery: connectors declare a per-action JSON Schema (`sdk.Connector.Schemas`); it travels as a signed, opaque **descriptor** blob bound into `consign.Manifest` (v2 message; byte-identical v1 when absent). Connectors self-describe (`<binary> describe` + `Describe` RPC); the hub stores + serves it (`resolve`/`list`) so the studio builder renders config forms with **no runner online and no payload plane**. Hub never parses it; verify fail-closed. (ADR-0018)
 15. Studio is a **canvas builder** in an "OS-lite" **windowed shell** (dock + draggable/resizable app windows; builder + tasks side by side), authored in **vanilla JS, no build step**. Node positions ride in an optional presentational `flowdoc.Document.Layout` (ignored by validation/`Plan`/engine). `pkg/flowdoc` validation stays authoritative — the builder surfaces 422s, never re-implements them. Visual polish is a deferred series. (ADR-0019)
+16. Connector operation model: a connector = **one canvas node**; the author picks a **verb** from a dropdown and the node's source/sink role follows the action's declared `direction` (never chosen up front). Side-effecting verbs are **config-driven sources** (path on the node, emit a status record); `put`-style verbs are the sink. Built-in **`@discard`** sink (connector-free, side-effect-free terminal, sink-only, auto-appended by the studio) lets a single-verb flow satisfy "happy path ends at a sink". **Phase 2 (designed, deferred):** request-reply action shape (mid-flow call emitting a response), explicit **`@response`** terminal (return to caller, runner-side, payload never at hub), verb/HTTP-status naming. (ADR-0024)
 
 ## Doctrine (non-negotiable for new code)
 
@@ -67,8 +68,10 @@ sdk/        Connector SDK (M2, done — see docs/bench-M2.md: 1.32x subprocess o
   sdktest/           in-process wire-protocol test harness for connector authors
   connectorpb/       generated from proto/connector/v1 (make proto to regenerate)
 connectors/ Connector binaries: gen (bench/test), http (streaming GET source, NDJSON POST sink, SSRF guard),
-            sftp (M6+ base-connector track: streaming get source + atomic put sink over SFTP, ndjson/csv
-            via engine/format, mandatory host-key verification + network guard fail-closed)
+            sftp (M6+ base-connector track, v0.2.0: get source + atomic put sink (ndjson/csv via
+            engine/format) + list source + config-driven delete/mkdir/rmdir/rename sources (path/from-to
+            on the node, emit a status record, idempotent); mandatory host-key verification + network
+            guard fail-closed. Verbs presented as one node + verb dropdown, ADR-0024)
 proto/      gRPC contracts (ADR-0007: batches cross as opaque binary frames, never per-record proto)
 runner/     runnerd (M3a+M3b+M4b, done — see docs/dev/04-runner.md): flow docs → engine pipelines,
   internal/{flow,connpool,task,service,api}   resource-governed admission (ADR-0005), connector pool,

@@ -137,8 +137,7 @@
           <button id="savelayout" onclick="saveLayout()">Save layout</button>
           <button onclick="deployModel()">Deploy draft</button>
           <span class="hint">add:</span>
-          <button class="ghost" onclick="addNode('source')">source</button>
-          <button class="ghost" onclick="addNode('sink')">sink</button>
+          <button class="ghost" onclick="addNode('connector')">connector</button>
           <button class="ghost" onclick="addNode('filter')">filter</button>
           <button class="ghost" onclick="addNode('project')">project</button>
           <button class="ghost" onclick="addNode('coerce')">coerce</button>
@@ -817,13 +816,18 @@ function removeEdge(from, kind) {
 }
 
 function addNode(type) {
-  const base = type + '_';
+  // "connector" is the unified connector node: pick a verb and the node
+  // resolves to source or sink from that action's declared direction. It
+  // starts as a source (unconfigured) until a verb is chosen.
+  const isConn = type === 'connector';
+  const nodeType = isConn ? 'source' : type;
+  const base = (isConn ? 'node' : type) + '_';
   let n = 1; while (stepById(base + n)) n++;
   const id = base + n;
-  const step = {id, type};
-  if (type === 'source' || type === 'sink') { step.connector = ''; step.action = ''; }
+  const step = {id, type: nodeType};
+  if (isConn || nodeType === 'source' || nodeType === 'sink') { step.connector = ''; step.action = ''; }
   studio.model.steps.push(step);
-  if (!studio.model.start && type === 'source') studio.model.start = id;
+  if (!studio.model.start && nodeType === 'source') studio.model.start = id;
   // Place it to the right of the current spread.
   const xs = Object.values(studio.pos).map(p => p.x);
   studio.pos[id] = {x: (xs.length ? Math.max(...xs) : 20) + 60, y: 30 + (type === 'sink' ? 0 : 0)};
@@ -911,10 +915,22 @@ function editField(id, field, val) {
 function jsonStr(v) { return v === undefined || v === null ? '' : (typeof v === 'string' ? v : JSON.stringify(v)); }
 
 // --- connector pickers + schema-driven config form (Phase D, ADR-0018) ---
+// verbDir returns the declared direction ('source'|'sink') of a connector's
+// action, from the descriptor-derived catalog, or '' if unknown.
+function verbDir(connector, action) {
+  const e = studio.catalog[connector];
+  if (!e || !action) return '';
+  if (e.actions['sink/' + action] !== undefined) return 'sink';
+  if (e.actions['source/' + action] !== undefined) return 'source';
+  return '';
+}
+
 function connectorPickers(s) {
-  const cats = Object.keys(studio.catalog).sort();
-  const opts = cats.slice();
-  if (s.type === 'source') opts.unshift('@webhook');
+  // One connector node: choose connector, then a verb. The verb list spans BOTH
+  // directions — the node's source/sink role follows the chosen action's
+  // declared direction (ADR-0019 unified node), so the author never picks a
+  // node "type" up front. @webhook stays a special source trigger.
+  const opts = ['@webhook', ...Object.keys(studio.catalog).sort()];
   if (s.connector && !opts.includes(s.connector)) opts.push(s.connector); // preserve unknown/unpublished
   const connSel = `<select onchange="setConnector('${esc(s.id)}',this.value)">` +
     `<option value=""${!s.connector ? ' selected' : ''}>— choose —</option>` +
@@ -923,24 +939,47 @@ function connectorPickers(s) {
   let actCtl;
   const entry = studio.catalog[s.connector];
   if (entry) {
-    const acts = Object.keys(entry.actions).filter(k => k.startsWith(s.type + '/')).map(k => k.slice(s.type.length + 1));
-    if (s.action && !acts.includes(s.action)) acts.push(s.action);
-    actCtl = `<select onchange="setAction('${esc(s.id)}',this.value)"><option value="">— choose —</option>` +
-      acts.map(a => `<option${a === s.action ? ' selected' : ''}>${esc(a)}</option>`).join('') + `</select>`;
+    // All verbs, both directions, labelled with the role they resolve to.
+    const acts = Object.keys(entry.actions).map(k => {
+      const i = k.indexOf('/');
+      return {dir: k.slice(0, i), name: k.slice(i + 1)};
+    }).sort((a, b) => a.name.localeCompare(b.name));
+    if (s.action && !acts.some(a => a.name === s.action)) acts.push({dir: s.type, name: s.action});
+    actCtl = `<select onchange="setAction('${esc(s.id)}',this.value)"><option value="">— choose verb —</option>` +
+      acts.map(a => `<option value="${esc(a.name)}"${a.name === s.action ? ' selected' : ''}>${esc(a.name)} (${esc(a.dir)})</option>`).join('') + `</select>`;
   } else { // @webhook or unpublished connector → free-text action, no schema
     actCtl = `<input value="${esc(s.action ?? '')}" onchange="setAction('${esc(s.id)}',this.value)">`;
   }
   return `<div class="efield"><label>connector</label>${connSel}</div>` +
-         `<div class="efield"><label>action</label>${actCtl}</div>`;
+         `<div class="efield"><label>verb</label>${actCtl}</div>`;
 }
 function setConnector(id, val) {
   const s = stepById(id); if (!s) return;
   s.connector = val || '';
-  const e = studio.catalog[s.connector];
-  if (e && s.action && !e.actions[s.type + '/' + s.action]) s.action = ''; // action no longer valid
+  if (!verbDir(s.connector, s.action) && studio.catalog[s.connector]) s.action = ''; // action no longer valid for this connector
   drawStudio(); renderEditor();
 }
-function setAction(id, val) { const s = stepById(id); if (!s) return; s.action = val || ''; drawStudio(); renderEditor(); }
+function setAction(id, val) {
+  const s = stepById(id); if (!s) return;
+  s.action = val || '';
+  // The node's role follows the verb's declared direction. Unknown (@webhook/
+  // free-text) verbs stay a source trigger.
+  const dir = verbDir(s.connector, s.action);
+  if (dir) s.type = dir;
+  syncStart(s);
+  drawStudio(); renderEditor();
+}
+
+// syncStart keeps the flow entry consistent as a node's role changes: a source
+// with no entry set becomes it; a node that turned into a sink can't be the
+// entry, so hand it to another source.
+function syncStart(s) {
+  if (s.type === 'source' && !studio.model.start) { studio.model.start = s.id; return; }
+  if (s.type === 'sink' && studio.model.start === s.id) {
+    const src = studio.model.steps.find(x => x.type === 'source');
+    studio.model.start = src ? src.id : '';
+  }
+}
 
 function actionSchema(s) { const e = studio.catalog[s.connector]; return e && e.actions[s.type + '/' + s.action]; }
 
@@ -1051,9 +1090,23 @@ async function saveLayout() {
 async function deployModel(layoutOnly) {
   if (!studio.name || !studio.model) return;
   const m = studio.model;
-  const doc = {name: m.name || studio.name, layout: studio.pos};
+  const doc = {name: m.name || studio.name, layout: Object.assign({}, studio.pos)};
   if (m.start) doc.start = m.start;
   doc.steps = m.steps.map(cleanStep);
+  // Auto-terminate: a flow's happy path must end at a sink. Any non-sink step
+  // left without a happy edge (e.g. a lone SFTP mkdir source) is routed to a
+  // built-in @discard sink, added once — so a single verb node "just works"
+  // without the author placing an explicit terminal. (An explicit @response
+  // terminal that returns output to the caller is Phase 2.)
+  const dangling = doc.steps.filter(s => s.type !== 'sink' && !s.onSuccess && !s.onComplete);
+  if (dangling.length) {
+    let tid = 'discard'; let n = 1;
+    while (doc.steps.some(s => s.id === tid)) tid = 'discard_' + (++n);
+    dangling.forEach(s => { s.onSuccess = tid; });
+    doc.steps.push({id: tid, type: 'sink', connector: '@discard'});
+    const xs = Object.values(doc.layout).map(p => p.x);
+    doc.layout[tid] = {x: (xs.length ? Math.max(...xs) : 20) + 60, y: 30};
+  }
   try {
     await api('/api/v1/flows/' + encodeURIComponent(studio.name),
       {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(doc)});

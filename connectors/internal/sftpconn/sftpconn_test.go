@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -184,17 +185,170 @@ func TestSFTPHostKeyRequiredWithoutAllowLocal(t *testing.T) {
 }
 
 func TestSFTPConfigValidation(t *testing.T) {
-	cases := map[string]string{
-		"missing host": `{"user":"u","password":"p","path":"/f","allow_local":true}`,
-		"missing auth": `{"host":"h","user":"u","path":"/f","allow_local":true}`,
-		"bad format":   `{"host":"h","user":"u","password":"p","path":"/f","format":"xml","allow_local":true}`,
-	}
-	for name, cfg := range cases {
+	// Connection-level validation (parseConfig).
+	for name, cfg := range map[string]string{
+		"missing host": `{"user":"u","password":"p","allow_local":true}`,
+		"missing auth": `{"host":"h","user":"u","allow_local":true}`,
+	} {
 		t.Run(name, func(t *testing.T) {
 			var c config
 			if err := parseConfig([]byte(cfg), &c); err == nil {
 				t.Fatalf("%s: expected validation error", name)
 			}
 		})
+	}
+	// File-format validation (get/put, via requireFileFormat).
+	t.Run("bad format", func(t *testing.T) {
+		c := config{Path: "/f", Format: "xml"}
+		if err := c.requireFileFormat(); err == nil {
+			t.Fatal("expected unsupported-format error")
+		}
+	})
+}
+
+func connConfig(t *testing.T, host string, port int, user, pass string) []byte {
+	t.Helper()
+	return fmt.Appendf(nil, `{"host":%q,"port":%d,"user":%q,"password":%q,"allow_local":true}`, host, port, user, pass)
+}
+
+func TestSFTPList(t *testing.T) {
+	dir := t.TempDir()
+	for _, f := range []string{"a.txt", "b.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	host, port, user, pass := startSFTPServer(t)
+
+	s := &listSource{}
+	ctx := context.Background()
+	if err := s.Open(ctx, sourceConfig(t, host, port, user, pass, dir, "")); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	dirs := map[string]bool{}
+	for {
+		b, err := s.Next(ctx)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("next: %v", err)
+		}
+		for _, rec := range b.Records() {
+			name, _ := rec.Field("name")
+			isDir, _ := rec.Field("is_dir")
+			dirs[name.String()] = isDir.Bool()
+		}
+	}
+	if len(dirs) != 3 || dirs["a.txt"] || !dirs["sub"] {
+		t.Fatalf("listing = %v, want a.txt/b.txt (files) + sub (dir)", dirs)
+	}
+}
+
+// opConfig builds a config JSON for an op verb: connection + the given extra
+// string fields (path, or from/to for rename).
+func opConfig(t *testing.T, host string, port int, user, pass string, extra ...[2]string) []byte {
+	t.Helper()
+	m := map[string]any{"host": host, "port": port, "user": user, "password": pass, "allow_local": true}
+	for _, p := range extra {
+		m[p[0]] = p[1]
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestSFTPOps(t *testing.T) {
+	dir := t.TempDir()
+	host, port, user, pass := startSFTPServer(t)
+	ctx := context.Background()
+
+	// runOp opens a config-driven op source, asserts it emits one status
+	// record then EOF, and returns that record.
+	runOp := func(op opKind, cfg []byte) record.Value {
+		t.Helper()
+		s := &opSource{op: op}
+		if err := s.Open(ctx, cfg); err != nil {
+			t.Fatalf("%s open: %v", op.name(), err)
+		}
+		b, err := s.Next(ctx)
+		if err != nil {
+			t.Fatalf("%s next: %v", op.name(), err)
+		}
+		recs := b.Records()
+		if len(recs) != 1 {
+			t.Fatalf("%s emitted %d records, want 1", op.name(), len(recs))
+		}
+		if _, err := s.Next(ctx); !errors.Is(err, io.EOF) {
+			t.Fatalf("%s second Next = %v, want EOF", op.name(), err)
+		}
+		if ok, _ := recs[0].Field("ok"); !ok.Bool() {
+			t.Fatalf("%s status not ok: %v", op.name(), recs[0])
+		}
+		_ = s.Close()
+		return recs[0]
+	}
+
+	// mkdir — single node, path in config, runs standalone.
+	created := filepath.Join(dir, "created")
+	rec := runOp(opMkdir, opConfig(t, host, port, user, pass, [2]string{"path", created}))
+	if v, _ := rec.Field("op"); v.String() != "mkdir" {
+		t.Fatalf("status op = %q, want mkdir", v.String())
+	}
+	if fi, err := os.Stat(created); err != nil || !fi.IsDir() {
+		t.Fatalf("mkdir: %v isDir=%v", err, fi != nil && fi.IsDir())
+	}
+
+	// delete, then delete again (missing → idempotent success).
+	gone := filepath.Join(dir, "gone.txt")
+	if err := os.WriteFile(gone, []byte("z"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runOp(opDelete, opConfig(t, host, port, user, pass, [2]string{"path", gone}))
+	if _, err := os.Stat(gone); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("delete: file still present: %v", err)
+	}
+	runOp(opDelete, opConfig(t, host, port, user, pass, [2]string{"path", gone})) // idempotent
+
+	// rename
+	old, renamed := filepath.Join(dir, "old.txt"), filepath.Join(dir, "new.txt")
+	if err := os.WriteFile(old, []byte("r"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runOp(opRename, opConfig(t, host, port, user, pass, [2]string{"from", old}, [2]string{"to", renamed}))
+	if _, err := os.Stat(renamed); err != nil {
+		t.Fatalf("rename: new path missing: %v", err)
+	}
+	if _, err := os.Stat(old); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rename: old path still present")
+	}
+
+	// rmdir (empty)
+	empty := filepath.Join(dir, "empty")
+	if err := os.Mkdir(empty, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	runOp(opRmdir, opConfig(t, host, port, user, pass, [2]string{"path", empty}))
+	if _, err := os.Stat(empty); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rmdir: dir still present")
+	}
+}
+
+func TestSFTPOpMissingArgs(t *testing.T) {
+	host, port, user, pass := startSFTPServer(t)
+	// delete without a path → Open fails before any dial.
+	if err := (&opSource{op: opDelete}).Open(context.Background(), connConfig(t, host, port, user, pass)); err == nil {
+		t.Fatal("delete without path: expected error")
+	}
+	// rename without from/to → Open fails.
+	if err := (&opSource{op: opRename}).Open(context.Background(), connConfig(t, host, port, user, pass)); err == nil {
+		t.Fatal("rename without from/to: expected error")
 	}
 }

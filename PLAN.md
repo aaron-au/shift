@@ -246,12 +246,21 @@ studio, `b64utf8`).
   deferred (Aaron, 2026-07-21) — needs its own milestone + that platform.
 - **Base connector library** — turn the platform into real integration
   workloads. Started 2026-07-21 (Aaron's call, after RBAC deferred). Shipped:
-  - **sftp ✅** — streaming `get` source (remote file → ndjson/csv → batches)
-    + atomic `put` sink (temp-then-`PosixRename`); mandatory SSH host-key
-    verification (pinned `host_key`, or unverified only under `allow_local`);
-    network guard fail-closed mirroring http's SSRF guard; creds are
-    `{"$secret":…}`-resolved before spawn. Real in-process SSH+SFTP round-trip
-    tests. Deps `pkg/sftp` + `x/crypto/ssh` (connectors module only).
+  - **sftp ✅ (v0.2.0)** — full SFTP verb set under the ADR-0024 operation
+    model. `get` source (remote file → ndjson/csv → batches) + atomic `put` sink
+    (temp-then-`PosixRename`) + `list` source (dir → one record/entry). File-
+    management verbs `delete`/`mkdir`/`rmdir`/`rename` are **config-driven
+    sources** (path/from-to on the node) that perform the op and emit a status
+    record — so a single verb node runs standalone. All idempotent under
+    at-least-once. Mandatory SSH host-key verification (pinned `host_key`, or
+    unverified only under `allow_local`); network guard fail-closed mirroring
+    http's SSRF guard; creds `{"$secret":…}`-resolved before spawn. Real
+    in-process SSH+SFTP round-trip tests. Deps `pkg/sftp` + `x/crypto/ssh`.
+  - **Connector operation model (ADR-0024) ✅ Phase 1** — one canvas node + verb
+    dropdown, node role auto-set from the action's `direction`; built-in
+    `@discard` sink (auto-appended so a single source-verb flow terminates
+    validly). **Phase 2 deferred (ADR):** request-reply action shape + explicit
+    `@response` terminal + verb/HTTP-status naming.
   - Next candidates: filesystem, DB source/CDC + upsert sink, S3, SMTP,
     message queues. XML/EDI is adjacent engine-format work (M1.5).
 

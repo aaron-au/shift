@@ -25,46 +25,83 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "sftp",
-		Version: "0.1.0",
+		Version: "0.2.0",
 		Meta: &sdk.ConnectorMeta{
-			Description: "Pull a remote file as a record stream (source) or write records to a remote file (sink) over SFTP. Host-key verified.",
+			Description: "SFTP file operations: pick a verb (get/put/list/delete/mkdir/rmdir/rename) and a path. Host-key verified.",
 			Category:    "file-transfer",
 			Icon:        "📁",
 			Tags:        []string{"sftp", "ssh", "file", "ndjson", "csv"},
 		},
+		// Every verb except put is a source: you configure it with a verb + path
+		// and it runs standalone (the op verbs emit a single status record). put
+		// is the one sink — it consumes the pipeline's records to write a file.
 		Sources: map[string]func() sdk.SourceAction{
-			"get": func() sdk.SourceAction { return &getSource{} },
+			"get":    func() sdk.SourceAction { return &getSource{} },
+			"list":   func() sdk.SourceAction { return &listSource{} },
+			"delete": func() sdk.SourceAction { return &opSource{op: opDelete} },
+			"mkdir":  func() sdk.SourceAction { return &opSource{op: opMkdir} },
+			"rmdir":  func() sdk.SourceAction { return &opSource{op: opRmdir} },
+			"rename": func() sdk.SourceAction { return &opSource{op: opRename} },
 		},
 		Sinks: map[string]func() sdk.SinkAction{
 			"put": func() sdk.SinkAction { return &putSink{} },
 		},
 		Schemas: map[string][]byte{
-			"get": []byte(configSchema),
-			"put": []byte(configSchema),
+			"get":    []byte(fileConfigSchema),
+			"put":    []byte(fileConfigSchema),
+			"list":   []byte(listConfigSchema),
+			"delete": []byte(opPathSchema),
+			"mkdir":  []byte(opPathSchema),
+			"rmdir":  []byte(rmdirConfigSchema),
+			"rename": []byte(renameConfigSchema),
 		},
 	}
 }
 
-// configSchema is the JSON Schema (draft-07 subset) for config. Secret-typed
-// fields carry x-shift-secret so the studio offers a secret picker.
-const configSchema = `{
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "type": "object",
-  "title": "SFTP",
-  "required": ["host", "user", "path"],
-  "properties": {
+// connProps is the shared connection portion of every action's config schema.
+// Secret-typed fields carry x-shift-secret so the studio offers a secret picker.
+const connProps = `
     "host": {"type": "string", "title": "Host", "description": "SFTP server hostname or IP"},
     "port": {"type": "integer", "title": "Port", "default": 22},
     "user": {"type": "string", "title": "Username"},
     "password": {"type": "string", "title": "Password", "x-shift-secret": true},
     "private_key": {"type": "string", "title": "Private key (PEM)", "x-shift-secret": true},
     "host_key": {"type": "string", "title": "Host key", "description": "Server public key (authorized_keys line, e.g. 'ssh-ed25519 AAAA...'). Required unless allow_local."},
-    "path": {"type": "string", "title": "Remote path", "description": "Path to the remote file"},
-    "format": {"type": "string", "title": "Format", "enum": ["ndjson", "csv"], "default": "ndjson"},
     "allow_local": {"type": "boolean", "title": "Allow local/loopback and private/internal targets (network guard off; also permits an unverified host key)", "default": false},
-    "timeout_seconds": {"type": "integer", "title": "Connect timeout (seconds)", "default": 30}
-  }
-}`
+    "timeout_seconds": {"type": "integer", "title": "Connect timeout (seconds)", "default": 30}`
+
+// Per-action schemas. get/put stream a file; list reads a directory; the op
+// sinks (delete/mkdir/rmdir/rename) take their target(s) from each record, so
+// their config is connection-only.
+var (
+	fileConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"SFTP file",
+  "required":["host","user","path"],"properties":{` + connProps + `,
+    "path": {"type": "string", "title": "Remote path", "description": "Path to the remote file"},
+    "format": {"type": "string", "title": "Format", "enum": ["ndjson", "csv"], "default": "ndjson"}
+  }}`
+
+	listConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"SFTP list",
+  "required":["host","user","path"],"properties":{` + connProps + `,
+    "path": {"type": "string", "title": "Remote directory", "description": "Directory to list; emits one record per entry {name,path,size,mode,mod_time,is_dir}"}
+  }}`
+
+	opPathSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"SFTP operation",
+  "required":["host","user","path"],"properties":{` + connProps + `,
+    "path": {"type": "string", "title": "Remote path", "description": "Target file/directory"}
+  }}`
+
+	rmdirConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"SFTP rmdir",
+  "required":["host","user","path"],"properties":{` + connProps + `,
+    "path": {"type": "string", "title": "Remote directory"},
+    "recursive": {"type": "boolean", "title": "Recursive", "description": "Remove non-empty directories and their contents", "default": false}
+  }}`
+
+	renameConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"SFTP rename",
+  "required":["host","user","from","to"],"properties":{` + connProps + `,
+    "from": {"type": "string", "title": "From path"},
+    "to": {"type": "string", "title": "To path"}
+  }}`
+)
 
 // config is the shared source/sink configuration.
 type config struct {
@@ -75,21 +112,27 @@ type config struct {
 	PrivateKey     string `json:"private_key"`
 	HostKey        string `json:"host_key"`
 	Path           string `json:"path"`
+	From           string `json:"from"` // rename: source path
+	To             string `json:"to"`   // rename: destination path
 	Format         string `json:"format"`
+	Recursive      bool   `json:"recursive"` // rmdir: remove non-empty trees
 	AllowLocal     bool   `json:"allow_local"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
 }
 
+// parseConfig unmarshals and validates the connection fields (shared by every
+// action). Action-specific requirements (a file path + format for get/put, a
+// directory for list) are checked by the action's Open via the helpers below.
 func parseConfig(raw []byte, into *config) error {
 	if err := json.Unmarshal(raw, into); err != nil {
 		return fmt.Errorf("sftp: bad config: %w", err)
 	}
-	return into.validate()
+	return into.validateConn()
 }
 
-func (c *config) validate() error {
-	if c.Host == "" || c.User == "" || c.Path == "" {
-		return errors.New("sftp: host, user and path are required")
+func (c *config) validateConn() error {
+	if c.Host == "" || c.User == "" {
+		return errors.New("sftp: host and user are required")
 	}
 	if c.Password == "" && c.PrivateKey == "" {
 		return errors.New("sftp: password or private_key is required")
@@ -97,14 +140,31 @@ func (c *config) validate() error {
 	if c.Port == 0 {
 		c.Port = 22
 	}
+	if c.TimeoutSeconds <= 0 {
+		c.TimeoutSeconds = 30
+	}
+	return nil
+}
+
+// requireFileFormat validates the get/put config: a remote file path and a
+// supported record format (defaulting to ndjson).
+func (c *config) requireFileFormat() error {
+	if c.Path == "" {
+		return errors.New("sftp: path is required")
+	}
 	if c.Format == "" {
 		c.Format = "ndjson"
 	}
 	if c.Format != "ndjson" && c.Format != "csv" {
 		return fmt.Errorf("sftp: unsupported format %q (want ndjson or csv)", c.Format)
 	}
-	if c.TimeoutSeconds <= 0 {
-		c.TimeoutSeconds = 30
+	return nil
+}
+
+// requireDir validates the list config: a remote directory path.
+func (c *config) requireDir() error {
+	if c.Path == "" {
+		return errors.New("sftp: path (directory) is required")
 	}
 	return nil
 }

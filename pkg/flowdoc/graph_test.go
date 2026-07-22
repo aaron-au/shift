@@ -128,6 +128,32 @@ func TestGraphValidation(t *testing.T) {
 	}
 }
 
+func TestDiscardSink(t *testing.T) {
+	// Valid: a source-side action terminating at the built-in @discard sink —
+	// the single-op flow shape (no action needed on @discard).
+	ok := `{"name":"x","start":"op","steps":[
+	  {"id":"op","type":"source","connector":"sftp","action":"mkdir","config":{"host":"h","user":"u"},"onSuccess":"end"},
+	  {"id":"end","type":"sink","connector":"@discard"}]}`
+	if _, err := Parse([]byte(ok)); err != nil {
+		t.Fatalf("@discard sink rejected: %v", err)
+	}
+	// @discard is sink-only, and is not a registry connector (excluded from the
+	// resolvable connector set).
+	d, err := Parse([]byte(ok))
+	if err == nil {
+		for _, c := range d.Connectors() {
+			if c == DiscardSink {
+				t.Fatalf("@discard leaked into resolvable connectors: %v", d.Connectors())
+			}
+		}
+	}
+	if _, err := Parse([]byte(`{"name":"x","start":"d","steps":[
+	  {"id":"d","type":"source","connector":"@discard","onComplete":"k"},
+	  {"id":"k","type":"sink","connector":"c","action":"d"}]}`)); err == nil {
+		t.Error("@discard as source accepted, want rejection")
+	}
+}
+
 func TestGraphView(t *testing.T) {
 	d, err := Parse([]byte(goodGraph)) // in→keep→out, source onFailure→dead
 	if err != nil {

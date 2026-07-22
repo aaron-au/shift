@@ -32,6 +32,9 @@ func (s *putSink) Open(ctx context.Context, config []byte) error {
 	if err := parseConfig(config, &s.cfg); err != nil {
 		return err
 	}
+	if err := s.cfg.requireFileFormat(); err != nil {
+		return err
+	}
 	sc, closer, err := s.cfg.dial(ctx)
 	if err != nil {
 		return err

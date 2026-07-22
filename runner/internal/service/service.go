@@ -323,12 +323,22 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 		src = srcProc.Source(srcStep.Action, srcStep.Config)
 	}
 
-	sinkProc, err := s.pool.Get(s.baseCtx, sinkStep.Connector)
-	if err != nil {
-		return execResult{}, err
+	// Sink: the built-in @discard terminal (connector-free, drops the stream)
+	// or a connector subprocess (pooled, s.baseCtx lifetime).
+	var sink stream.Sink
+	var confirmed func() int64
+	if sinkStep.Connector == flowdoc.DiscardSink {
+		ds := &discardSink{}
+		sink, confirmed = ds, func() int64 { return ds.n }
+	} else {
+		sinkProc, err := s.pool.Get(s.baseCtx, sinkStep.Connector)
+		if err != nil {
+			return execResult{}, err
+		}
+		defer s.pool.Put(sinkStep.Connector)
+		ss := sinkProc.Sink(sinkStep.Action, sinkStep.Config)
+		sink, confirmed = ss, func() int64 { return ss.Records }
 	}
-	defer s.pool.Put(sinkStep.Connector)
-	sink := sinkProc.Sink(sinkStep.Action, sinkStep.Config)
 
 	taskGov := mem.New(s.opts.TaskWatermark)
 	base := stream.New(src, srcStep.ID)
@@ -340,7 +350,7 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 		return execResult{}, err
 	}
 	rep, runErr := p.Run(ctx, sink, sinkStep.ID)
-	res := execResult{rep: rep, confirmed: sink.Records}
+	res := execResult{rep: rep, confirmed: confirmed()}
 	if sampler != nil {
 		res.captured = sampler.result()
 	}
@@ -364,6 +374,19 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 	}
 	return res, runErr
 }
+
+// discardSink is the built-in @discard terminal: it reads the stream and drops
+// it, counting records so the execution report is still honest. Connector-free
+// and side-effect-free — it lets a flow whose work is entirely source-side
+// (e.g. an SFTP mkdir emitting only a status record) terminate validly.
+type discardSink struct{ n int64 }
+
+func (d *discardSink) Write(_ context.Context, b *record.Batch) error {
+	d.n += int64(b.Len())
+	return nil
+}
+
+func (d *discardSink) Close() error { return nil }
 
 // runHandler delivers a single error record to a v2 onFailure handler (a
 // sink action). The record is metadata only — flow, failing step, error,

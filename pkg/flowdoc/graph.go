@@ -289,13 +289,25 @@ func (s *Step) validate() error {
 	case isReservedType(s.Type):
 		return fmt.Errorf("step type %q is not yet supported", s.Type)
 	case isConnectorType(s.Type):
+		if IsBuiltinConnector(s.Connector) {
+			// Built-ins need no action and are role-locked: @webhook is a source
+			// (request body), @discard is a sink (drop the stream).
+			switch s.Connector {
+			case WebhookSource:
+				if s.Type != "source" {
+					return fmt.Errorf("built-in connector %q is only valid as a source", s.Connector)
+				}
+			case DiscardSink:
+				if s.Type != "sink" {
+					return fmt.Errorf("built-in connector %q is only valid as a sink", s.Connector)
+				}
+			default:
+				return fmt.Errorf("unknown built-in connector %q", s.Connector)
+			}
+			return nil
+		}
 		if s.Connector == "" || s.Action == "" {
 			return fmt.Errorf("%s step needs connector and action", s.Type)
-		}
-		if IsBuiltinConnector(s.Connector) {
-			if s.Connector != WebhookSource || s.Type != "source" {
-				return fmt.Errorf("built-in connector %q is only valid as a source", s.Connector)
-			}
 		}
 		return nil
 	case isTransformType(s.Type):

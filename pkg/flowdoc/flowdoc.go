@@ -101,6 +101,13 @@ func (s *Step) Endpoint() Endpoint {
 // signed-artifact resolution.
 const WebhookSource = "@webhook"
 
+// DiscardSink is the reserved built-in sink: a connector-free, side-effect-free
+// terminal that reads the stream and drops it. It lets a flow whose purpose is
+// a single source-side action (e.g. an SFTP mkdir/delete that emits only a
+// status record) terminate validly without a real sink connector. Valid only on
+// a sink step; needs no action; exempt from capability policy + signing.
+const DiscardSink = "@discard"
+
 // IsBuiltinConnector reports whether name is a reserved built-in (the
 // runner binds it directly) rather than a registry connector.
 func IsBuiltinConnector(name string) bool {
@@ -250,11 +257,12 @@ func (d *Document) Validate() error {
 		return err
 	}
 	for label, ep := range map[string]Endpoint{"source": d.Source, "sink": d.Sink} {
-		if ep.Connector == "" || ep.Action == "" {
+		// Built-ins (@webhook source, @discard sink) need no action.
+		if ep.Connector == "" || (ep.Action == "" && !IsBuiltinConnector(ep.Connector)) {
 			return fmt.Errorf("flow: %s needs connector and action", label)
 		}
 	}
-	if IsBuiltinConnector(d.Sink.Connector) {
+	if IsBuiltinConnector(d.Sink.Connector) && d.Sink.Connector != DiscardSink {
 		return fmt.Errorf("flow: built-in connector %q cannot be a sink", d.Sink.Connector)
 	}
 	if IsBuiltinConnector(d.Source.Connector) && d.Source.Connector != WebhookSource {
