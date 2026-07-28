@@ -23,6 +23,7 @@ RUN go build -ldflags "-X github.com/aaron-au/shift/pkg/buildinfo.Version=${VERS
     go build -o /out/shift-connector-fs  github.com/aaron-au/shift/connectors/cmd/shift-connector-fs && \
     go build -o /out/shift-connector-soap github.com/aaron-au/shift/connectors/cmd/shift-connector-soap && \
     go build -o /out/shift-connector-smtp github.com/aaron-au/shift/connectors/cmd/shift-connector-smtp && \
+    go build -o /out/shift-connector-db   github.com/aaron-au/shift/connectors/cmd/shift-connector-db && \
     mkdir /out/empty
 
 FROM gcr.io/distroless/static-debian12:nonroot AS hubd
@@ -45,7 +46,7 @@ ENTRYPOINT ["/usr/local/bin/runnerd"]
 FROM alpine:3.22 AS tools
 COPY --from=build /out/shift-bootstrap /out/shift-consign \
      /out/shift-connector-gen /out/shift-connector-http /out/shift-connector-sftp \
-     /out/shift-connector-fs /out/shift-connector-soap /out/shift-connector-smtp /usr/local/bin/
+     /out/shift-connector-fs /out/shift-connector-soap /out/shift-connector-smtp /out/shift-connector-db /usr/local/bin/
 RUN mkdir -p /bootstrap && chown 65532:65532 /bootstrap
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/shift-bootstrap"]
