@@ -28,6 +28,7 @@ RUN go build -ldflags "-X github.com/aaron-au/shift/pkg/buildinfo.Version=${VERS
     go build -o /out/shift-connector-azureblob github.com/aaron-au/shift/connectors/cmd/shift-connector-azureblob && \
     go build -o /out/shift-connector-amqp github.com/aaron-au/shift/connectors/cmd/shift-connector-amqp && \
     go build -o /out/shift-connector-ftp  github.com/aaron-au/shift/connectors/cmd/shift-connector-ftp && \
+    go build -o /out/shift-connector-redis github.com/aaron-au/shift/connectors/cmd/shift-connector-redis && \
     mkdir /out/empty
 
 FROM gcr.io/distroless/static-debian12:nonroot AS hubd
@@ -50,7 +51,7 @@ ENTRYPOINT ["/usr/local/bin/runnerd"]
 FROM alpine:3.22 AS tools
 COPY --from=build /out/shift-bootstrap /out/shift-consign \
      /out/shift-connector-gen /out/shift-connector-http /out/shift-connector-sftp \
-     /out/shift-connector-fs /out/shift-connector-soap /out/shift-connector-smtp /out/shift-connector-db /out/shift-connector-s3 /out/shift-connector-azureblob /out/shift-connector-amqp /out/shift-connector-ftp /usr/local/bin/
+     /out/shift-connector-fs /out/shift-connector-soap /out/shift-connector-smtp /out/shift-connector-db /out/shift-connector-s3 /out/shift-connector-azureblob /out/shift-connector-amqp /out/shift-connector-ftp /out/shift-connector-redis /usr/local/bin/
 RUN mkdir -p /bootstrap && chown 65532:65532 /bootstrap
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/shift-bootstrap"]
