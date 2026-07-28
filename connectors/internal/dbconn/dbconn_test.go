@@ -290,9 +290,9 @@ func TestNetworkGuard(t *testing.T) {
 // unless SHIFT_TEST_PG is set to a reachable DSN (the platform's existing
 // convention), so the default `go test` run needs no database or network.
 func TestIntegrationPostgres(t *testing.T) {
-	dsn := os.Getenv("SHIFT_TEST_PG")
+	dsn := os.Getenv("SHIFT_TEST_PG_DSN")
 	if dsn == "" {
-		t.Skip("set SHIFT_TEST_PG=<postgres dsn> to run the live integration test")
+		t.Skip("set SHIFT_TEST_PG_DSN=<postgres dsn> to run the live integration test")
 	}
 	ctx := context.Background()
 	cfg := config{DSN: dsn, AllowLocal: true}
