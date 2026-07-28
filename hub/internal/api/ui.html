@@ -6,7 +6,11 @@
 <title>SHIFT Hub</title>
 <style>
   :root{--bg:#0e1116;--panel:#161b23;--line:#232b37;--text:#dbe2ec;--dim:#8b98ab;
-        --accent:#4da3ff;--ok:#3ecf8e;--warn:#f5a623;--bad:#ef5f6b;font-size:15px}
+        --accent:#4da3ff;--ok:#3ecf8e;--warn:#f5a623;--bad:#ef5f6b;
+        /* node-type header colours — Okabe-Ito-derived, colour-blind-safe,
+           distinct in BOTH hue and lightness; uniform per component type */
+        --n-connector:#0e9e75;--n-transform:#9673d6;--n-util:#3b82c4;--n-handler:#e0836b;
+        font-size:15px}
   *{box-sizing:border-box;margin:0}
   body{background:var(--bg);color:var(--text);font:1rem/1.5 -apple-system,'Segoe UI',Roboto,sans-serif;padding:1.2rem}
   h1{font-size:1.15rem;font-weight:600;display:flex;gap:.6rem;align-items:baseline}
@@ -55,13 +59,17 @@
   .glegend b{font-weight:600}
   .gtoolbar{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;margin:.4rem 0}
   .gtoolbar button{padding:.15rem .5rem;font-size:.75rem}
-  #gerr{min-height:1rem;margin:.2rem 0}
-  #editor{margin-top:.8rem}
-  #editor .efield{display:flex;gap:.5rem;align-items:center;margin:.3rem 0;font-size:.82rem}
-  #editor .efield label{width:7rem;color:var(--dim)}
-  #editor input,#editor select,#editor textarea{background:#0d1117;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:.25rem .4rem;font-size:.82rem}
-  #editor input,#editor select{flex:1}
-  #editor textarea{flex:1;min-height:5rem;font-family:ui-monospace,monospace}
+  .b-err{min-height:1rem;margin:.2rem 0}
+  /* builder canvas: grid-backed scroll surface; the grid itself is drawn in the SVG */
+  .b-graph{background:#0d1117;border:1px solid var(--line);border-radius:8px;overflow:auto;max-height:62vh}
+  .b-editor{margin-top:.8rem}
+  .b-editor .efield{display:flex;gap:.5rem;align-items:center;margin:.3rem 0;font-size:.82rem}
+  .b-editor .efield label{width:7rem;color:var(--dim)}
+  .b-editor input,.b-editor select,.b-editor textarea{background:#0d1117;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:.25rem .4rem;font-size:.82rem}
+  .b-editor input,.b-editor select{flex:1}
+  .b-editor textarea{flex:1;min-height:5rem;font-family:ui-monospace,monospace}
+  /* node-type legend swatches (share the --n-* header colours) */
+  .ntag{font-size:.68rem;padding:.05rem .45rem;border-radius:6px;color:#08121a;font-weight:700}
   /* --- OS-lite windowed shell (ADR-0019) --- */
   body.shell{padding:0;height:100vh;overflow:hidden}
   #shell{display:none;height:100vh}
@@ -123,38 +131,15 @@
     <div class="win" id="win-flows" data-title="Flows" data-icon="🗂">
       <div class="titlebar"><span class="wtitle">Flows</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
       <div class="winbody">
+        <div class="gtoolbar"><button onclick="newBuilder()">+ New flow</button>
+          <span class="hint">or Open an existing flow — each opens its own builder window</span></div>
         <table><thead><tr><th>Name</th><th>Latest</th><th>Published</th><th>Schedule</th><th></th></tr></thead>
         <tbody id="flows"></tbody></table>
         <div class="hint">Open builds/edits the flow. Publish/rollback picks the active version. Cron is UTC, 5-field.</div>
       </div>
       <div class="resize"></div>
     </div>
-    <div class="win" id="win-builder" data-title="Builder" data-icon="✎">
-      <div class="titlebar"><span class="wtitle" id="graphtitle">Builder</span>
-        <button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
-      <div class="winbody">
-        <div class="gtoolbar">
-          <button id="savelayout" onclick="saveLayout()">Save layout</button>
-          <button onclick="deployModel()">Deploy draft</button>
-          <span class="hint">add:</span>
-          <button class="ghost" onclick="addNode('connector')">connector</button>
-          <button class="ghost" onclick="addNode('filter')">filter</button>
-          <button class="ghost" onclick="addNode('project')">project</button>
-          <button class="ghost" onclick="addNode('coerce')">coerce</button>
-          <button class="ghost" onclick="addNode('flatten')">flatten</button>
-          <button class="ghost" onclick="addNode('aggregate')">aggregate</button>
-        </div>
-        <div class="glegend">
-          <span><b style="color:var(--ok)">──</b> success / complete</span>
-          <span><b style="color:var(--bad)">──</b> failure (error handler)</span>
-          <span class="hint">drag body to move · drag a port (▸ happy, ▾ fail) onto a node to wire · click an edge to remove</span>
-        </div>
-        <div id="gerr" class="err"></div>
-        <div id="graph"></div>
-        <div id="editor"></div>
-      </div>
-      <div class="resize"></div>
-    </div>
+    <!-- Builder windows are created dynamically, one per open flow (see openBuilder). -->
     <div class="win" id="win-tasks" data-title="Tasks" data-icon="≣">
       <div class="titlebar"><span class="wtitle">Recent tasks</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
       <div class="winbody"><table><thead><tr><th>Flow</th><th>v</th><th>State</th><th>Attempt</th><th>Enqueued</th><th>Error</th></tr></thead>
@@ -265,7 +250,7 @@ function logout() {
 // the hub (it is not flow data). One singleton window per tool.
 const WM = {z: 10, key: 'shift_windows', inited: false};
 const WIN_DEFAULT = {
-  'win-builder': {w: 780, h: 500}, 'win-flows': {w: 620, h: 300},
+  'win-flows': {w: 620, h: 320},
   'win-tasks': {w: 620, h: 320}, 'win-executions': {w: 560, h: 260},
   'win-overview': {w: 560, h: 180}, 'win-runners': {w: 460, h: 240},
   'win-connectors': {w: 640, h: 400}, 'win-secrets': {w: 460, h: 240},
@@ -278,21 +263,35 @@ function initShell() {
   if (WM.inited) return; WM.inited = true;
   const wins = [...document.querySelectorAll('.win')];
   const dock = $('dock');
-  dock.innerHTML = wins.map(w =>
-    `<button class="tool" data-win="${w.id}" title="${esc(w.dataset.title)}">${w.dataset.icon}<span class="lbl">${esc(w.dataset.title)}</span></button>`
-  ).join('');
-  dock.querySelectorAll('.tool').forEach(b => b.onclick = () => toggleWin(b.dataset.win));
-  wins.forEach(w => {
-    w.addEventListener('pointerdown', () => focusWin(w.id), true);
-    const tb = w.querySelector('.titlebar');
-    tb.querySelectorAll('.wbtn').forEach(btn => btn.onclick = ev => {
-      ev.stopPropagation();
-      if (btn.dataset.act === 'close') closeWin(w.id); else minWin(w.id);
-    });
-    dragEl(tb, w, false);
-    dragEl(w.querySelector('.resize'), w, true);
-  });
+  // A dedicated "New flow" launcher opens a fresh builder window (builders are
+  // per-flow and dynamic, so they are not singleton dock tools).
+  dock.innerHTML = `<button class="tool" id="tool-newflow" title="New flow">✎<span class="lbl">New flow</span></button>` +
+    wins.map(w =>
+      `<button class="tool" data-win="${w.id}" title="${esc(w.dataset.title)}">${w.dataset.icon}<span class="lbl">${esc(w.dataset.title)}</span></button>`
+    ).join('');
+  $('tool-newflow').onclick = () => newBuilder();
+  dock.querySelectorAll('.tool[data-win]').forEach(b => b.onclick = () => toggleWin(b.dataset.win));
+  wins.forEach(wireWindow);
   restoreWindows(wins);
+}
+
+// wireWindow attaches focus/drag/resize/close behaviour to any window — static
+// singleton tools AND dynamic per-flow builder windows. Builder windows carry a
+// data-builder-key; their close destroys the window + its model state, and any
+// pointerdown makes that builder the active one (so global handlers act on it).
+function wireWindow(w) {
+  w.addEventListener('pointerdown', () => {
+    focusWin(w.id);
+    if (w.dataset.builderKey) setActiveBuilder(w.dataset.builderKey);
+  }, true);
+  const tb = w.querySelector('.titlebar');
+  tb.querySelectorAll('.wbtn').forEach(btn => btn.onclick = ev => {
+    ev.stopPropagation();
+    if (btn.dataset.act === 'close') { if (w.dataset.builderKey) destroyBuilder(w.dataset.builderKey); else closeWin(w.id); }
+    else minWin(w.id);
+  });
+  dragEl(tb, w, false);
+  dragEl(w.querySelector('.resize'), w, true);
 }
 
 function restoreWindows(wins) {
@@ -317,6 +316,7 @@ function restoreWindows(wins) {
 function persist() {
   const st = {};
   document.querySelectorAll('.win').forEach(w => {
+    if (w.dataset.builderKey) return; // dynamic per-flow builders are not restored across reloads
     st[w.id] = {x: parseInt(w.style.left) || 0, y: parseInt(w.style.top) || 0,
       w: parseInt(w.style.width) || 0, h: parseInt(w.style.height) || 0, open: w.style.display !== 'none'};
   });
@@ -614,33 +614,129 @@ async function exportUsage() {
   } catch (e) { alert('export failed: ' + e.message); }
 }
 
-// --- studio: flow builder canvas (edit + drag + deploy, ADR-0019) ---
-const NODE_FILL = {source:'#12283f', sink:'#12352a'};
-const NODE_W = 150, NODE_H = 52;
-const TRANSFORMS = ['filter','project','coerce','flatten','aggregate'];
+// --- studio: multi-window flow builder canvas (edit + drag + deploy, ADR-0019) ---
+const NODE_W = 172, NODE_H = 66, NODE_HDR = 22, GRID = 20;
 const CMP_OPS = ['eq','ne','gt','gte','lt','lte','exists'];
-// studio holds the flow name, an editable graph-form model (always steps),
-// live node positions, current selection, and any in-progress drag/connect.
-const studio = {name:null, model:null, pos:{}, sel:null, drag:null, connect:null, cur:null,
-  catalog:{}, secrets:[]};
+const snapGrid = v => Math.round(v / GRID) * GRID;
 
+// One builder window per open flow. `builders` maps a flow key (the flow name)
+// to that window's independent state: its own model, node positions, selection,
+// DOM element refs, and in-progress drag/connect. `studio` points at the
+// currently-active builder — the one last interacted with — so the shared
+// builder functions and the global pointer handlers act on the right flow.
+// Window geometry/z-order stays browser-only UI state; only the flow document
+// (+ presentational layout) is ever sent to the hub.
+const builders = {};
+let studio = null;
+let builderSeq = 0;
+
+function setActiveBuilder(key) { if (builders[key]) studio = builders[key]; }
+
+// openGraph / newBuilder are the two entry points from the Flows window.
 async function openGraph(name) {
+  if (builders[name]) { setActiveBuilder(name); focusWin(builders[name].winId); return; }
   try {
     const [flow, conns, secrets] = await Promise.all([
       api('/api/v1/flows/' + encodeURIComponent(name)),
       api('/api/v1/connectors').catch(() => ({connectors: []})),
       api('/api/v1/secrets').catch(() => ({secrets: []})),
     ]);
-    studio.name = name;
-    studio.model = toModel((flow && flow.document) || {name});
-    studio.catalog = buildCatalog(conns.connectors || []);
-    studio.secrets = (secrets.secrets || []).map(s => s.name);
-    studio.sel = null; $('gerr').textContent = '';
-    studio.pos = layoutPositions(clientGraph(studio.model), studio.model.layout || {});
-    $('graphtitle').textContent = 'Builder — ' + name;
-    openWin('builder'); focusWin('win-builder');
-    drawStudio(); renderEditor();
+    openBuilder(name, (flow && flow.document) || {name}, conns.connectors || [], secrets.secrets || []);
   } catch (e) { alert('flow unavailable: ' + e.message); }
+}
+
+async function newBuilder() {
+  const name = (prompt('New flow name:') || '').trim();
+  if (!name) return;
+  if (builders[name]) { setActiveBuilder(name); focusWin(builders[name].winId); return; }
+  try {
+    const [conns, secrets] = await Promise.all([
+      api('/api/v1/connectors').catch(() => ({connectors: []})),
+      api('/api/v1/secrets').catch(() => ({secrets: []})),
+    ]);
+    openBuilder(name, {name}, conns.connectors || [], secrets.secrets || []);
+  } catch (e) { alert('cannot start builder: ' + e.message); }
+}
+
+// openBuilder creates (or focuses) the builder window for one flow and seeds
+// its independent state. Reusing an existing builder preserves unsaved edits.
+function openBuilder(key, doc, conns, secrets) {
+  if (builders[key]) { setActiveBuilder(key); focusWin(builders[key].winId); return builders[key]; }
+  const uid = 'b' + (++builderSeq);
+  const winId = 'win-' + uid;
+  const w = createBuilderWindow(winId, key, uid);
+  const st = {
+    key, name: (doc && doc.name) || key, winId, uid,
+    graphEl: w.querySelector('.b-graph'), editorEl: w.querySelector('.b-editor'),
+    errEl: w.querySelector('.b-err'), titleEl: w.querySelector('.wtitle'),
+    model: toModel(doc || {name: key}), catalog: buildCatalog(conns || []),
+    secrets: (secrets || []).map(s => s.name),
+    pos: {}, sel: null, drag: null, connect: null,
+  };
+  st.pos = layoutPositions(clientGraph(st.model), st.model.layout || {});
+  builders[key] = st;
+  studio = st;
+  focusWin(winId);
+  drawStudio(); renderEditor();
+  return st;
+}
+
+// createBuilderWindow builds a fresh builder window's DOM (its own toolbar,
+// legend, error line, canvas, and editor — all class-scoped, no shared ids so
+// multiple can coexist), appends it to the desktop, and wires it up.
+function createBuilderWindow(winId, key, uid) {
+  const w = document.createElement('div');
+  w.className = 'win'; w.id = winId; w.dataset.builderKey = key;
+  w.innerHTML =
+    `<div class="titlebar"><span class="wtitle">Builder — ${esc(key)}</span>
+       <button class="wbtn" data-act="close">×</button></div>`
+     /* No minimise: builder windows are dynamic and not in the dock, so there
+        would be no taskbar entry to restore a minimised one — close only. */ +
+    `
+     <div class="winbody">
+       <div class="gtoolbar">
+         <button onclick="saveLayout()">Save layout</button>
+         <button onclick="deployModel()">Deploy draft</button>
+         <span class="hint">add:</span>
+         <button class="ghost" onclick="addNode('connector')">connector</button>
+         <button class="ghost" onclick="addNode('filter')">filter</button>
+         <button class="ghost" onclick="addNode('project')">project</button>
+         <button class="ghost" onclick="addNode('coerce')">coerce</button>
+         <button class="ghost" onclick="addNode('flatten')">flatten</button>
+         <button class="ghost" onclick="addNode('aggregate')">aggregate</button>
+       </div>
+       <div class="glegend">
+         <span><b style="color:var(--ok)">─▸</b> success / complete</span>
+         <span><b style="color:var(--bad)">─▸</b> failure</span>
+         <span class="ntag" style="background:var(--n-connector)">connector</span>
+         <span class="ntag" style="background:var(--n-transform)">transform</span>
+         <span class="ntag" style="background:var(--n-util)">built-in</span>
+         <span class="ntag" style="background:var(--n-handler)">error handler</span>
+         <span class="hint">left = input · right = success (green, upper) + failure (red, lower) · drag a right port onto a node to wire · drag a node to move (snaps to grid) · click an edge to remove</span>
+       </div>
+       <div class="b-err err"></div>
+       <div class="b-graph"></div>
+       <div class="b-editor"></div>
+     </div>
+     <div class="resize"></div>`;
+  $('desktop').appendChild(w);
+  const n = Object.keys(builders).length;
+  w.style.width = '840px'; w.style.height = '560px';
+  w.style.left = (40 + (n % 6) * 30) + 'px';
+  w.style.top = (24 + (n % 6) * 26) + 'px';
+  wireWindow(w);
+  return w;
+}
+
+// destroyBuilder tears down a builder window and forgets its state (its close
+// button). No hub call — the flow document was already saved (or was never
+// created); this only discards the browser-side editing session.
+function destroyBuilder(key) {
+  const st = builders[key]; if (!st) return;
+  const w = document.getElementById(st.winId);
+  if (w) w.remove();
+  delete builders[key];
+  if (studio === st) studio = null;
 }
 
 // buildCatalog decodes each connector's signed descriptor (base64 canonical
@@ -682,7 +778,7 @@ function toModel(doc) {
 // clientGraph projects the editable model into the {nodes,edges,main}
 // shape renderGraph consumes — computed locally so edits show instantly.
 function clientGraph(m) {
-  const nodes = m.steps.map(s => ({id:s.id, type:s.type, connector:s.connector, action:s.action}));
+  const nodes = m.steps.map(s => ({id:s.id, type:s.type, connector:s.connector, action:s.action, step:s}));
   const edges = [];
   m.steps.forEach(s => {
     if (s.onSuccess) edges.push({from:s.id, to:s.onSuccess, kind:'success'});
@@ -718,29 +814,34 @@ function layoutPositions(g, saved) {
 }
 
 function svgPoint(ev) {
-  const r = $('graph').querySelector('svg').getBoundingClientRect();
+  const r = studio.graphEl.querySelector('svg').getBoundingClientRect();
   return {x: ev.clientX - r.left, y: ev.clientY - r.top};
 }
 
 function drawStudio() {
+  if (!studio) return;
   const g = clientGraph(studio.model);
   // Drop positions for deleted nodes; default-place new ones.
   const ids = new Set(g.nodes.map(n => n.id));
   for (const id in studio.pos) if (!ids.has(id)) delete studio.pos[id];
   const auto = layoutPositions(g, studio.pos);
   g.nodes.forEach(n => { if (!studio.pos[n.id]) studio.pos[n.id] = auto[n.id]; });
-  $('graph').innerHTML = renderGraph(g, studio.pos, studio.sel);
+  studio.graphEl.innerHTML = renderGraph(g, studio.pos, studio.sel, studio.uid);
 
-  const svg = $('graph').querySelector('svg');
+  const svg = studio.graphEl.querySelector('svg');
+  // Output ports (right edge) start an edge-wiring drag.
   svg.querySelectorAll('[data-port]').forEach(el => {
     el.addEventListener('pointerdown', ev => {
       ev.stopPropagation(); ev.preventDefault();
       studio.connect = {from: el.getAttribute('data-id'), kind: el.getAttribute('data-port'), cur: svgPoint(ev)};
     });
   });
-  svg.querySelectorAll('g[data-id] rect').forEach(rect => {
-    rect.addEventListener('pointerdown', ev => {
-      const id = rect.parentNode.getAttribute('data-id');
+  // Anywhere else on a node card starts a move-drag (ports stopPropagation, so
+  // they win; the guard is a belt-and-braces against event ordering).
+  svg.querySelectorAll('g[data-id]').forEach(grp => {
+    grp.addEventListener('pointerdown', ev => {
+      if (ev.target && ev.target.hasAttribute && ev.target.hasAttribute('data-port')) return;
+      const id = grp.getAttribute('data-id');
       studio.drag = {id, moved:false, sx:ev.clientX, sy:ev.clientY, ox:studio.pos[id].x, oy:studio.pos[id].y};
       ev.preventDefault();
     });
@@ -755,10 +856,13 @@ function drawStudio() {
 }
 
 document.addEventListener('pointermove', ev => {
+  if (!studio) return;
   if (studio.drag) {
     const d = studio.drag;
     if (Math.abs(ev.clientX - d.sx) + Math.abs(ev.clientY - d.sy) > 3) d.moved = true;
-    studio.pos[d.id] = {x: Math.max(0, d.ox + (ev.clientX - d.sx)), y: Math.max(0, d.oy + (ev.clientY - d.sy))};
+    const nx = Math.max(0, d.ox + (ev.clientX - d.sx)), ny = Math.max(0, d.oy + (ev.clientY - d.sy));
+    // Snap to the 20px grid once the drag is a real move (not a click).
+    studio.pos[d.id] = d.moved ? {x: snapGrid(nx), y: snapGrid(ny)} : {x: nx, y: ny};
     drawStudio();
   } else if (studio.connect) {
     studio.connect.cur = svgPoint(ev);
@@ -767,6 +871,7 @@ document.addEventListener('pointermove', ev => {
   }
 });
 document.addEventListener('pointerup', ev => {
+  if (!studio) return;
   if (studio.connect) {
     const tgt = nodeUnder(ev);
     if (tgt && tgt !== studio.connect.from) setEdge(studio.connect.from, studio.connect.kind, tgt);
@@ -777,16 +882,25 @@ document.addEventListener('pointerup', ev => {
   }
 });
 
+// edgePath draws a horizontal-tangent cubic bezier from an output port to a
+// target input port — smoother than the old straight line, and it reads left→
+// right for the happy path, down-and-back for handlers.
+function edgePath(x1, y1, x2, y2) {
+  const dx = Math.max(28, Math.abs(x2 - x1) * 0.4);
+  return `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
+}
+
 function drawTempWire() {
-  const svg = $('graph').querySelector('svg'); if (!svg || !studio.connect) return;
+  const svg = studio.graphEl.querySelector('svg'); if (!svg || !studio.connect) return;
   const a = studio.pos[studio.connect.from], c = studio.connect.cur;
-  const col = studio.connect.kind === 'fail' ? 'var(--bad)' : 'var(--ok)';
-  const ns = 'http://www.w3.org/2000/svg';
-  const ln = document.createElementNS(ns, 'line');
-  ln.setAttribute('x1', a.x + NODE_W/2); ln.setAttribute('y1', a.y + NODE_H/2);
-  ln.setAttribute('x2', c.x); ln.setAttribute('y2', c.y);
-  ln.setAttribute('stroke', col); ln.setAttribute('stroke-dasharray', '4 3'); ln.setAttribute('stroke-width', '2');
-  svg.appendChild(ln);
+  const fail = studio.connect.kind === 'fail';
+  const x1 = a.x + NODE_W, y1 = a.y + (fail ? NODE_H * 0.72 : NODE_H * 0.4);
+  const col = fail ? 'var(--bad)' : 'var(--ok)';
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  p.setAttribute('d', edgePath(x1, y1, c.x, c.y));
+  p.setAttribute('fill', 'none'); p.setAttribute('stroke', col);
+  p.setAttribute('stroke-dasharray', '5 3'); p.setAttribute('stroke-width', '2');
+  svg.appendChild(p);
 }
 
 function nodeUnder(ev) {
@@ -846,17 +960,17 @@ function deleteNode(id) {
 
 function renameStep(oldId, newId) {
   newId = newId.trim(); if (!newId || newId === oldId) return;
-  if (stepById(newId)) { $('gerr').textContent = 'id "' + newId + '" already exists'; return; }
+  if (stepById(newId)) { studio.errEl.textContent = 'id "' + newId + '" already exists'; return; }
   const s = stepById(oldId); s.id = newId;
   studio.model.steps.forEach(x => ['onSuccess','onComplete','onFailure'].forEach(k => { if (x[k] === oldId) x[k] = newId; }));
   if (studio.model.start === oldId) studio.model.start = newId;
   studio.pos[newId] = studio.pos[oldId]; delete studio.pos[oldId];
-  studio.sel = newId; $('gerr').textContent = ''; drawStudio(); renderEditor();
+  studio.sel = newId; studio.errEl.textContent = ''; drawStudio(); renderEditor();
 }
 
 // --- inline step editor (minimal; full schema-driven forms are Phase D) ---
 function renderEditor() {
-  const el = $('editor');
+  const el = studio.editorEl;
   const s = studio.sel && stepById(studio.sel);
   if (!s) { el.innerHTML = '<div class="hint">select a node to edit, or add one above</div>'; return; }
   const row = (label, html) => `<div class="efield"><label>${esc(label)}</label>${html}</div>`;
@@ -903,9 +1017,9 @@ const JSON_FIELDS = new Set(['config','value','fields','rules','aggs']);
 function editField(id, field, val) {
   const s = stepById(id); if (!s) return;
   if (JSON_FIELDS.has(field)) {
-    if (val.trim() === '') { delete s[field]; $('gerr').textContent = ''; drawStudio(); return; }
-    try { s[field] = JSON.parse(val); $('gerr').textContent = ''; }
-    catch (e) { $('gerr').textContent = field + ': invalid JSON — ' + e.message; return; }
+    if (val.trim() === '') { delete s[field]; studio.errEl.textContent = ''; drawStudio(); return; }
+    try { s[field] = JSON.parse(val); studio.errEl.textContent = ''; }
+    catch (e) { studio.errEl.textContent = field + ': invalid JSON — ' + e.message; return; }
   } else {
     if (val === '') delete s[field]; else s[field] = val;
   }
@@ -1049,7 +1163,7 @@ function setCfgFrom(el) {
   else if (kind === 'secret') val = el.value ? {'$secret': el.value} : undefined;
   else if (kind === 'json') {
     if (el.value.trim() === '') val = undefined;
-    else { try { val = JSON.parse(el.value); $('gerr').textContent = ''; } catch (e) { $('gerr').textContent = 'config: invalid JSON — ' + e.message; return; } }
+    else { try { val = JSON.parse(el.value); studio.errEl.textContent = ''; } catch (e) { studio.errEl.textContent = 'config: invalid JSON — ' + e.message; return; } }
   } else val = el.value === '' ? undefined : el.value;
   if (typeof s.config !== 'object' || s.config === null) s.config = {};
   setDeep(s.config, path, val);
@@ -1110,10 +1224,10 @@ async function deployModel(layoutOnly) {
   try {
     await api('/api/v1/flows/' + encodeURIComponent(studio.name),
       {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(doc)});
-    $('gerr').textContent = '';
+    studio.errEl.textContent = '';
     alert((layoutOnly ? 'Saved' : 'Deployed') + ' as a new draft version — publish it to keep.');
     refresh();
-  } catch (e) { $('gerr').textContent = 'deploy rejected: ' + e.message; }
+  } catch (e) { studio.errEl.textContent = 'deploy rejected: ' + e.message; }
 }
 
 // cleanStep emits only the fields relevant to a step's type, dropping stale
@@ -1136,38 +1250,95 @@ function cleanStep(s) {
   return out;
 }
 
-function renderGraph(g, pos, sel) {
-  const W = NODE_W, H = NODE_H, X0 = 20;
+// --- node presentation: colour-blind-safe type→colour + icon + config summary ---
+// Category drives the header colour (the --n-* CSS vars). Handler role wins so
+// an error-handler sink is always salmon regardless of its connector.
+function nodeCat(n) {
+  if (n.role === 'handler') return 'handler';
+  const c = n.connector || '';
+  if (c === '@discard' || c === '@response') return 'util';
+  if (n.type === 'source' || n.type === 'sink') return 'connector';
+  return 'transform';
+}
+const TYPE_ICON = {source:'▷', sink:'▮', filter:'▽', project:'▤', coerce:'⇄', flatten:'≋', aggregate:'Σ'};
+function nodeIcon(n) {
+  if (n.role === 'handler') return '⚠';
+  const c = n.connector || '';
+  if (c === '@discard') return '⌦';
+  if (c === '@response') return '↩';
+  if (c === '@webhook') return '⚡';
+  return TYPE_ICON[n.type] || '◻';
+}
+function nodeLabel(n) { return n.connector || n.type; }
+function summariseVal(v) {
+  if (v && typeof v === 'object') return v.$secret ? '🔑' + v.$secret : jsonStr(v);
+  return String(v);
+}
+// nodeSummary is the one-line body config summary: verb + a key param
+// (path/url/query… with $secret refs shown), or the transform's key setting.
+function nodeSummary(n) {
+  const s = n.step || {};
+  if (n.type === 'source' || n.type === 'sink') {
+    const verb = s.action || ((n.connector || '')[0] === '@' ? '' : '(no verb)');
+    const cfg = (s.config && typeof s.config === 'object') ? s.config : {};
+    const k = ['path', 'url', 'query', 'bucket', 'topic', 'host', 'file', 'remote', 'to'].find(x => cfg[x] != null);
+    const kv = k ? summariseVal(cfg[k]) : '';
+    return [verb, kv].filter(Boolean).join(' · ') || '(unconfigured)';
+  }
+  if (n.type === 'filter') return `${s.path || '?'} ${s.op || 'eq'} ${s.value !== undefined ? jsonStr(s.value) : ''}`.trim();
+  if (n.type === 'project') return `${(s.fields || []).length} field(s)`;
+  if (n.type === 'coerce') return `${(s.rules || []).length} rule(s)`;
+  if (n.type === 'flatten') return `sep "${s.sep || ''}"`;
+  if (n.type === 'aggregate') return `by ${s.key || '?'}`;
+  return n.type;
+}
+function clip(s, n) { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+
+function renderGraph(g, pos, sel, uid) {
+  uid = uid || 'x';
+  const W = NODE_W, H = NODE_H, HDR = NODE_HDR, X0 = 20;
   const xs = Object.values(pos).map(p => p.x), ys = Object.values(pos).map(p => p.y);
   const width = (xs.length ? Math.max(...xs) : X0) + W + X0;
   const height = (ys.length ? Math.max(...ys) : 30) + H + 60;
+  // Output ports sit on the RIGHT edge (success upper, failure lower); the
+  // input port sits on the LEFT edge. Edges run right-output → left-input.
+  const outSy = p => p.y + H * 0.4, outFy = p => p.y + H * 0.72, inY = p => p.y + H / 2;
 
   const edges = (g.edges || []).map(e => {
     const a = pos[e.from], b = pos[e.to]; if (!a || !b) return '';
-    const col = e.kind === 'failure' ? 'var(--bad)' : 'var(--ok)';
-    let x1, y1, x2, y2;
-    if (b.y > a.y) { x1 = a.x + W/2; y1 = a.y + H; x2 = b.x + W/2; y2 = b.y; }
-    else { x1 = a.x + W; y1 = a.y + H/2; x2 = b.x; y2 = b.y + H/2; }
-    // Wide transparent hit-line under the visible line for easy click-delete.
-    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="transparent" stroke-width="12" data-edge="${esc(e.from)}|${e.kind}" style="cursor:pointer"/>
-      <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col}" stroke-width="2" marker-end="url(#arr-${e.kind==='failure'?'r':'g'})" style="pointer-events:none"/>`;
+    const fail = e.kind === 'failure';
+    const col = fail ? 'var(--bad)' : 'var(--ok)';
+    const d = edgePath(a.x + W, fail ? outFy(a) : outSy(a), b.x, inY(b));
+    // Wide transparent hit-path under the visible one for easy click-delete.
+    return `<path d="${d}" fill="none" stroke="transparent" stroke-width="12" data-edge="${esc(e.from)}|${e.kind}" style="cursor:pointer"/>
+      <path d="${d}" fill="none" stroke="${col}" stroke-width="2" marker-end="url(#arr-${fail ? 'r' : 'g'}-${uid})" style="pointer-events:none"/>`;
   }).join('');
   const nodes = (g.nodes || []).map(n => {
     const p = pos[n.id]; if (!p) return '';
-    const fill = NODE_FILL[n.type] || '#1b2230';
-    const sub = n.connector ? esc((n.connector||'?') + '/' + (n.action||'?')) : esc(n.type);
-    const selStroke = sel === n.id ? 'var(--accent,#5b8cff)' : 'var(--line)';
+    const cat = nodeCat(n), hdr = `var(--n-${cat})`;
+    const isHandler = n.role === 'handler';
+    const selStroke = sel === n.id ? 'var(--accent)' : 'var(--line)';
+    // Handlers are terminal (no outgoing edges, ADR-0013) → no output ports.
+    const outPorts = isHandler ? '' :
+      `<circle data-id="${esc(n.id)}" data-port="happy" cx="${p.x+W}" cy="${outSy(p)}" r="6" fill="var(--ok)" stroke="#0d1117" stroke-width="1.5" style="cursor:crosshair"><title>success →</title></circle>
+       <circle data-id="${esc(n.id)}" data-port="fail" cx="${p.x+W}" cy="${outFy(p)}" r="6" fill="var(--bad)" stroke="#0d1117" stroke-width="1.5" style="cursor:crosshair"><title>failure →</title></circle>`;
     return `<g data-id="${esc(n.id)}">
-      <rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="8" fill="${fill}" stroke="${selStroke}" stroke-width="${sel===n.id?2:1}" style="cursor:grab"/>
-      <text x="${p.x+10}" y="${p.y+21}" fill="var(--text)" font-size="13" font-weight="600" style="pointer-events:none">${esc(n.id)}</text>
-      <text x="${p.x+10}" y="${p.y+38}" fill="var(--dim)" font-size="11" style="pointer-events:none">${sub}</text>
-      <circle data-id="${esc(n.id)}" data-port="happy" cx="${p.x+W}" cy="${p.y+H/2}" r="6" fill="var(--ok)" style="cursor:crosshair"/>
-      <circle data-id="${esc(n.id)}" data-port="fail" cx="${p.x+W/2}" cy="${p.y+H}" r="6" fill="var(--bad)" style="cursor:crosshair"/></g>`;
+      <rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="9" fill="#161b23" stroke="${selStroke}" stroke-width="${sel===n.id?2:1}" style="cursor:grab"/>
+      <path d="M${p.x},${p.y+HDR} L${p.x},${p.y+9} Q${p.x},${p.y} ${p.x+9},${p.y} L${p.x+W-9},${p.y} Q${p.x+W},${p.y} ${p.x+W},${p.y+9} L${p.x+W},${p.y+HDR} Z" fill="${hdr}" style="pointer-events:none"/>
+      <text x="${p.x+9}" y="${p.y+15}" fill="#08121a" font-size="12" style="pointer-events:none">${esc(nodeIcon(n))}</text>
+      <text x="${p.x+27}" y="${p.y+15}" fill="#08121a" font-size="11.5" font-weight="700" style="pointer-events:none">${esc(clip(nodeLabel(n),20))}</text>
+      <text x="${p.x+11}" y="${p.y+HDR+18}" fill="var(--text)" font-size="12" font-weight="600" style="pointer-events:none">${esc(clip(n.id,24))}</text>
+      <text x="${p.x+11}" y="${p.y+HDR+34}" fill="var(--dim)" font-size="10.5" style="pointer-events:none">${esc(clip(nodeSummary(n),27))}</text>
+      <circle cx="${p.x}" cy="${inY(p)}" r="5" fill="#0d1117" stroke="var(--dim)" stroke-width="1.5"><title>input</title></circle>
+      ${outPorts}</g>`;
   }).join('');
-  const arrow = c => `<marker id="arr-${c[0]}" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto">
-    <path d="M0,0 L6,3 L0,6 Z" fill="${c==='green'?'var(--ok)':'var(--bad)'}"/></marker>`;
-  return `<svg width="${width}" height="${height}" style="max-width:none;touch-action:none">
-    <defs>${arrow('green')}${arrow('red')}</defs>${edges}${nodes}</svg>`;
+  // Marker + grid ids are namespaced per builder window so multiple open
+  // canvases don't cross-reference each other's <defs>.
+  const arrow = (id, color) => `<marker id="arr-${id}-${uid}" markerWidth="8" markerHeight="8" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="${color}"/></marker>`;
+  const grid = `<pattern id="grid-${uid}" width="${GRID}" height="${GRID}" patternUnits="userSpaceOnUse"><path d="M${GRID} 0 H0 V${GRID}" fill="none" stroke="var(--line)" stroke-width="1" opacity=".45"/></pattern>`;
+  return `<svg width="${width}" height="${height}" style="max-width:none;touch-action:none;display:block">
+    <defs>${grid}${arrow('g','var(--ok)')}${arrow('r','var(--bad)')}</defs>
+    <rect width="${width}" height="${height}" fill="url(#grid-${uid})"/>${edges}${nodes}</svg>`;
 }
 
 boot();
