@@ -6,6 +6,7 @@ package flow
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/aaron-au/shift/engine/mem"
 	"github.com/aaron-au/shift/engine/record"
@@ -123,9 +124,59 @@ func applyOp(o *Op, p *stream.Pipeline, opts CompileOptions) (*stream.Pipeline, 
 			Gov:      opts.Gov,
 			SpillDir: opts.SpillDir,
 		}), nil
+	case "map":
+		fields, err := compileMap(o.Maps)
+		if err != nil {
+			return nil, err
+		}
+		return p.Map(fields), nil
 	default:
 		return nil, fmt.Errorf("unknown op type %q", o.Type)
 	}
+}
+
+// compileMap builds the engine mapper fields from the document form, parsing
+// paths and constants (all already validated by flowdoc).
+func compileMap(maps []flowdoc.MapField) ([]stream.MapField, error) {
+	out := make([]stream.MapField, len(maps))
+	for i := range maps {
+		m := &maps[i]
+		mf := stream.MapField{Out: flowdoc.MapOutSegments(m.Out)}
+		switch {
+		case len(m.Concat) > 0:
+			for _, part := range m.Concat {
+				if strings.HasPrefix(part, "$") {
+					mf.Concat = append(mf.Concat, stream.MapPart{Path: record.MustParsePath(part), IsPath: true})
+				} else {
+					mf.Concat = append(mf.Concat, stream.MapPart{Lit: part})
+				}
+			}
+		case m.From != "":
+			mf.From, mf.FromSet = record.MustParsePath(m.From), true
+		case len(m.Const) > 0:
+			v, err := flowdoc.ScalarValue(m.Const)
+			if err != nil {
+				return nil, err
+			}
+			mf.Const, mf.ConstSet = v, true
+		}
+		if len(m.Default) > 0 {
+			v, err := flowdoc.ScalarValue(m.Default)
+			if err != nil {
+				return nil, err
+			}
+			mf.Default, mf.DefaultSet = v, true
+		}
+		if m.To != "" {
+			k, err := kindOf(m.To)
+			if err != nil {
+				return nil, err
+			}
+			mf.To, mf.ToSet = k, true
+		}
+		out[i] = mf
+	}
+	return out, nil
 }
 
 func compileFilter(o *Op) (func(record.Value) bool, error) {
