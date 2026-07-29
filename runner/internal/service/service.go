@@ -5,7 +5,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -18,7 +17,6 @@ import (
 	"github.com/aaron-au/shift/engine/mem"
 	"github.com/aaron-au/shift/engine/record"
 	"github.com/aaron-au/shift/engine/stream"
-	"github.com/aaron-au/shift/pkg/flowdoc"
 	"github.com/aaron-au/shift/runner/internal/connpool"
 	"github.com/aaron-au/shift/runner/internal/flow"
 	"github.com/aaron-au/shift/runner/internal/task"
@@ -332,57 +330,24 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 		return execResult{}, err
 	}
 	if plan.Multi {
-		// v3 fan-out/fan-in (ADR-0029) validates and stores at the hub, but the
-		// multi-path engine is a later change; reject here rather than index the
-		// nil linear Main. Honest failure, not a panic.
-		return execResult{}, errors.New("service: multi-path flows (fan-out/fan-in, ADR-0029) are not yet executable on this runner")
+		// v3 fan-out/fan-in (ADR-0029): compile the DAG onto the engine's
+		// multi-path executors (concat/tee/router/join).
+		return s.executeMulti(ctx, doc, plan, redact, sampler, o)
 	}
 	srcStep := plan.Main[0]
 	sinkStep := plan.Main[len(plan.Main)-1]
 
-	// Source: a connector subprocess, or the built-in @webhook body
-	// (direct execution, ADR-0016) bound as an in-runner ndjson source.
-	// Connector subprocesses are POOLED and shared across tasks, so their
-	// lifetime is tied to s.baseCtx (the pool's), NOT this task's ctx — else
-	// this task's defer cancel() would kill a process a sibling task is using.
-	// The per-task ctx still flows to p.Run below and drives the Pull/Push
-	// stream RPCs, so cancelling a task aborts its stream (freeing admission)
-	// without terminating the shared process.
-	var src stream.Source
-	if srcStep.Connector == flowdoc.WebhookSource {
-		if o.WebhookBody == nil {
-			return execResult{}, errors.New("service: @webhook flow requires a request body")
-		}
-		src = ndjson.NewReader(bytes.NewReader(o.WebhookBody), ndjson.ReaderOptions{})
-	} else {
-		srcProc, err := s.pool.Get(s.baseCtx, srcStep.Connector)
-		if err != nil {
-			return execResult{}, err
-		}
-		defer s.pool.Put(srcStep.Connector)
-		src = srcProc.Source(srcStep.Action, srcStep.Config)
+	src, srcCleanup, err := s.bindSource(srcStep, o)
+	if err != nil {
+		return execResult{}, err
 	}
+	defer srcCleanup()
 
-	// Sink: a built-in terminal (@discard drops; @response streams the output
-	// back to the caller) or a connector subprocess (pooled, s.baseCtx lifetime).
-	var sink stream.Sink
-	var confirmed func() int64
-	switch sinkStep.Connector {
-	case flowdoc.DiscardSink:
-		ds := &discardSink{}
-		sink, confirmed = ds, func() int64 { return ds.n }
-	case flowdoc.ResponseSink:
-		rs := newResponseSink(o.Response)
-		sink, confirmed = rs, func() int64 { return rs.n }
-	default:
-		sinkProc, err := s.pool.Get(s.baseCtx, sinkStep.Connector)
-		if err != nil {
-			return execResult{}, err
-		}
-		defer s.pool.Put(sinkStep.Connector)
-		ss := sinkProc.Sink(sinkStep.Action, sinkStep.Config)
-		sink, confirmed = ss, func() int64 { return ss.Records }
+	sink, confirmed, sinkCleanup, err := s.bindSink(sinkStep, o)
+	if err != nil {
+		return execResult{}, err
 	}
+	defer sinkCleanup()
 
 	taskGov := mem.New(s.opts.TaskWatermark)
 	base := stream.New(src, srcStep.ID)

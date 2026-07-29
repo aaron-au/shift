@@ -132,6 +132,22 @@ func (p *Pipeline) fail(err error) *Pipeline {
 	return p
 }
 
+// Fail records a build-time error on the pipeline (surfaced at Run or
+// AsSource). Exposed so callers that compose a pipeline without a build-error
+// return channel — e.g. a fan-out branch builder — can fold an error in.
+func (p *Pipeline) Fail(err error) *Pipeline { return p.fail(err) }
+
+// AsSource returns the pipeline's composed source chain (source + operators)
+// as a Source, for use as an input to a multi-path node (a fan-out upstream, a
+// merge input) instead of draining it through Run. It returns the recorded
+// build error, if any.
+func (p *Pipeline) AsSource() (Source, error) {
+	if p.err != nil {
+		return nil, p.err
+	}
+	return p.src, nil
+}
+
 // Run drains the pipeline into sink. It closes the source chain; the sink
 // is Closed on success and on error.
 func (p *Pipeline) Run(ctx context.Context, sink Sink, sinkName string) (Report, error) {
