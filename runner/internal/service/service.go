@@ -331,6 +331,12 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 	if err != nil {
 		return execResult{}, err
 	}
+	if plan.Multi {
+		// v3 fan-out/fan-in (ADR-0029) validates and stores at the hub, but the
+		// multi-path engine is a later change; reject here rather than index the
+		// nil linear Main. Honest failure, not a panic.
+		return execResult{}, errors.New("service: multi-path flows (fan-out/fan-in, ADR-0029) are not yet executable on this runner")
+	}
 	srcStep := plan.Main[0]
 	sinkStep := plan.Main[len(plan.Main)-1]
 

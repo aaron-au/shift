@@ -5,6 +5,7 @@
 package flow
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/aaron-au/shift/engine/mem"
@@ -53,6 +54,9 @@ func Apply(d *Document, p *stream.Pipeline, opts CompileOptions) (*stream.Pipeli
 	plan, err := d.Plan()
 	if err != nil {
 		return nil, err
+	}
+	if plan.Multi {
+		return nil, errors.New("flow: multi-path flows (fan-out/fan-in, ADR-0029) are not yet executable on this runner")
 	}
 	return applyTransforms(plan.Main, p, opts)
 }
