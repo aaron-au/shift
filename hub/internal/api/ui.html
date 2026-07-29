@@ -669,7 +669,7 @@ async function exportUsage() {
 
 // --- studio: multi-window flow builder canvas (edit + drag + deploy, ADR-0019) ---
 const NODE_W = 172, NODE_H = 66, NODE_HDR = 22, GRID = 20;
-const CMP_OPS = ['eq','ne','gt','gte','lt','lte','exists'];
+const CMP_OPS = ['eq','ne','gt','gte','lt','lte','contains','startsWith','endsWith','exists'];
 const snapGrid = v => Math.round(v / GRID) * GRID;
 
 // One builder window per open flow. `builders` maps a flow key (the flow name)

@@ -150,6 +150,22 @@ func TestMapOp(t *testing.T) {
 	}
 }
 
+func TestFilterStringOps(t *testing.T) {
+	input := `{"s":"melbourne"}` + "\n" + `{"s":"sydney"}` + "\n" + `{"s":"perth"}` + "\n" + `{"n":5}` + "\n"
+	cases := map[string]string{
+		`[{"type":"filter","path":"$.s","op":"contains","value":"our"}]`: `{"s":"melbourne"}` + "\n",
+		`[{"type":"filter","path":"$.s","op":"startsWith","value":"s"}]`: `{"s":"sydney"}` + "\n",
+		`[{"type":"filter","path":"$.s","op":"endsWith","value":"th"}]`:  `{"s":"perth"}` + "\n",
+		// A non-string field (or missing path) never matches a string op.
+		`[{"type":"filter","path":"$.n","op":"contains","value":"5"}]`: ``,
+	}
+	for ops, want := range cases {
+		if got := runDoc(t, ops, input); got != want {
+			t.Errorf("%s:\n got %q\nwant %q", ops, got, want)
+		}
+	}
+}
+
 func TestOpsPipelineEndToEnd(t *testing.T) {
 	input := `{"id":"1","amount":"10.5","meta":{"region":"AU"}}` + "\n" +
 		`{"id":"2","amount":"3.25","meta":{"region":"AU"}}` + "\n" +

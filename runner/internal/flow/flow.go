@@ -244,6 +244,20 @@ func compileFilter(o *Op) (func(record.Value) bool, error) {
 			return got.EqualScalar(want)
 		case "ne":
 			return !got.EqualScalar(want)
+		case "contains", "startsWith", "endsWith":
+			// String match: both operands must be strings, else no match.
+			if got.Kind() != record.KindString || want.Kind() != record.KindString {
+				return false
+			}
+			gs, ws := got.String(), want.String()
+			switch cmp {
+			case "contains":
+				return strings.Contains(gs, ws)
+			case "startsWith":
+				return strings.HasPrefix(gs, ws)
+			default: // endsWith
+				return strings.HasSuffix(gs, ws)
+			}
 		default: // ordered comparisons: numeric only
 			if !isNumeric(got) || !isNumeric(want) {
 				return false

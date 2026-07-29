@@ -248,6 +248,28 @@ func TestDAG_Invalid(t *testing.T) {
 	}
 }
 
+// String match ops (contains/startsWith/endsWith) validate like any filter
+// predicate and require a string value — shared by filter and router (ADR-0029).
+func TestFilterStringOpValidation(t *testing.T) {
+	ok := `{"name":"x","source":{"connector":"http","action":"get"},"ops":[{"type":"filter","path":"$.s","op":"contains","value":"foo"}],"sink":{"connector":"http","action":"post"}}`
+	if _, err := Parse([]byte(ok)); err != nil {
+		t.Fatalf("valid contains rejected: %v", err)
+	}
+	// A router route reuses the same grammar.
+	rok := `{"name":"r","steps":[
+      {"id":"in","type":"source","connector":"http","action":"get","onSuccess":"r"},
+      {"id":"r","type":"router","routes":[{"path":"$.region","op":"startsWith","value":"AU","to":"a"}],"default":"b"},
+      {"id":"a","type":"sink","connector":"@discard"},
+      {"id":"b","type":"sink","connector":"@discard"}]}`
+	if _, err := Parse([]byte(rok)); err != nil {
+		t.Fatalf("valid router startsWith rejected: %v", err)
+	}
+	bad := `{"name":"x","source":{"connector":"http","action":"get"},"ops":[{"type":"filter","path":"$.s","op":"startsWith","value":5}],"sink":{"connector":"http","action":"post"}}`
+	if _, err := Parse([]byte(bad)); err == nil || !strings.Contains(err.Error(), "string value") {
+		t.Fatalf("non-string value should be rejected, got %v", err)
+	}
+}
+
 // GraphView must render a v3 DAG (branch/route edges) without indexing the
 // nil linear Main.
 func TestDAG_GraphView(t *testing.T) {
