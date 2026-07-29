@@ -31,9 +31,14 @@
   /* Colour-blind mode retunes the red/green success/failure pair (the classic
      deuteranopia problem) to an Okabe-Ito blue / vermillion pair, plus distinct
      branch (purple) and route (amber) hues — applied on top of either theme. */
-  :root[data-cb="1"]{--ok:#37a9e8;--bad:#e8600d;--warn:#e6b800;--n-branch:#9b6bd6;--edge-route:#e6b800}
-  :root[data-cb="1"][data-theme="light"]{--ok:#0072b2;--bad:#d55e00;--warn:#b8860b;--n-branch:#7d54c9;--edge-route:#b8860b}
+  :root[data-cb="1"]{--ok:#37a9e8;--bad:#e8600d;--warn:#e6b800;--n-branch:#cc79a7;--edge-route:#e6b800}
+  :root[data-cb="1"][data-theme="light"]{--ok:#0072b2;--bad:#d55e00;--warn:#b8860b;--n-branch:#b3437f;--edge-route:#b8860b}
   *{box-sizing:border-box;margin:0}
+  html{scrollbar-color:var(--line) transparent;scrollbar-width:thin}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:var(--line);border-radius:6px;border:2px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:var(--dim);background-clip:content-box}
+  ::-webkit-scrollbar-track{background:transparent}
   body{background:var(--bg);color:var(--text);font:1rem/1.5 -apple-system,'Segoe UI',Roboto,sans-serif;padding:1.2rem}
   h1{font-size:1.15rem;font-weight:600;display:flex;gap:.6rem;align-items:baseline}
   h1 .v{color:var(--dim);font-size:.8rem;font-weight:400}
@@ -50,10 +55,10 @@
   td{padding:.4rem .5rem;border-bottom:1px solid var(--line);vertical-align:top}
   tr.task{cursor:pointer} tr.task:hover{background:var(--hover)}
   .chip{padding:.1rem .55rem;border-radius:99px;font-size:.72rem;font-weight:600}
-  .chip.completed,.chip.published{background:#12352a;color:var(--ok)}
-  .chip.leased,.chip.running{background:#12283f;color:var(--accent)}
-  .chip.failed{background:#3a1a1f;color:var(--bad)}
-  .chip.queued,.chip.draft{background:#3a2d12;color:var(--warn)}
+  .chip.completed,.chip.published{background:color-mix(in srgb,var(--ok) 20%,transparent);color:var(--ok)}
+  .chip.leased,.chip.running{background:color-mix(in srgb,var(--accent) 20%,transparent);color:var(--accent)}
+  .chip.failed{background:color-mix(in srgb,var(--bad) 20%,transparent);color:var(--bad)}
+  .chip.queued,.chip.draft{background:color-mix(in srgb,var(--warn) 22%,transparent);color:var(--warn)}
   button{background:var(--accent);border:0;color:#04101f;font-weight:600;padding:.35rem .7rem;border-radius:8px;cursor:pointer;font-size:.78rem}
   button.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
   .hint{color:var(--dim);font-size:.78rem;margin-top:.6rem}
@@ -69,8 +74,8 @@
   .mcard .mver{color:var(--dim);font-size:.75rem}
   .mcard .mdesc{font-size:.78rem;color:var(--text);opacity:.85;flex:1}
   .mcard .tags{display:flex;gap:.3rem;flex-wrap:wrap}
-  .tag{background:#12283f;color:var(--accent);border-radius:6px;padding:.05rem .4rem;font-size:.68rem}
-  .tag.cat{background:#1c1630;color:#b79bff}
+  .tag{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent);border-radius:6px;padding:.05rem .4rem;font-size:.68rem}
+  .tag.cat{background:color-mix(in srgb,var(--n-transform) 22%,transparent);color:var(--n-transform)}
   .mvlist td{font-size:.78rem}
   .mvlist .yk{color:var(--warn)}
   .ops{background:var(--input-bg);border-radius:8px;margin:.3rem 0 .6rem;padding:.5rem .7rem;font-size:.78rem}
@@ -309,13 +314,37 @@ function wireWindow(w) {
     if (w.dataset.builderKey) setActiveBuilder(w.dataset.builderKey);
   }, true);
   const tb = w.querySelector('.titlebar');
+  // Inject a maximise button (before the existing min/close) so every window —
+  // static tools and dynamic builders — gets it without editing each titlebar.
+  if (!tb.querySelector('[data-act="max"]')) {
+    const b = document.createElement('button');
+    b.className = 'wbtn'; b.dataset.act = 'max'; b.textContent = '▢'; b.title = 'Maximise / restore';
+    tb.insertBefore(b, tb.querySelector('.wbtn'));
+  }
   tb.querySelectorAll('.wbtn').forEach(btn => btn.onclick = ev => {
     ev.stopPropagation();
-    if (btn.dataset.act === 'close') { if (w.dataset.builderKey) destroyBuilder(w.dataset.builderKey); else closeWin(w.id); }
+    const act = btn.dataset.act;
+    if (act === 'close') { if (w.dataset.builderKey) destroyBuilder(w.dataset.builderKey); else closeWin(w.id); }
+    else if (act === 'max') toggleMax(w);
     else minWin(w.id);
   });
+  tb.addEventListener('dblclick', ev => { if (!ev.target.closest('.wbtn')) toggleMax(w); });
   dragEl(tb, w, false);
   dragEl(w.querySelector('.resize'), w, true);
+}
+
+// toggleMax fills the desktop with the window (storing its prior geometry to
+// restore on a second click / double-click). Runtime-only; not persisted.
+function toggleMax(w) {
+  if (w.dataset.max) {
+    const g = JSON.parse(w.dataset.max);
+    w.style.left = g.x; w.style.top = g.y; w.style.width = g.w; w.style.height = g.h;
+    delete w.dataset.max;
+  } else {
+    w.dataset.max = JSON.stringify({x: w.style.left, y: w.style.top, w: w.style.width, h: w.style.height});
+    w.style.left = '0px'; w.style.top = '0px'; w.style.width = '100%'; w.style.height = '100%';
+  }
+  focusWin(w.id);
 }
 
 function restoreWindows(wins) {
@@ -1459,7 +1488,7 @@ function renderGraph(g, pos, sel, uid) {
       `<circle data-id="${esc(n.id)}" data-port="happy" cx="${p.x+W}" cy="${outSy(p)}" r="6" fill="var(--ok)" stroke="var(--canvas)" stroke-width="1.5" style="cursor:crosshair"><title>success →</title></circle>
        <circle data-id="${esc(n.id)}" data-port="fail" cx="${p.x+W}" cy="${outFy(p)}" r="6" fill="var(--bad)" stroke="var(--canvas)" stroke-width="1.5" style="cursor:crosshair"><title>failure →</title></circle>`;
     return `<g data-id="${esc(n.id)}">
-      <rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="9" fill="var(--node-bg)" stroke="${selStroke}" stroke-width="${sel===n.id?2:1}" style="cursor:grab"/>
+      <rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="9" fill="var(--node-bg)" stroke="${selStroke}" stroke-width="${sel===n.id?2:1}" filter="url(#nsh-${uid})" style="cursor:grab"/>
       <path d="M${p.x},${p.y+HDR} L${p.x},${p.y+9} Q${p.x},${p.y} ${p.x+9},${p.y} L${p.x+W-9},${p.y} Q${p.x+W},${p.y} ${p.x+W},${p.y+9} L${p.x+W},${p.y+HDR} Z" fill="${hdr}" style="pointer-events:none"/>
       <text x="${p.x+9}" y="${p.y+15}" fill="var(--hdr-text)" font-size="12" style="pointer-events:none">${esc(nodeIcon(n))}</text>
       <text x="${p.x+27}" y="${p.y+15}" fill="var(--hdr-text)" font-size="11.5" font-weight="700" style="pointer-events:none">${esc(clip(nodeLabel(n),20))}</text>
@@ -1473,8 +1502,9 @@ function renderGraph(g, pos, sel, uid) {
   const arrow = (id, color) => `<marker id="arr-${id}-${uid}" markerWidth="8" markerHeight="8" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="${color}"/></marker>`;
   const grid = `<pattern id="grid-${uid}" width="${GRID}" height="${GRID}" patternUnits="userSpaceOnUse"><path d="M${GRID} 0 H0 V${GRID}" fill="none" stroke="var(--line)" stroke-width="1" opacity=".45"/></pattern>`;
   return `<svg width="${width}" height="${height}" style="max-width:none;touch-action:none;display:block">
-    <defs>${grid}${arrow('g','var(--ok)')}${arrow('r','var(--bad)')}${arrow('b','var(--n-branch)')}${arrow('o','var(--edge-route)')}</defs>
-    <rect width="${width}" height="${height}" fill="url(#grid-${uid})"/>${edges}${nodes}</svg>`;
+    <defs>${grid}${arrow('g','var(--ok)')}${arrow('r','var(--bad)')}${arrow('b','var(--n-branch)')}${arrow('o','var(--edge-route)')}
+      <filter id="nsh-${uid}" x="-20%" y="-25%" width="140%" height="150%"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.28"/></filter></defs>
+    <rect width="${width}" height="${height}" fill="url(#grid-${uid})"/>${edges}${nodes}${(g.nodes || []).length ? '' : `<text x="${width / 2}" y="${height / 2}" fill="var(--dim)" font-size="13" text-anchor="middle" dominant-baseline="middle">empty canvas — add a node from the toolbar above</text>`}</svg>`;
 }
 
 // --- theming: light/dark + colour-blind, persisted, respects OS preference ---
