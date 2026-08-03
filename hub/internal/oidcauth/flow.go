@@ -52,6 +52,11 @@ func NewFlow(ctx context.Context, cfg FlowConfig) (*Flow, error) {
 // AuthCodeURL builds the IdP redirect for the given anti-CSRF state.
 func (f *Flow) AuthCodeURL(state string) string { return f.oauth2.AuthCodeURL(state) }
 
+// RedirectURL is the configured callback URL. It is the deployment's own
+// statement of the hub's external origin — the only reliable signal of the
+// site's external scheme when TLS is terminated by a proxy in front.
+func (f *Flow) RedirectURL() string { return f.oauth2.RedirectURL }
+
 // Exchange trades an authorization code for a verified ID token,
 // returning the raw token (the dashboard session cookie) and its
 // identity.

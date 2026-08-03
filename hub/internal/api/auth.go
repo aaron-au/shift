@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/aaron-au/shift/hub/internal/ratelimit"
@@ -187,6 +188,22 @@ const stateCookie = "shift_oauth_state"
 
 // login redirects to the IdP. The anti-CSRF state rides a short-lived
 // cookie.
+// cookieSecure decides the Secure attribute for the session/state cookies.
+//
+// r.TLS alone is wrong for the documented deployment: behind a TLS-terminating
+// proxy the hub speaks plaintext on the back side, so r.TLS is nil and the
+// session cookie would ship WITHOUT Secure over a genuinely https site — free
+// to leak on any plaintext request to the same host. The OIDC redirect URL is
+// the authoritative, already-configured statement of the site's external
+// scheme, so it decides. Falls back to r.TLS when no OIDC flow is configured
+// (break-glass-token-only deployments, which ADR-0009 §5 keeps loopback).
+func (a *api) cookieSecure(r *http.Request) bool {
+	if a.opts.OIDCFlow != nil && strings.HasPrefix(a.opts.OIDCFlow.RedirectURL(), "https://") {
+		return true
+	}
+	return r.TLS != nil
+}
+
 func (a *api) login(w http.ResponseWriter, r *http.Request) {
 	var buf [16]byte
 	if _, err := rand.Read(buf[:]); err != nil {
@@ -194,10 +211,10 @@ func (a *api) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := hex.EncodeToString(buf[:])
-	//nolint:gosec // G124: HttpOnly+SameSite set; Secure follows TLS — plaintext hubd is loopback-only by policy (ADR-0009 §5)
+	//nolint:gosec // G124: HttpOnly+SameSite set; Secure follows the site's external scheme (cookieSecure)
 	http.SetCookie(w, &http.Cookie{
 		Name: stateCookie, Value: state, Path: "/auth",
-		MaxAge: 300, HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode,
+		MaxAge: 300, HttpOnly: true, Secure: a.cookieSecure(r), SameSite: http.SameSiteLaxMode,
 	})
 	http.Redirect(w, r, a.opts.OIDCFlow.AuthCodeURL(state), http.StatusFound)
 }
@@ -213,7 +230,7 @@ func (a *api) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	//nolint:gosec // G124: deletion cookie (MaxAge -1), attributes mirror the set cookie
 	http.SetCookie(w, &http.Cookie{Name: stateCookie, Value: "", Path: "/auth", MaxAge: -1,
-		HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode})
+		HttpOnly: true, Secure: a.cookieSecure(r), SameSite: http.SameSiteLaxMode})
 
 	raw, oid, err := a.opts.OIDCFlow.Exchange(r.Context(), r.URL.Query().Get("code"))
 	if err != nil {
@@ -228,10 +245,10 @@ func (a *api) callback(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	//nolint:gosec // G124: HttpOnly+SameSite set; Secure follows TLS — plaintext hubd is loopback-only by policy (ADR-0009 §5)
+	//nolint:gosec // G124: HttpOnly+SameSite set; Secure follows the site's external scheme (cookieSecure)
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: raw, Path: "/",
-		HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode,
+		HttpOnly: true, Secure: a.cookieSecure(r), SameSite: http.SameSiteLaxMode,
 		Expires: time.Now().Add(12 * time.Hour), // token exp still governs
 	})
 	http.Redirect(w, r, "/", http.StatusFound)
@@ -240,7 +257,7 @@ func (a *api) callback(w http.ResponseWriter, r *http.Request) {
 func (a *api) logout(w http.ResponseWriter, r *http.Request) {
 	//nolint:gosec // G124: deletion cookie (MaxAge -1), attributes mirror the set cookie
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1,
-		HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode})
+		HttpOnly: true, Secure: a.cookieSecure(r), SameSite: http.SameSiteLaxMode})
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 

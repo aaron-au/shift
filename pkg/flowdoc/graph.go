@@ -15,6 +15,14 @@ import (
 // alongside the builder's output escaping.
 var stepIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
+// NamePattern constrains flow names for the same reason as stepIDPattern, with
+// one addition: a flow name is also a URL PATH SEGMENT in the hub's control API
+// (/api/v1/flows/{name}/...). Allowing quotes or slashes would let a name break
+// out of a UI sink or, unencoded by a client, address a different endpoint
+// entirely. Spaces are permitted (names are human-facing) but the charset stops
+// at anything with meaning in markup or a path.
+var NamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._-]{0,127}$`)
+
 // Connectors returns the sorted, unique connector names the document
 // references — source and sink in the linear form; every connector step
 // (including error handlers) in the graph form. The hub uses this to apply

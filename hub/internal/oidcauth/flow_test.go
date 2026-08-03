@@ -147,3 +147,16 @@ func TestExchangeUnverifiableIDToken(t *testing.T) {
 		t.Fatal("expired id_token exchanged cleanly")
 	}
 }
+
+// TestFlowRedirectURL: the callback URL is the deployment's own statement of
+// the hub's external origin, and the api package reads its scheme to decide the
+// session cookie's Secure attribute — r.TLS is nil behind a TLS-terminating
+// proxy and would wrongly report a plaintext site.
+func TestFlowRedirectURL(t *testing.T) {
+	idp := oidctest.New(t, clientID)
+	f := newFlow(t, idp)
+	const want = "https://hub.example:8400/auth/callback"
+	if got := f.RedirectURL(); got != want {
+		t.Fatalf("RedirectURL() = %q, want %q", got, want)
+	}
+}
