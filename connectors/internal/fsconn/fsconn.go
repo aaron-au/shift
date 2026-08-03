@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,7 +61,7 @@ func Connector() sdk.Connector {
 
 // rootProp is the shared jail-root portion of every action's config schema.
 const rootProp = `
-    "root": {"type": "string", "title": "Root directory", "description": "Base directory; every path is resolved within it and rejected if it escapes. Required (fail closed)."}`
+    "root": {"type": "string", "title": "Root directory", "description": "Base directory; every path is resolved within it and rejected if it escapes (symlinks included). Must be one of the roots the runner permits via SHIFT_FS_ROOTS. Required (fail closed)."}`
 
 // Per-action schemas. get/put stream a file; list reads a directory; the op
 // sources (delete/mkdir/rmdir) take their target from config, so their config
@@ -108,11 +109,59 @@ func parseConfig(raw []byte, into *config) error {
 	return into.validateRoot()
 }
 
+// RootsEnv names the environment variable that lists the roots this deployment
+// permits: an OS-list-separated set of absolute paths (like PATH).
+const RootsEnv = "SHIFT_FS_ROOTS"
+
+// allowedRoots returns the deployment's permitted roots. Fail-closed: an unset
+// or empty variable permits nothing.
+//
+// This is the local-filesystem analogue of the network guard the http/sftp
+// connectors apply — and it has to exist, because `root` arrives in the FLOW
+// document. Without an operator-side bound, any author who can deploy a flow
+// could set root to "/" and read or delete anything the runner user can reach:
+// the runner's hub credentials, its connector socket token, spill files, host
+// keys. The runner's environment is the one place a flow author cannot write,
+// so that is where the bound lives.
+func allowedRoots() []string {
+	raw := os.Getenv(RootsEnv)
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range filepath.SplitList(raw) {
+		if p == "" {
+			continue
+		}
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			continue
+		}
+		out = append(out, filepath.Clean(abs))
+	}
+	return out
+}
+
 func (c *config) validateRoot() error {
 	if c.Root == "" {
 		return errors.New("fs: root is required")
 	}
-	return nil
+	root, err := filepath.Abs(c.Root)
+	if err != nil {
+		return fmt.Errorf("fs: bad root %q: %w", c.Root, err)
+	}
+	root = filepath.Clean(root)
+	allowed := allowedRoots()
+	if len(allowed) == 0 {
+		return fmt.Errorf("fs: this runner permits no filesystem roots — the operator must set %s "+
+			"to the paths flows may access", RootsEnv)
+	}
+	for _, a := range allowed {
+		if root == a || strings.HasPrefix(root, a+string(filepath.Separator)) {
+			return nil
+		}
+	}
+	return fmt.Errorf("fs: root %q is outside the roots this runner permits (%s)", c.Root, RootsEnv)
 }
 
 // requireFileFormat validates the get/put config: a file path and a supported
@@ -152,10 +201,9 @@ func (c *config) requirePath() error {
 // to root, or absolute) is cleaned and compared to root via filepath.Rel, so a
 // ".." traversal or an absolute path outside root is rejected fail-closed.
 //
-// Note: this is a lexical containment check; it does not resolve symlinks, so a
-// pre-existing symlink under root that points outside root is not followed-and-
-// re-checked. Deployments that expose untrusted roots should mount them without
-// escaping symlinks (matching the sftp connector's server-side scope).
+// The lexical check alone would not stop a pre-existing symlink under root that
+// points outside it, so the resolved path is re-checked after symlink
+// evaluation (see containedAfterSymlinks). Both checks must pass.
 func (c *config) resolve(p string) (string, error) {
 	if c.Root == "" {
 		return "", errors.New("fs: root is required")
@@ -174,7 +222,43 @@ func (c *config) resolve(p string) (string, error) {
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("fs: path %q escapes root %q", p, c.Root)
 	}
+	if err := containedAfterSymlinks(root, full); err != nil {
+		return "", err
+	}
 	return full, nil
+}
+
+// containedAfterSymlinks re-checks containment with symlinks resolved.
+//
+// The target itself often does not exist yet (a put creates it), so this walks
+// up to the deepest ancestor that DOES exist, resolves that, and requires the
+// result to still sit under the resolved root. A symlink planted under root and
+// aimed outside it — by another flow, an extracted archive, or a mounted share
+// — is therefore rejected rather than followed.
+func containedAfterSymlinks(root, full string) error {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("fs: resolving root %q: %w", root, err)
+	}
+	probe := full
+	for {
+		real, err := filepath.EvalSymlinks(probe)
+		if err == nil {
+			rel, rerr := filepath.Rel(realRoot, real)
+			if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("fs: path %q resolves outside root (symlink escape)", full)
+			}
+			return nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("fs: resolving %q: %w", probe, err)
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe { // reached the filesystem root without finding one
+			return nil
+		}
+		probe = parent
+	}
 }
 
 // resolvedRoot returns the absolute, cleaned root (used by list to relativize

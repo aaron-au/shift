@@ -24,8 +24,19 @@ func cfgJSON(t *testing.T, m map[string]any) []byte {
 }
 
 // TestPutGetRoundTrip writes records with put, then reads them back with get.
+// testRoot returns a temp directory that this test is permitted to use as an
+// fs root. The connector refuses any root the deployment has not listed
+// (SHIFT_FS_ROOTS), so a test has to say so too — the same statement an
+// operator makes when deploying the connector.
+func testRoot(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv(RootsEnv, dir)
+	return dir
+}
+
 func TestPutGetRoundTrip(t *testing.T) {
-	root := t.TempDir()
+	root := testRoot(t)
 	ctx := context.Background()
 
 	// put: relative path "sub/out.ndjson" (the dir does not exist yet).
@@ -91,7 +102,7 @@ func TestPutGetRoundTrip(t *testing.T) {
 
 // TestGetCSV round-trips through the csv format path.
 func TestGetCSV(t *testing.T) {
-	root := t.TempDir()
+	root := testRoot(t)
 	ctx := context.Background()
 
 	sink := &putSink{}
@@ -141,7 +152,7 @@ func TestGetCSV(t *testing.T) {
 // TestList lists a directory (flat and recursive), emitting one record per
 // entry with a root-relative path.
 func TestList(t *testing.T) {
-	root := t.TempDir()
+	root := testRoot(t)
 	ctx := context.Background()
 	for _, f := range []string{"a.txt", "b.txt"} {
 		if err := os.WriteFile(filepath.Join(root, f), []byte("x"), 0o600); err != nil {
@@ -194,7 +205,7 @@ func TestList(t *testing.T) {
 // TestOps exercises the config-driven mkdir/delete/rmdir verbs, including their
 // idempotency (repeat on a missing target still succeeds).
 func TestOps(t *testing.T) {
-	root := t.TempDir()
+	root := testRoot(t)
 	ctx := context.Background()
 
 	runOp := func(op opKind, path string) record.Value {
@@ -276,7 +287,7 @@ func TestOps(t *testing.T) {
 // TestTraversalRejected proves the jail: paths escaping root are rejected fail-
 // closed for every verb, before any filesystem side effect.
 func TestTraversalRejected(t *testing.T) {
-	root := t.TempDir()
+	root := testRoot(t)
 	// A secret file outside the jail; the traversal targets it.
 	outside := filepath.Join(filepath.Dir(root), "secret.txt")
 	if err := os.WriteFile(outside, []byte("top secret"), 0o600); err != nil {
@@ -337,15 +348,15 @@ func TestConfigValidation(t *testing.T) {
 		t.Fatalf("missing root: err = %v, want 'root is required'", err)
 	}
 	// Missing path for get.
-	if err := (&getSource{}).Open(ctx, cfgJSON(t, map[string]any{"root": t.TempDir()})); err == nil {
+	if err := (&getSource{}).Open(ctx, cfgJSON(t, map[string]any{"root": testRoot(t)})); err == nil {
 		t.Fatal("missing path: expected error")
 	}
 	// Unsupported format.
-	if err := (&getSource{}).Open(ctx, cfgJSON(t, map[string]any{"root": t.TempDir(), "path": "f", "format": "xml"})); err == nil {
+	if err := (&getSource{}).Open(ctx, cfgJSON(t, map[string]any{"root": testRoot(t), "path": "f", "format": "xml"})); err == nil {
 		t.Fatal("bad format: expected error")
 	}
 	// Op verb without a path.
-	if err := (&opSource{op: opDelete}).Open(ctx, cfgJSON(t, map[string]any{"root": t.TempDir()})); err == nil {
+	if err := (&opSource{op: opDelete}).Open(ctx, cfgJSON(t, map[string]any{"root": testRoot(t)})); err == nil {
 		t.Fatal("delete without path: expected error")
 	}
 	// Bad JSON.
