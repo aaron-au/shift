@@ -52,6 +52,19 @@ type Connector struct {
 	// config authority. Keyed by action name (a name shared by a source
 	// and a sink shares one schema).
 	Schemas map[string][]byte
+	// ConnectionSchema describes the connection-level config for this
+	// connector — the settings that identify the SYSTEM being talked to
+	// (host, port, credentials, TLS) rather than the verb (ADR-0034).
+	//
+	// One schema per connector, not per action, because a host is a host
+	// whether you are reading or deleting. Fields described here are
+	// authored once as a named Connection and referenced by many nodes;
+	// they are rejected on the node itself, so an author cannot silently
+	// point one node at a different system than its siblings.
+	//
+	// Optional: a connector without one keeps every field on the node,
+	// exactly as before, and its descriptor stays byte-identical.
+	ConnectionSchema []byte
 	// Meta is optional marketplace discovery metadata (M6e). It travels in
 	// the signed descriptor (tamper-evident) and is rendered by the studio;
 	// the hub never parses it. Absent Meta keeps the descriptor byte-identical
@@ -88,6 +101,11 @@ type Descriptor struct {
 	Name    string             `json:"name"`
 	Version string             `json:"version"`
 	Actions []ActionDescriptor `json:"actions"`
+	// ConnectionSchema is the connector's connection-level config schema
+	// (ADR-0034). Omitted when absent, so a connector that declares none
+	// produces byte-identical canonical bytes to before this field existed
+	// — existing signatures stay valid (ADR-0018 parity).
+	ConnectionSchema json.RawMessage `json:"connectionSchema,omitempty"`
 	// Meta is optional discovery metadata (M6e); omitted (nil) keeps the
 	// canonical bytes identical to a metadata-free descriptor.
 	Meta *ConnectorMeta `json:"meta,omitempty"`
@@ -97,7 +115,10 @@ type Descriptor struct {
 // actions and schemas, actions sorted by (direction, action). Shared by
 // the Describe RPC and the `describe` CLI mode so both report identically.
 func BuildDescriptor(c Connector) Descriptor {
-	d := Descriptor{Name: c.Name, Version: c.Version, Meta: c.Meta}
+	d := Descriptor{
+		Name: c.Name, Version: c.Version, Meta: c.Meta,
+		ConnectionSchema: schemaOrNil(c.ConnectionSchema),
+	}
 	for name := range c.Sources {
 		d.Actions = append(d.Actions, ActionDescriptor{Action: name, Direction: "source", ConfigSchema: schemaOrNil(c.Schemas[name])})
 	}
