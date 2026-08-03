@@ -113,8 +113,21 @@ meant to attract.
 So the licence is a **signed, time-limited artifact** the hub verifies locally.
 `pkg/consign` already does this shape — Ed25519 over a canonical manifest, with
 private keys never held server-side — and should be reused rather than
-reinvented. The licence server issues and renews; it is never in the request
-path.
+reinvented.
+
+**Offline is the primitive; online is optional automation over it.** The
+customer downloads their licence file from the licence server and applies it to
+the hub — that path always works and is the only one an air-gapped deployment
+needs. A hub that *can* reach the licence server may opt into fetching and
+renewing the same artifact automatically, but this is strictly a convenience: it
+produces an identical file through an identical verification path, so there is
+no second code path to trust and no behavior that exists only online. Turning
+the network off degrades operator convenience, never capability.
+
+This ordering matters. Building online-first and bolting on an offline
+"export" produces a second-class path that rots — the failure mode every
+enterprise vendor with an air-gapped tier eventually ships. Building
+offline-first and automating the fetch cannot produce that outcome.
 
 Failure behavior is **fail-open, loudly**. An unreachable licence server, an
 expired-but-recently-valid licence, or a clock skew must never stop a customer's
