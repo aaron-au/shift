@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<bns:Component xmlns:bns="http://api.platform.boomi.com/" componentId="conn-0001"
+  version="1" name="Target API" type="connector-settings" folderFullPath="Demo"
+  deleted="false" currentVersion="true" modifiedDate="2026-01-05T00:00:00Z">
+  <bns:encryptedValues>
+    <encryptedValue key="password"/>
+    <encryptedValue key="clientSecret"/>
+  </bns:encryptedValues>
+  <bns:object/>
+</bns:Component>

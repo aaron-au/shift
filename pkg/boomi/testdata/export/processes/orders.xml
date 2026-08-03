@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<bns:Component xmlns:bns="http://api.platform.boomi.com/" componentId="proc-0001"
+  version="3" name="Orders — sync" type="process" folderFullPath="Demo/Orders"
+  deleted="false" currentVersion="true" modifiedDate="2026-01-02T03:04:05Z">
+  <bns:encryptedValues/>
+  <bns:object>
+    <process xmlns="">
+      <shapes>
+        <shape name="shape1" shapetype="start" userlabel="HTTP in" x="0" y="0">
+          <dragpoints><dragpoint name="d1" toShape="shape2" x="1" y="1"/></dragpoints>
+        </shape>
+        <shape name="shape2" shapetype="map" userlabel="To target" x="1" y="0">
+          <dragpoints><dragpoint name="d2" toShape="shape3" x="2" y="1"/></dragpoints>
+        </shape>
+        <shape name="shape3" shapetype="decision" x="2" y="0">
+          <dragpoints>
+            <dragpoint name="d3" toShape="shape4" x="3" y="1"/>
+            <dragpoint name="d4" toShape="shape5" x="3" y="2"/>
+          </dragpoints>
+        </shape>
+        <shape name="shape4" shapetype="returndocuments" userlabel="Reply" x="3" y="0"/>
+        <shape name="shape5" shapetype="stop" userlabel="Give up" x="3" y="1"/>
+      </shapes>
+    </process>
+  </bns:object>
+</bns:Component>

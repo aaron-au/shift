@@ -28,6 +28,7 @@ build:
 	cd connectors && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-connector-redis ./cmd/shift-connector-redis
 	cd connectors && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-consign ./cmd/shift-consign
 	cd hub && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-bootstrap ./cmd/shift-bootstrap
+	cd pkg && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-boomi-analyze ./cmd/shift-boomi-analyze
 
 ## proto: regenerate gRPC code from proto/ (requires protoc + Go plugins)
 proto:
