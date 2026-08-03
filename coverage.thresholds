@@ -25,6 +25,7 @@ github.com/aaron-au/shift/connectors/internal/smtpconn 76
 github.com/aaron-au/shift/connectors/internal/dbconn 77
 github.com/aaron-au/shift/connectors/internal/s3conn 82
 github.com/aaron-au/shift/connectors/internal/azureblobconn 72
+github.com/aaron-au/shift/connectors/internal/amqpconn 73
 github.com/aaron-au/shift/connectors/internal/genconn 78
 github.com/aaron-au/shift/connectors/internal/httpconn 77
 github.com/aaron-au/shift/engine/format/csvf 84

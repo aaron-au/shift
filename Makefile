@@ -23,6 +23,7 @@ build:
 	cd connectors && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-connector-db ./cmd/shift-connector-db
 	cd connectors && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-connector-s3 ./cmd/shift-connector-s3
 	cd connectors && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-connector-azureblob ./cmd/shift-connector-azureblob
+	cd connectors && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-connector-amqp ./cmd/shift-connector-amqp
 	cd connectors && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-consign ./cmd/shift-consign
 	cd hub && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-bootstrap ./cmd/shift-bootstrap
 
