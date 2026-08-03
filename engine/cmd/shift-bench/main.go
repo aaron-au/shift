@@ -27,7 +27,7 @@ func main() {
 		scenario  = flag.String("scenario", "transform", "transform | csv | aggregate | baseline")
 		sizeStr   = flag.String("bytes", "256MiB", "input size (e.g. 64MiB, 1GiB)")
 		watermark = flag.String("watermark", "64MiB", "memory watermark for stateful operators")
-		groups    = flag.Int64("groups", 500_000, "distinct group keys (aggregate scenario)")
+		groups    = flag.Uint64("groups", 500_000, "distinct group keys (aggregate scenario)")
 		maxRSS    = flag.String("max-rss", "", "fail if peak RSS exceeds this (e.g. 100MiB)")
 		spillDir  = flag.String("spill-dir", "", "scratch store directory (default: OS temp)")
 		runs      = flag.Int("runs", 1, "repeat the scenario N times (reports each + a summary)")
@@ -114,7 +114,7 @@ func fatal(err error) {
 type runner struct {
 	size      int64
 	watermark int64
-	groups    int64
+	groups    uint64
 	spillDir  string
 }
 
