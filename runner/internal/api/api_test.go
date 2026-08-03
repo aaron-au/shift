@@ -29,7 +29,7 @@ func testHandler(t *testing.T) http.Handler {
 	}
 	svc := service.New(service.Options{ConnectorDir: dir})
 	t.Cleanup(func() { _ = svc.Close(30 * time.Second) })
-	return Handler(svc, "test-runner", "0.0.0", time.Now(), nil, auth.NewGuard(nil), nil, webhook.NewRegistry(), nil, nil)
+	return Handler(svc, Options{RunnerName: "test-runner", Version: "0.0.0", Started: time.Now(), Guard: auth.NewGuard(nil), Hooks: webhook.NewRegistry()})
 }
 
 func TestAPISurface(t *testing.T) {
@@ -212,7 +212,7 @@ func TestAuthEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := Handler(svc, "r", "0", time.Now(), nil, auth.NewGuard(basic), nil, webhook.NewRegistry(), nil, nil)
+	h := Handler(svc, Options{RunnerName: "r", Version: "0", Started: time.Now(), Guard: auth.NewGuard(basic), Hooks: webhook.NewRegistry()})
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
@@ -273,7 +273,7 @@ func TestDirectExecutionReported(t *testing.T) {
 	report := func(tk task.Task, trigger string) {
 		reported <- struct{ flow, trigger, state string }{tk.Flow, trigger, string(tk.State)}
 	}
-	srv := httptest.NewServer(Handler(svc, "r", "0", time.Now(), nil, auth.NewGuard(nil), report, webhook.NewRegistry(), nil, nil))
+	srv := httptest.NewServer(Handler(svc, Options{RunnerName: "r", Version: "0", Started: time.Now(), Guard: auth.NewGuard(nil), Report: report, Hooks: webhook.NewRegistry()}))
 	defer srv.Close()
 
 	flowDoc := `{"name":"direct-test",

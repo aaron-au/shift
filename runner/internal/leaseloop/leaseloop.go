@@ -17,6 +17,7 @@ import (
 
 	"github.com/aaron-au/shift/pkg/flowdoc"
 	"github.com/aaron-au/shift/runner/internal/hubclient"
+	"github.com/aaron-au/shift/runner/internal/secretref"
 	"github.com/aaron-au/shift/runner/internal/service"
 )
 
@@ -37,7 +38,8 @@ type Options struct {
 
 // Loop leases and executes hub tasks until its context ends.
 type Loop struct {
-	opts Options
+	opts    Options
+	secrets *secretref.Resolver
 
 	wg     sync.WaitGroup
 	active atomic.Int64
@@ -56,7 +58,7 @@ func New(opts Options) *Loop {
 	if opts.TaskPoll <= 0 {
 		opts.TaskPoll = 100 * time.Millisecond
 	}
-	return &Loop{opts: opts}
+	return &Loop{opts: opts, secrets: secretref.New(opts.Client.ResolveSecrets)}
 }
 
 // Status is the intake's dashboard snapshot.
@@ -134,7 +136,7 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 
 	// Documents arrive from the hub with inert {"$secret": name} refs;
 	// plaintext exists only here, per task, never in the queue or logs.
-	doc, secretValues, err := l.resolveSecrets(ctx, doc)
+	doc, secretValues, err := l.secrets.Apply(ctx, doc)
 	if err != nil {
 		l.report(t.ID, func(ctx context.Context) error {
 			// err carries secret names only, never values.
@@ -230,42 +232,6 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 			done = nil
 		}
 	}
-}
-
-// resolveSecrets fetches this task's referenced secrets from the hub
-// and substitutes them into a copy of the document. No caching: a
-// per-task fetch keeps revocation immediate and the runner stateless.
-// resolveSecrets returns the document with secret refs resolved plus the
-// resolved plaintext values (for redaction in the service; never stored).
-func (l *Loop) resolveSecrets(ctx context.Context, doc *flowdoc.Document) (*flowdoc.Document, []string, error) {
-	refs, err := doc.SecretRefs()
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(refs) == 0 {
-		return doc, nil, nil
-	}
-	rctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	values, err := l.opts.Client.ResolveSecrets(rctx, refs)
-	if err != nil {
-		return nil, nil, err
-	}
-	resolved, err := doc.ResolveSecrets(func(name string) (string, error) {
-		v, ok := values[name]
-		if !ok {
-			return "", fmt.Errorf("secret %q not returned by hub", name)
-		}
-		return v, nil
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-	plaintext := make([]string, 0, len(values))
-	for _, v := range values {
-		plaintext = append(plaintext, v)
-	}
-	return resolved, plaintext, nil
 }
 
 // report delivers a terminal state with retries — losing the race to a

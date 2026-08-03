@@ -26,6 +26,7 @@ import (
 	"github.com/aaron-au/shift/runner/internal/hubclient"
 	"github.com/aaron-au/shift/runner/internal/leaseloop"
 	"github.com/aaron-au/shift/runner/internal/ratelimit"
+	"github.com/aaron-au/shift/runner/internal/secretref"
 	"github.com/aaron-au/shift/runner/internal/service"
 	"github.com/aaron-au/shift/runner/internal/task"
 	"github.com/aaron-au/shift/runner/internal/telemetry"
@@ -178,6 +179,16 @@ func main() {
 		}
 	}
 
+	// Secret resolution for the runner-direct paths (webhook, execute, run).
+	// A standalone runner gets a resolver with no fetch: a document that
+	// references a secret then fails with a clear error instead of handing
+	// the connector a reference object (ADR-0010, ADR-0035).
+	var secretFetch secretref.Fetch
+	if client != nil {
+		secretFetch = client.ResolveSecrets
+	}
+	secretResolver := secretref.New(secretFetch)
+
 	// Webhook registry (ADR-0016). Hub-attached runners have it filled by a
 	// periodic sync (the hub is authoritative for config); standalone
 	// runners populate it via the local PUT /api/webhooks endpoint.
@@ -217,8 +228,12 @@ func main() {
 	}
 
 	srv := &http.Server{
-		Addr:              *listen,
-		Handler:           api.Handler(svc, *name, version, time.Now(), hubStatus, guard, report, hooks, metricsH, webhookLimit),
+		Addr: *listen,
+		Handler: api.Handler(svc, api.Options{
+			RunnerName: *name, Version: version, Started: time.Now(),
+			HubStatus: hubStatus, Guard: guard, Report: report, Hooks: hooks,
+			MetricsHandler: metricsH, WebhookLimit: webhookLimit, Secrets: secretResolver,
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {

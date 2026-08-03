@@ -26,6 +26,7 @@ import (
 	"github.com/aaron-au/shift/runner/internal/auth"
 	"github.com/aaron-au/shift/runner/internal/flow"
 	"github.com/aaron-au/shift/runner/internal/ratelimit"
+	"github.com/aaron-au/shift/runner/internal/secretref"
 	"github.com/aaron-au/shift/runner/internal/service"
 	"github.com/aaron-au/shift/runner/internal/task"
 	"github.com/aaron-au/shift/runner/internal/webhook"
@@ -62,11 +63,48 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 //go:embed ui.html
 var uiHTML []byte
 
-// Handler builds the runner's HTTP mux. hubStatus is optional: when the
-// hub lease intake is running it supplies the intake snapshot for
-// /api/status (nil = local-only runner). guard authenticates the control
-// surface; a nil/open guard leaves it unauthenticated (loopback dev).
-func Handler(svc *service.Service, runnerName, version string, started time.Time, hubStatus func() any, guard *auth.Guard, report ExecReporter, hooks *webhook.Registry, metricsHandler http.Handler, webhookLimit *ratelimit.Limiter) http.Handler {
+// Options configure the runner's HTTP surface. Every field except Service
+// is optional; the zero value yields an unauthenticated, hub-less runner
+// (loopback dev).
+type Options struct {
+	// RunnerName and Version identify this runner in /api/status.
+	RunnerName string
+	Version    string
+	// Started stamps the uptime reported by /api/status.
+	Started time.Time
+	// HubStatus supplies the lease-intake snapshot for /api/status. nil for
+	// a local-only runner.
+	HubStatus func() any
+	// Guard authenticates the control surface. A nil/open guard leaves it
+	// unauthenticated (loopback dev).
+	Guard *auth.Guard
+	// Report delivers direct-execution metadata to the hub (ADR-0016). nil
+	// disables reporting (standalone runner).
+	Report ExecReporter
+	// Hooks is the webhook registry backing POST /hooks/{name}.
+	Hooks *webhook.Registry
+	// MetricsHandler serves GET /metrics (M6a). nil disables it.
+	MetricsHandler http.Handler
+	// WebhookLimit throttles public webhook ingress per {hook, IP} (M6c).
+	WebhookLimit *ratelimit.Limiter
+	// Secrets resolves {"$secret":…} refs on the runner-direct paths. A
+	// resolver with no fetch fails documents that reference secrets, which
+	// is the correct standalone-runner behaviour.
+	Secrets *secretref.Resolver
+}
+
+// Handler builds the runner's HTTP mux.
+func Handler(svc *service.Service, o Options) http.Handler {
+	runnerName, version, started := o.RunnerName, o.Version, o.Started
+	hubStatus, guard, report := o.HubStatus, o.Guard, o.Report
+	hooks, metricsHandler, webhookLimit := o.Hooks, o.MetricsHandler, o.WebhookLimit
+	secrets := o.Secrets
+	if hooks == nil {
+		hooks = webhook.NewRegistry()
+	}
+	if guard == nil {
+		guard = auth.NewGuard(nil)
+	}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -105,6 +143,15 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 				opts.CaptureMax = n
 			}
 		}
+		// Direct executions carry the same inert {"$secret":…} refs as
+		// queued ones and must be resolved identically — passing a
+		// reference through would reach the connector as an object where
+		// a value belongs (ADR-0010).
+		doc, opts.SecretValues, err = secrets.Apply(r.Context(), doc)
+		if err != nil {
+			writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf("secret resolution: %w", err))
+			return
+		}
 		id, err := svc.SubmitWith(doc, opts)
 		if err != nil {
 			writeErr(w, http.StatusUnprocessableEntity, err)
@@ -126,15 +173,23 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
+		doc, secretValues, err := secrets.Apply(r.Context(), doc)
+		if err != nil {
+			writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf("secret resolution: %w", err))
+			return
+		}
 		body := &boundedBuffer{limit: maxResponseBody}
-		t, err := svc.RunSync(doc, service.SubmitOpts{Response: body})
+		t, err := svc.RunSync(doc, service.SubmitOpts{Response: body, SecretValues: secretValues})
 		if err != nil {
 			writeErr(w, http.StatusUnprocessableEntity, err)
 			return
 		}
-		if report != nil {
-			report(t, "api") // terminal already; report metadata to the hub
-		}
+		// Report OFF the response path. This is request-reply: the caller is
+		// waiting, the work is already done, and nobody is waiting on the
+		// metadata. Reporting inline added a full hub round trip to every
+		// synchronous call — on a remote hub that is the dominant cost of the
+		// request (ADR-0035 §3).
+		reportNow(t, "api", report)
 		if t.State == task.StateFailed {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 				"task_id": t.ID, "state": "failed", "error": t.Error,
@@ -253,7 +308,14 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
-		id, err := svc.SubmitWith(doc, service.SubmitOpts{WebhookBody: body})
+		doc, secretValues, err := secrets.Apply(r.Context(), doc)
+		if err != nil {
+			writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf("secret resolution: %w", err))
+			return
+		}
+		id, err := svc.SubmitWith(doc, service.SubmitOpts{
+			WebhookBody: body, SecretValues: secretValues,
+		})
 		if err != nil {
 			writeErr(w, http.StatusUnprocessableEntity, err)
 			return
@@ -336,6 +398,16 @@ func permFor(r *http.Request) (auth.Permission, bool) {
 // reportWhenDone spawns a best-effort watcher that reports a direct
 // execution to the hub once it reaches a terminal state. No-op when there
 // is no reporter (standalone runner).
+// reportNow delivers an already-terminal task's metadata to the hub without
+// blocking the caller. The synchronous run path uses it: the reply must not
+// wait on a control-plane round trip (ADR-0035 §3).
+func reportNow(t task.Task, trigger string, report ExecReporter) {
+	if report == nil {
+		return
+	}
+	go report(t, trigger)
+}
+
 func reportWhenDone(svc *service.Service, id, trigger string, report ExecReporter) {
 	if report == nil {
 		return

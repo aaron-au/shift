@@ -58,7 +58,7 @@ func TestHealthMetricsAndRoot(t *testing.T) {
 	metrics := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("# metrics\n"))
 	})
-	h := Handler(newSvc(t), "r", "1.2.3", time.Now(), nil, auth.NewGuard(nil), nil, webhook.NewRegistry(), metrics, nil)
+	h := Handler(newSvc(t), Options{RunnerName: "r", Version: "1.2.3", Started: time.Now(), Guard: auth.NewGuard(nil), Hooks: webhook.NewRegistry(), MetricsHandler: metrics})
 
 	// Healthz open and returns ok.
 	rec := serve(h, req(http.MethodGet, "/healthz", ""))
@@ -87,7 +87,7 @@ func TestHealthMetricsAndRoot(t *testing.T) {
 
 func TestStatusShape(t *testing.T) {
 	// Without a hub, no "hub" key.
-	h := Handler(newSvc(t), "runner-x", "9.9.9", time.Now().Add(-time.Second), nil, auth.NewGuard(nil), nil, webhook.NewRegistry(), nil, nil)
+	h := Handler(newSvc(t), Options{RunnerName: "runner-x", Version: "9.9.9", Started: time.Now().Add(-time.Second), Guard: auth.NewGuard(nil), Hooks: webhook.NewRegistry()})
 	rec := serve(h, req(http.MethodGet, "/api/status", ""))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
@@ -111,7 +111,7 @@ func TestStatusShape(t *testing.T) {
 
 	// With a hubStatus, the "hub" key is populated.
 	hub := func() any { return map[string]any{"attached": true} }
-	h = Handler(newSvc(t), "r", "0", time.Now(), hub, auth.NewGuard(nil), nil, webhook.NewRegistry(), nil, nil)
+	h = Handler(newSvc(t), Options{RunnerName: "r", Version: "0", Started: time.Now(), Guard: auth.NewGuard(nil), HubStatus: hub, Hooks: webhook.NewRegistry()})
 	rec = serve(h, req(http.MethodGet, "/api/status", ""))
 	body = nil
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -123,7 +123,7 @@ func TestStatusShape(t *testing.T) {
 }
 
 func TestFlowsExecuteRejections(t *testing.T) {
-	h := Handler(newSvc(t), "r", "0", time.Now(), nil, auth.NewGuard(nil), nil, webhook.NewRegistry(), nil, nil)
+	h := Handler(newSvc(t), Options{RunnerName: "r", Version: "0", Started: time.Now(), Guard: auth.NewGuard(nil), Hooks: webhook.NewRegistry()})
 
 	// Malformed JSON → 400 with error body.
 	rec := serve(h, req(http.MethodPost, "/api/flows/execute", `{not json`))
@@ -156,7 +156,7 @@ func TestFlowsExecuteRejections(t *testing.T) {
 }
 
 func TestTaskMetadataEndpoints(t *testing.T) {
-	h := Handler(newSvc(t), "r", "0", time.Now(), nil, auth.NewGuard(nil), nil, webhook.NewRegistry(), nil, nil)
+	h := Handler(newSvc(t), Options{RunnerName: "r", Version: "0", Started: time.Now(), Guard: auth.NewGuard(nil), Hooks: webhook.NewRegistry()})
 
 	// Empty task list.
 	rec := serve(h, req(http.MethodGet, "/api/tasks", ""))
@@ -189,7 +189,7 @@ func TestTaskMetadataEndpoints(t *testing.T) {
 
 func TestWebhookConfigEndpoints(t *testing.T) {
 	reg := webhook.NewRegistry()
-	h := Handler(newSvc(t), "r", "0", time.Now(), nil, auth.NewGuard(nil), nil, reg, nil, nil)
+	h := Handler(newSvc(t), Options{RunnerName: "r", Version: "0", Started: time.Now(), Guard: auth.NewGuard(nil), Hooks: reg})
 
 	validDoc := `{"document":{"name":"hook","source":{"connector":"@webhook","action":"ndjson"},` +
 		`"sink":{"connector":"gen","action":"discard"}}}`
@@ -262,7 +262,7 @@ func TestHookTriggerRejections(t *testing.T) {
 	// A tiny per-hook budget: burst 1 so the second request is throttled.
 	lim := ratelimit.New(map[string]ratelimit.Cfg{"webhook": {RPS: 0.001, Burst: 1}})
 	t.Cleanup(lim.Stop)
-	h := Handler(newSvc(t), "r", "0", time.Now(), nil, auth.NewGuard(nil), nil, reg, nil, lim)
+	h := Handler(newSvc(t), Options{RunnerName: "r", Version: "0", Started: time.Now(), Guard: auth.NewGuard(nil), Hooks: reg, WebhookLimit: lim})
 
 	// Unknown hook → 404 (resolved before the limiter, so no bucket is minted).
 	if rec := serve(h, req(http.MethodPost, "/hooks/nope", `{}`)); rec.Code != http.StatusNotFound {
@@ -301,7 +301,7 @@ func TestHookTriggerRejections(t *testing.T) {
 }
 
 func TestBenchmarkEndpointRejections(t *testing.T) {
-	h := Handler(newSvc(t), "r", "0", time.Now(), nil, auth.NewGuard(nil), nil, webhook.NewRegistry(), nil, nil)
+	h := Handler(newSvc(t), Options{RunnerName: "r", Version: "0", Started: time.Now(), Guard: auth.NewGuard(nil), Hooks: webhook.NewRegistry()})
 
 	// Malformed JSON with a positive Content-Length → 400 (never starts a run).
 	for _, path := range []string{"/api/benchmark", "/api/benchmark/tiers"} {
@@ -342,7 +342,7 @@ func TestPermissionGating(t *testing.T) {
 		t.Fatal(err)
 	}
 	metrics := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("m")) })
-	h := Handler(newSvc(t), "r", "0", time.Now(), nil, auth.NewGuard(basic), nil, webhook.NewRegistry(), metrics, nil)
+	h := Handler(newSvc(t), Options{RunnerName: "r", Version: "0", Started: time.Now(), Guard: auth.NewGuard(basic), Hooks: webhook.NewRegistry(), MetricsHandler: metrics})
 
 	call := func(method, path, user string) *httptest.ResponseRecorder {
 		r := req(method, path, "")
