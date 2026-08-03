@@ -48,13 +48,28 @@ runner-direct paths that otherwise survive an outage entirely (webhook configs
 are already synced and cached locally, so the trigger works — it just cannot get
 its credential).
 
-There is also a throughput and latency cost that only shows up on the paths the
-product is differentiated on. For a queued batch task, one round trip against
-work measured in seconds is noise. For **synchronous request-reply**
-(`RunSync`, ADR-0024) it is a fixed per-invocation tax on a path whose entire
-purpose is answering in the same HTTP call. For **high-frequency webhooks** it
-is a QPS problem: one hub call per invocation, repeatedly, for a value that did
-not change.
+There is also a latency cost that only shows up on the paths the product is
+differentiated on. For a queued batch task, one round trip against work
+measured in seconds is noise. For **synchronous request-reply** (`RunSync`,
+ADR-0024) it is a fixed per-invocation tax on a path whose entire purpose is
+answering in the same HTTP call.
+
+The *load* case is weaker than it first appears and should not be used to argue
+for caching: `/secrets/resolve` takes a **name list**, and the runner sends
+every reference for a task in one call. It is one round trip per invocation
+regardless of how many secrets a flow uses, and one indexed lookup plus a
+symmetric decrypt is not a throughput problem for the hub. What remains is
+purely **latency, and only when the hub is geographically distant** — a hub one
+WAN hop away adds that hop to every webhook, while a same-region hub costs
+effectively nothing.
+
+The same measurement exposed a second, unrelated instance of the hub sitting on
+the critical path: `RunSync` reported its execution metadata to the hub
+**inline, before writing the response**, so every synchronous call paid a full
+hub round trip after the work was already finished. That is fixed
+independently of anything here — the report belongs off the response path — but
+it is the same disease, and it is why §3 is scoped to what caching actually
+buys rather than to "make the hub optional".
 
 ## Decision
 
@@ -95,16 +110,41 @@ decides.
 
 ### 2. All four execution paths resolve
 
-Resolution moves out of `leaseloop` into a shared runner-side resolver used by
-the queued path and the three runner-direct paths alike. A document reaching
-the engine with an unresolved `{"$secret":...}` reference is a **task failure
-with a clear error**, not a value passed through — silently handing a connector
-a reference object is how the current bug hides.
+Resolution moves out of `leaseloop` into a shared runner-side resolver
+(`runner/internal/secretref`) used by the queued path and the three
+runner-direct paths alike. A document reaching the engine with an unresolved
+`{"$secret":...}` reference is a **task failure with a clear error**, not a
+value passed through — silently handing a connector a reference object is how
+the bug hid for as long as it did.
+
+This part is independent of §1 and §3 and has already landed; it needed no key
+exchange and no cache.
 
 ### 3. Caching is opt-in, and the TTL policy belongs to the secret
 
 A runner **may** cache a sealed value for a bounded period. The default is
 **0 — no caching**, preserving today's semantics exactly.
+
+Default off is deliberate, and it follows from the load analysis above. There
+are two distinct things a TTL could buy, and they want different numbers:
+
+| Want | TTL | What it is for |
+|---|---|---|
+| Latency | ~60s | Removes the per-invocation hub hop. Captures essentially the whole win; longer buys almost nothing. |
+| Outage survival | 15–60 min | Survives a hub restart, rolling deploy or Postgres failover. Sixty seconds does not. |
+
+Neither is worth turning on for a deployment whose hub is local — there the
+per-task fetch is sub-millisecond and strictly more secure. So this is a
+**deployment-shaped switch, not a product default**: turn it on when the hub is
+remote, or when a runner group must ride out a hub outage.
+
+One rationale to avoid, because it is wrong: a short TTL does **not**
+meaningfully bound an attacker's access to a credential. Anyone with code
+execution on the runner can trigger a flow or wait for the next fetch; a
+credential in active use is obtainable regardless of cache policy. What the TTL
+bounds is the **revocation** window (§4). The defences that matter are the ones
+in §1 — memory only, never on disk, sealed at rest in memory, key dies with the
+process.
 
 The TTL is set **hub-side, per secret**, and travels sealed inside the bundle.
 Not per runner: a rotating integration API key may be perfectly fine cached for
@@ -142,11 +182,12 @@ survive.
   outage (ADR-0016 keeps them off the control plane); with an opt-in cache they
   survive it *including* credentials. This is the availability property the
   hub-and-spoke story implies and did not yet deliver.
-- **The request-reply path gets materially faster**, because the per-invocation
-  hub round trip disappears for cached secrets. High-frequency webhook flows
-  stop generating one control-plane call per invocation.
-- **A real bug is fixed.** Webhook and direct-execution flows that use
-  credentials work for the first time.
+- **The request-reply path gets materially faster against a remote hub**,
+  because the per-invocation round trip disappears for cached secrets. Against
+  a local hub the difference is negligible — which is exactly why the default
+  is off.
+- **A real bug is fixed** (§2, landed): webhook and direct-execution flows that
+  use credentials work for the first time.
 - **The enterprise security answer improves** without changing the trust model:
   credentials are no longer readable at a TLS-terminating hop.
 - **New state to reason about.** A cache is state on a component whose value is
@@ -185,6 +226,21 @@ it either way.
 **Cache the resolved document at webhook sync time.** Simplest fix for the
 webhook bug, and wrong: it writes plaintext into the runner's synced config,
 which is exactly what ADR-0010 exists to prevent.
+
+**A short cache as the fix for the webhook bug.** Not a fix at all: the webhook
+path never *called* the resolver, so a cache in front of a call nobody makes
+changes nothing. That fix is independent and has landed separately.
+
+**What the incumbents do**, for calibration: they all cache, and most persist.
+A Boomi Atom holds connection credentials encrypted on the runtime's own
+filesystem; Mulesoft's secure property placeholders put encrypted values in the
+config file with the key supplied at startup; Vault Agent keeps a TTL'd lease
+cache. The per-execution fetch here is *stricter* than the norm, which is why
+it pays an availability cost nobody else pays. The differentiator worth keeping
+is that all of those write credentials to disk, where they persist across
+restarts and into backups, images and snapshots — memory-only with a
+process-scoped key is a claim they cannot make. (The vendor specifics are
+second-hand; verify before they appear in customer-facing material.)
 
 ## Open questions
 
