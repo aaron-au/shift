@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"net"
 	"time"
 
@@ -28,23 +29,42 @@ type redisClient interface {
 }
 
 // openClient is the production redisClient factory (injected into every verb by
-// Connector; tests substitute a fake). The connection is network-guarded and
-// optionally TLS-wrapped; go-redis dials lazily on first command.
+// Connector; tests substitute a fake). The connection is network-guarded and,
+// when configured, TLS-wrapped; go-redis dials lazily on first command.
+//
+// The TLS wrap happens HERE, inside the dial function, rather than by setting
+// opts.TLSConfig — and that is not a style choice. go-redis honors TLSConfig
+// only from its own default dialer: options.go does
+// `if opt.Dialer == nil { opt.Dialer = NewDialer(opt) }`, and the
+// tls.DialWithDialer call lives solely inside NewDialer. Supplying a custom
+// Dialer (which the network guard requires) therefore makes TLSConfig dead
+// config — the AUTH password and every value would cross the wire in cleartext
+// while the flow author believes TLS is on, with no error to notice.
 func openClient(cfg *config) (redisClient, error) {
 	dialer := &net.Dialer{Timeout: 30 * time.Second, Control: guard(cfg.AllowLocal)}
-	opts := &redis.Options{
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := dialer.DialContext(ctx, network, addr)
+		if err != nil || !cfg.TLS {
+			return conn, err
+		}
+		host, _, splitErr := net.SplitHostPort(addr)
+		if splitErr != nil {
+			host = addr
+		}
+		tlsConn := tls.Client(conn, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("redis: TLS handshake with %s: %w", addr, err)
+		}
+		return tlsConn, nil
+	}
+	return &goRedisClient{c: redis.NewClient(&redis.Options{
 		Addr:     cfg.Addr,
 		Username: cfg.Username,
 		Password: cfg.Password,
 		DB:       cfg.DB,
-		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialer.DialContext(ctx, network, addr)
-		},
-	}
-	if cfg.TLS {
-		opts.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-	}
-	return &goRedisClient{c: redis.NewClient(opts)}, nil
+		Dialer:   dial,
+	})}, nil
 }
 
 // goRedisClient adapts *redis.Client to redisClient. Each method is a thin
