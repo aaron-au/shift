@@ -30,3 +30,6 @@ vendor/
 # Archived prototype binaries (source is kept; never re-add artifacts)
 _archive/**/bin/
 _archive/**/*.so
+
+# operational e2e evidence captures
+evidence/
