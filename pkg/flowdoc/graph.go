@@ -23,6 +23,12 @@ var stepIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 // at anything with meaning in markup or a path.
 var NamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._-]{0,127}$`)
 
+// ConnectionNamePattern constrains a Connection's name (ADR-0034). Connection
+// names are addressed in the hub's control API and rendered on studio nodes, so
+// they take the same tight charset as a secret name — no spaces, since a
+// connection name is an identifier the author types rather than prose.
+var ConnectionNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
 // Connectors returns the sorted, unique connector names the document
 // references — source and sink in the linear form; every connector step
 // (including error handlers) in the graph form. The hub uses this to apply
@@ -43,6 +49,35 @@ func (d *Document) Connectors() []string {
 	} else {
 		add(d.Source.Connector)
 		add(d.Sink.Connector)
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Connections returns the sorted, unique Connection names the document
+// references (ADR-0034) — both authoring forms. The hub uses this to validate
+// at deploy time that every referenced connection exists, and to know which
+// flows depend on a connection before it is edited or deleted.
+func (d *Document) Connections() []string {
+	seen := map[string]bool{}
+	add := func(n string) {
+		if n != "" {
+			seen[n] = true
+		}
+	}
+	if len(d.Steps) > 0 {
+		for i := range d.Steps {
+			if isConnectorType(d.Steps[i].Type) {
+				add(d.Steps[i].Connection)
+			}
+		}
+	} else {
+		add(d.Source.Connection)
+		add(d.Sink.Connection)
 	}
 	out := make([]string, 0, len(seen))
 	for n := range seen {
@@ -365,10 +400,19 @@ func (s *Step) validate() error {
 			default:
 				return fmt.Errorf("unknown built-in connector %q", s.Connector)
 			}
+			// Built-ins talk to no external system, so a connection is
+			// meaningless on them — reject rather than ignore, or an author
+			// gets silence where they expected configuration.
+			if s.Connection != "" {
+				return fmt.Errorf("built-in connector %q takes no connection", s.Connector)
+			}
 			return nil
 		}
 		if s.Connector == "" || s.Action == "" {
 			return fmt.Errorf("%s step needs connector and action", s.Type)
+		}
+		if s.Connection != "" && !ConnectionNamePattern.MatchString(s.Connection) {
+			return fmt.Errorf("connection %q must match %s (letters, digits, . _ -)", s.Connection, ConnectionNamePattern)
 		}
 		return nil
 	case isTransformType(s.Type):

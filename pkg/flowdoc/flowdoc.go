@@ -75,9 +75,18 @@ type Step struct {
 	Op        // promotes Type + the transform option fields
 
 	// Connector steps (source|sink).
-	Connector string          `json:"connector,omitempty"`
-	Action    string          `json:"action,omitempty"`
-	Config    json.RawMessage `json:"config,omitempty"`
+	Connector string `json:"connector,omitempty"`
+	Action    string `json:"action,omitempty"`
+	// Connection names a reusable Connection supplying this step's
+	// connection-level config — host, credentials, TLS (ADR-0034). Optional
+	// and additive: a step with inline Config and no Connection compiles
+	// exactly as it did before connections existed, so every stored flow
+	// stays valid.
+	//
+	// The runner merges the named connection ahead of Config and resolves
+	// its {"$secret":...} refs, so the hub still stores only references.
+	Connection string          `json:"connection,omitempty"`
+	Config     json.RawMessage `json:"config,omitempty"`
 
 	// Outcome edges (step ids). A non-terminal step has exactly one happy
 	// edge (OnSuccess XOR OnComplete); the two are structurally identical
@@ -145,7 +154,10 @@ const (
 // Endpoint views a connector step (source|sink) as an Endpoint, so the
 // runner can bind it exactly like a linear-form endpoint.
 func (s *Step) Endpoint() Endpoint {
-	return Endpoint{Connector: s.Connector, Action: s.Action, Config: s.Config}
+	return Endpoint{
+		Connector: s.Connector, Action: s.Action,
+		Connection: s.Connection, Config: s.Config,
+	}
 }
 
 // WebhookSource is the reserved built-in source that binds an inbound
@@ -231,11 +243,14 @@ func isReservedType(t string) bool {
 	return false
 }
 
-// Endpoint names a connector action plus its opaque config document.
+// Endpoint names a connector action plus its opaque config document, and
+// optionally the reusable Connection supplying its connection-level settings
+// (ADR-0034).
 type Endpoint struct {
-	Connector string          `json:"connector"`
-	Action    string          `json:"action"`
-	Config    json.RawMessage `json:"config,omitempty"`
+	Connector  string          `json:"connector"`
+	Action     string          `json:"action"`
+	Connection string          `json:"connection,omitempty"`
+	Config     json.RawMessage `json:"config,omitempty"`
 }
 
 // Op is one transform step. Type selects which of the option blocks apply.
@@ -379,6 +394,18 @@ func (d *Document) Validate() error {
 		// Built-ins (@webhook source, @discard sink) need no action.
 		if ep.Connector == "" || (ep.Action == "" && !IsBuiltinConnector(ep.Connector)) {
 			return fmt.Errorf("flow: %s needs connector and action", label)
+		}
+		if ep.Connection == "" {
+			continue
+		}
+		// Same rules as the graph form (ADR-0034): built-ins talk to no
+		// external system, so a connection on one is meaningless.
+		if IsBuiltinConnector(ep.Connector) {
+			return fmt.Errorf("flow: %s: built-in connector %q takes no connection", label, ep.Connector)
+		}
+		if !ConnectionNamePattern.MatchString(ep.Connection) {
+			return fmt.Errorf("flow: %s: connection %q must match %s (letters, digits, . _ -)",
+				label, ep.Connection, ConnectionNamePattern)
 		}
 	}
 	if IsBuiltinConnector(d.Sink.Connector) && !isBuiltinSink(d.Sink.Connector) {
