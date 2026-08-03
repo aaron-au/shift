@@ -39,6 +39,25 @@ func runDoc(t *testing.T, opsJSON, input string) string {
 	return out.String()
 }
 
+// TestApplyRejectsMultiPath: a v3 fan-out/fan-in document validates and
+// stores at the hub, but the multi-path engine is a later change — Apply
+// must fail honestly rather than index the nil linear Main (ADR-0029).
+func TestApplyRejectsMultiPath(t *testing.T) {
+	d, err := Parse([]byte(`{"name":"x","steps":[
+      {"id":"in","type":"source","connector":"http","action":"get","onSuccess":"t"},
+      {"id":"t","type":"tee","branches":["a","b"]},
+      {"id":"a","type":"sink","connector":"@discard"},
+      {"id":"b","type":"sink","connector":"@discard"}]}`))
+	if err != nil {
+		t.Fatalf("valid v3 doc rejected at parse: %v", err)
+	}
+	_, err = Apply(d, stream.New(ndjson.NewReader(strings.NewReader(""), ndjson.ReaderOptions{}), "src"),
+		CompileOptions{Gov: mem.New(1 << 20), SpillDir: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "not yet executable") {
+		t.Fatalf("Apply(multi-path) error = %v, want 'not yet executable'", err)
+	}
+}
+
 // TestApplyNamesOpsByStepID: a v2 graph compiles its transform steps with
 // each operator labeled by its step id (the telemetry + OpError routing
 // key), and Apply lowers only the middle steps (endpoints bound by caller).

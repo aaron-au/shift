@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 )
 
@@ -49,12 +50,25 @@ func (d *Document) Connectors() []string {
 type Plan struct {
 	// Main is the happy path in order: Main[0] is the source, the last
 	// element is the terminal sink, and everything between is a transform.
+	// It is nil for a multi-path (v3) DAG document — Multi reports which.
 	Main []*Step
-	// Catch maps each main step id to the error handler that fires when
-	// that step errors — its own onFailure, or the nearest preceding main
-	// step's onFailure (try/catch scoping). A missing/nil entry means the
-	// failure is unhandled and the task fails as it does today.
+	// Catch maps each step id to the error handler that fires when that step
+	// errors. In the linear/v2 form this is its own onFailure or the nearest
+	// preceding main step's onFailure (try/catch scoping); in the v3 DAG form
+	// it is the node's own onFailure only (no positional inheritance across a
+	// graph). A missing/nil entry means the failure is unhandled.
 	Catch map[string]*Step
+
+	// DAG form (flow model v3, ADR-0029). Populated only when the document
+	// uses fan-out (tee/router) or fan-in (merge); Main is nil in that case.
+	// The hub validates through these fields (it never touches payload) and
+	// the multi-path engine compiles execution segments from them. Linear/v2
+	// documents leave these zero-valued and are executed via Main.
+	Multi   bool                // true ⇒ DAG form (Main is nil, Nodes/Data hold the graph)
+	Nodes   map[string]*Step    // every data node by id (onFailure handlers live in Catch)
+	Data    map[string][]string // happy data edges: node id → ordered successor ids
+	Sources []string            // ≥1 data roots (source / config-driven-source steps)
+	Sinks   []string            // ≥1 terminals (nodes with no data successor)
 }
 
 // HandlerFor returns the error handler for a failing main step id, or nil
@@ -110,6 +124,14 @@ func (d *Document) buildPlan() (*Plan, error) {
 		byID[s.ID] = s
 		if err := s.validate(); err != nil {
 			return nil, fmt.Errorf("flow: step %q: %w", s.ID, err)
+		}
+	}
+
+	// v3: any fan-out/fan-in node routes the whole document through the DAG
+	// planner (a superset of the linear/v2 walk below).
+	for i := range d.Steps {
+		if d.Steps[i].usesDAG() {
+			return d.buildDAGPlan(byID)
 		}
 	}
 
@@ -238,10 +260,24 @@ func (d *Document) GraphView() (*GraphView, error) {
 		return nil, err
 	}
 	onMain := map[string]bool{}
-	g := &GraphView{Start: plan.Main[0].ID}
-	for _, s := range plan.Main {
-		onMain[s.ID] = true
-		g.Main = append(g.Main, s.ID)
+	g := &GraphView{}
+	if plan.Multi {
+		// DAG form (v3): no single ordered happy path. Data nodes render as
+		// "main"; the layout roots are the sources (the builder positions
+		// nodes from Document.Layout anyway).
+		for id := range plan.Nodes {
+			onMain[id] = true
+		}
+		if len(plan.Sources) > 0 {
+			g.Start = plan.Sources[0]
+			g.Main = slices.Clone(plan.Sources)
+		}
+	} else {
+		g.Start = plan.Main[0].ID
+		for _, s := range plan.Main {
+			onMain[s.ID] = true
+			g.Main = append(g.Main, s.ID)
+		}
 	}
 
 	node := func(s *Step) GraphNode {
@@ -264,6 +300,21 @@ func (d *Document) GraphView() (*GraphView, error) {
 			}
 			if s.OnFailure != "" {
 				g.Edges = append(g.Edges, GraphEdge{s.ID, s.OnFailure, "failure"})
+			}
+			// v3 fan-out edges (ADR-0029): a tee/sugar node's branches and a
+			// router's routes+default carry the record stream, not an outcome.
+			switch s.Type {
+			case "router":
+				for _, r := range s.Routes {
+					g.Edges = append(g.Edges, GraphEdge{s.ID, r.To, "route"})
+				}
+				if s.Default != "" {
+					g.Edges = append(g.Edges, GraphEdge{s.ID, s.Default, "route"})
+				}
+			default:
+				for _, b := range s.Branches { // tee node or branches-sugar step
+					g.Edges = append(g.Edges, GraphEdge{s.ID, b, "branch"})
+				}
 			}
 		}
 		return g, nil
@@ -288,6 +339,8 @@ func (s *Step) validate() error {
 	switch {
 	case isReservedType(s.Type):
 		return fmt.Errorf("step type %q is not yet supported", s.Type)
+	case isStructuralType(s.Type):
+		return s.validateStructural()
 	case isConnectorType(s.Type):
 		if IsBuiltinConnector(s.Connector) {
 			// Built-ins need no action and are role-locked: @webhook is a source

@@ -85,7 +85,61 @@ type Step struct {
 	OnSuccess  string `json:"onSuccess,omitempty"`
 	OnComplete string `json:"onComplete,omitempty"`
 	OnFailure  string `json:"onFailure,omitempty"`
+
+	// Structural fan-out / fan-in fields (flow model v3, ADR-0029). Each is
+	// valid only on its matching node kind and is validated in dag.go; a
+	// document that uses any of them lowers to the DAG plan (Plan.Multi),
+	// not the linear/v2 Main chain.
+	//
+	//   tee    → Branches (≥2): every record to every branch.
+	//   router → Routes (ordered, first-match) + optional Default.
+	//   merge  → Inputs (≥2 upstream ids) + Mode (concat|join); join adds
+	//            On (the linked element), JoinType, Build, As.
+	//
+	// Branches may also ride a plain transform/source step as sugar for an
+	// implicit tee (send this stream to N places without a separate node).
+	Branches []string `json:"branches,omitempty"`
+	Routes   []Route  `json:"routes,omitempty"`
+	Default  string   `json:"default,omitempty"`
+	Inputs   []string `json:"inputs,omitempty"`
+	Mode     string   `json:"mode,omitempty"`
+	On       *JoinOn  `json:"on,omitempty"`
+	JoinType string   `json:"joinType,omitempty"`
+	Build    string   `json:"build,omitempty"`
+	As       string   `json:"as,omitempty"`
 }
+
+// Route is one ordered branch of a router node: a filter predicate (reusing
+// the linear filter grammar — Path/Cmp/Value) plus the step it sends the
+// first-matching records to. Records are evaluated against routes in order
+// and delivered to the first match only (a partition, not a broadcast).
+type Route struct {
+	Path  string          `json:"path"`
+	Cmp   string          `json:"op"`
+	Value json.RawMessage `json:"value,omitempty"`
+	To    string          `json:"to"`
+}
+
+// JoinOn names the linked element of a merge/join: the left (probe) and
+// right (build) record paths whose equality defines a match.
+type JoinOn struct {
+	Left  string `json:"left"`
+	Right string `json:"right"`
+}
+
+// Merge modes (ADR-0029). concat is a streaming, keyless union; join is a
+// keyed relational join on the linked element.
+const (
+	MergeConcat = "concat"
+	MergeJoin   = "join"
+)
+
+// Join types (ADR-0029). inner drops unmatched probe rows; left keeps them
+// with a null match under the As field.
+const (
+	JoinInner = "inner"
+	JoinLeft  = "left"
+)
 
 // Endpoint views a connector step (source|sink) as an Endpoint, so the
 // runner can bind it exactly like a linear-form endpoint.
@@ -148,6 +202,24 @@ func isTransformType(t string) bool {
 		return true
 	}
 	return false
+}
+
+// isStructuralType reports whether t is a v3 fan-out / fan-in node (ADR-0029).
+// These are not connectors and not record transforms; they route the stream.
+func isStructuralType(t string) bool {
+	switch t {
+	case "tee", "router", "merge":
+		return true
+	}
+	return false
+}
+
+// usesDAG reports whether the step engages the v3 multi-path model — either
+// it is a structural node, or it carries branch/route/input fan-out fields on
+// an ordinary step (the sugar forms). Any such step forces the whole document
+// through the DAG plan.
+func (s *Step) usesDAG() bool {
+	return isStructuralType(s.Type) || len(s.Branches) > 0 || len(s.Routes) > 0 || len(s.Inputs) > 0
 }
 
 func isReservedType(t string) bool {
@@ -290,24 +362,32 @@ func (d *Document) Validate() error {
 	return nil
 }
 
+// validatePredicate checks a filter-grammar predicate (path/op/value). It is
+// shared by the filter op and by router routes (ADR-0029) so both accept
+// exactly the same expression grammar.
+func validatePredicate(path, cmp string, value json.RawMessage) error {
+	if _, err := record.ParsePath(path); err != nil {
+		return err
+	}
+	switch cmp {
+	case "eq", "ne", "gt", "gte", "lt", "lte":
+		if len(value) == 0 {
+			return fmt.Errorf("filter %s needs a value", cmp)
+		}
+		if _, err := ScalarValue(value); err != nil {
+			return err
+		}
+	case "exists":
+	default:
+		return fmt.Errorf("unknown filter op %q", cmp)
+	}
+	return nil
+}
+
 func (o *Op) validate() error {
 	switch o.Type {
 	case "filter":
-		if _, err := record.ParsePath(o.Path); err != nil {
-			return err
-		}
-		switch o.Cmp {
-		case "eq", "ne", "gt", "gte", "lt", "lte":
-			if len(o.Value) == 0 {
-				return fmt.Errorf("filter %s needs a value", o.Cmp)
-			}
-			if _, err := ScalarValue(o.Value); err != nil {
-				return err
-			}
-		case "exists":
-		default:
-			return fmt.Errorf("unknown filter op %q", o.Cmp)
-		}
+		return validatePredicate(o.Path, o.Cmp, o.Value)
 	case "project":
 		if len(o.Fields) == 0 {
 			return errors.New("project needs fields")
