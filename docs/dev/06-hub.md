@@ -26,20 +26,22 @@ hub/
   cmd/hubd/            flags/env, migrate-at-boot, HTTP(S) serving, scheduler loop
   cmd/shift-bootstrap/ compose-bundle one-shot: certs+KEK ("certs"), seed ("seed")
   internal/store/      pgx pool + embedded migrations + all SQL
-    migrations/00{01..10}_*.sql  schema (v5 core + 0006 direct_executions,
+    migrations/00{01..11}_*.sql  schema (v5 core + 0006 direct_executions,
                                  0007 webhooks, 0008 connector descriptor,
-                                 0009 audit account, 0010 usage_events)
+                                 0009 audit account, 0010 usage_events,
+                                 0011 connections)
     runners.go         registration tokens, runner identity, secret auth
     users.go           OIDC users (JIT upsert by issuer+subject), roles
     flows.go           flow upsert, monotonic versions, publish workflow
     queue.go           enqueue/claim/heartbeat/complete/fail + reaping (enqueueTx shared with FireDue)
     schedules.go       cron schedules + FireDue (the exactly-once core)
     secrets.go         envelope blob CRUD (no crypto here)
+    connections.go     reusable connector config + published-flow usage lookup
     registry.go        publisher keys, content-addressed blobs, versions
     stats.go           dashboard overview counters
   internal/api/        HTTP handlers; admin(OIDC/break-glass) + runner realms
     auth.go            identity context, middlewares, /auth/* browser login
-    secrets.go registry.go schedules.go dashboard.go ui.html
+    secrets.go connections.go registry.go schedules.go dashboard.go ui.html
   internal/oidcauth/   go-oidc wrapper (Verify + code-flow Exchange) + oidctest fake IdP
   internal/kek/        KEK Provider interface + local key-file impl
   internal/secrets/    envelope service (DEK seal/open, KEK rotate)
@@ -54,7 +56,7 @@ Dependency direction: `hub → pkg/flowdoc + pkg/consign → engine/record`
 deps `go-oidc` (JWKS validation) and `robfig/cron` (parser only). The hub
 never imports `sdk`, `stream`, or anything that moves records.
 
-## Schema v5 (migrations/0001–0005)
+## Schema v6 (migrations/0001–0011)
 
 v1: `accounts` → `runner_registration_tokens` / `runners` (secrets stored
 as SHA-256 only) → `flows` + `flow_versions` → `tasks` → `task_attempts`
@@ -66,6 +68,10 @@ published version everywhere**. v4: `schedules` (cron, next_fire_at,
 last_* bookkeeping; UNIQUE(flow_id)). v5: `publisher_keys`,
 `connector_blobs` (content-addressed by SHA-256, deduped),
 `connectors`/`connector_versions` (Ed25519 signature + key ref, yankable).
+v6 adds, incrementally: `connector_versions.descriptor` (ADR-0018),
+`audit_log.account_id`, `direct_executions`, `webhooks`, `usage_events`,
+and `connections` (reusable connector config, ADR-0034 — references only,
+never a credential).
 
 Task states: `queued → leased → completed | failed` (requeue loops
 `leased → queued`). Partial indexes: the claim scan, idempotency
@@ -143,7 +149,8 @@ Proof: FireDue contention test (N schedules, 2 stores, exactly N tasks)
 
 `Store.Audit(actor, action, entity, detail)` appends an `audit_log` row;
 every human/admin **mutating** endpoint calls it (deploy/publish/execute,
-schedules, secrets + KEK rotate, webhooks, publisher keys, connector
+schedules, secrets + KEK rotate, connections, webhooks, publisher keys,
+connector
 publish, runner-token create, runner register). The `actor` comes from
 `actor(r)` — `user:<email>`, `admin:break-glass`, or `runner:<id>`.
 
@@ -174,6 +181,51 @@ with a sentinel). Every access = one `secret.access` audit row. KEK
 rotation: new file active + old in `SHIFT_HUB_KEK_FILES_OLD` → restart →
 `POST /api/v1/keys/rotate` (re-wraps DEKs only) → retire old file.
 Without a KEK configured the secrets endpoints don't exist.
+
+## Connections (ADR-0034)
+
+A **connection** is a named, account-scoped, reusable connector config, so
+a five-node SFTP flow carries the host and credential reference once
+instead of five times — and rotating that credential is one edit rather
+than one per node per flow.
+
+`PUT /api/v1/connections/{name} {"connector":…,"config":{…}}` (admin),
+plus `GET` (list/one) and `DELETE`. A node references one with
+`"connection":"prod-sftp"` alongside its own operation config
+(`flowdoc.Step.Connection` / `Endpoint.Connection`).
+
+The config is **metadata, not payload**: it carries `{"$secret":"name"}`
+references exactly as a flow document does, resolved runner-side, so the
+hub stores a reference and never a credential. PUT validates those
+references the same way a deploy does.
+
+Three checks run at **deploy** (`checkConnectionRefs`), all from documents
+the hub already holds — no descriptor is parsed, keeping ADR-0018's
+"hub never reads the schema" intact:
+
+1. every named connection exists (422, names listed);
+2. the node's `connector` matches the connection's (422) — merging a
+   `gen` node with an `sftp` connection would hand it fields it has no
+   place for;
+3. no node config key collides with one the connection supplies (422,
+   `flowdoc.MergeConnectionConfig`). A collision is an **error, not an
+   override**: last-write-wins is how one node ends up quietly pointing
+   at a different host than its siblings, and it surfaces as a network
+   fault rather than a config one. The comparison is top-level only, so a
+   nested override cannot slip past as a non-collision.
+
+`DELETE` **refuses with 409 `connection_in_use`** while any *published*
+flow references it, naming them (ADR-0034 open question 1). Unpublished
+drafts don't count — they can't be dispatched, so blocking on one would
+make the connection undeletable for as long as a stale draft sat in
+history.
+
+Runners fetch what their task references via `POST
+/api/v1/connections/resolve` (runner realm, documents only, unknown name
+= 404 rather than a silent omission that would merge an empty config).
+Connections are **not versioned** like flows: an edit takes effect
+everywhere with no publish step, which is the point for rotation and is
+ADR-0034 open question 3 if it ever bites.
 
 ## Connector registry (ADR-0011)
 
