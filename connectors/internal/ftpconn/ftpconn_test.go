@@ -451,9 +451,16 @@ func TestTLSConfig(t *testing.T) {
 	if tc.InsecureSkipVerify {
 		t.Fatal("cert verification must be on by default")
 	}
+	// allow_local decides which hosts are reachable, not whether their
+	// certificate is trusted. Every on-prem FTPS server needs allow_local, so
+	// conflating the two downgraded internal FTPS to MITM-able by default.
 	cl := &config{Host: "example.com", AllowLocal: true}
-	if !cl.tlsConfig().InsecureSkipVerify {
-		t.Fatal("allow_local should relax cert verification")
+	if cl.tlsConfig().InsecureSkipVerify {
+		t.Fatal("allow_local must not disable certificate verification")
+	}
+	ins := &config{Host: "example.com", InsecureTLS: true}
+	if !ins.tlsConfig().InsecureSkipVerify {
+		t.Fatal("insecure_tls should disable certificate verification")
 	}
 }
 

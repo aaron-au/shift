@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/textproto"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -74,7 +75,8 @@ const connProps = `
     "user": {"type": "string", "title": "Username", "description": "Defaults to 'anonymous' when empty"},
     "password": {"type": "string", "title": "Password", "x-shift-secret": true},
     "explicit_tls": {"type": "boolean", "title": "Explicit TLS (FTPS / AUTH TLS)", "description": "Encrypt the connection and verify the server certificate. On by default; plaintext credentials are refused unless allow_local.", "default": true},
-    "allow_local": {"type": "boolean", "title": "Allow local/loopback and private/internal targets (network guard off; also permits plaintext credentials and a self-signed/unverified certificate)", "default": false},
+    "allow_local": {"type": "boolean", "title": "Allow local/loopback and private/internal targets (network guard off; also permits plaintext credentials)", "default": false},
+    "insecure_tls": {"type": "boolean", "title": "Skip FTPS certificate verification (self-signed dev servers only)", "default": false},
     "timeout_seconds": {"type": "integer", "title": "Connect timeout (seconds)", "default": 30}`
 
 // Per-action schemas. get/put stream a file; list reads a directory; the op
@@ -122,6 +124,7 @@ type config struct {
 	Recursive      bool   `json:"recursive"`    // rmdir: remove non-empty trees
 	ExplicitTLS    *bool  `json:"explicit_tls"` // nil ⇒ default true (FTPS on)
 	AllowLocal     bool   `json:"allow_local"`
+	InsecureTLS    bool   `json:"insecure_tls"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
 }
 
@@ -187,12 +190,18 @@ func (c *config) requireDir() error {
 }
 
 // tlsConfig builds the FTPS client TLS config. The certificate is verified
-// against the configured host by default; allow_local relaxes verification for
-// dev/self-signed/loopback use.
+// against the configured host unless insecure_tls explicitly says otherwise.
+//
+// Verification is deliberately NOT tied to allow_local. Reaching any on-prem
+// FTPS server — the ordinary case for this connector — requires allow_local,
+// and conflating the two silently downgraded every internal FTPS connection to
+// MITM-able even when the certificate chain would have verified fine. The two
+// privileges are now separate: allow_local decides which hosts are reachable,
+// insecure_tls decides whether the certificate is trusted.
 func (c *config) tlsConfig() *tls.Config {
 	cfg := &tls.Config{ServerName: c.Host, MinVersion: tls.VersionTLS12}
-	if c.AllowLocal {
-		cfg.InsecureSkipVerify = true //nolint:gosec // G402: certificate verification relaxed only under explicit allow_local (dev/self-signed/loopback)
+	if c.InsecureTLS {
+		cfg.InsecureSkipVerify = true //nolint:gosec // G402: verification disabled only under the explicit insecure_tls opt-in (dev/self-signed)
 	}
 	return cfg
 }
@@ -277,17 +286,65 @@ func dialOr(d dialFunc) dialFunc {
 	return d
 }
 
+// guardedDialer supplies every connection the FTP client makes — the control
+// connection and each PASV data connection — through the SSRF network guard,
+// and wraps the DATA connections in TLS itself.
+//
+// It has to do the TLS wrap, which is the subtle part. jlaffaye/ftp's
+// openDataConn returns `c.options.dialFunc(...)` BEFORE it reaches its own
+// tls.Client branch, so installing a dial func (which the network guard
+// requires) silently disables data-channel TLS. The control channel is still
+// upgraded by the library's AUTH TLS, and PROT P is still sent, so the result
+// was either a broken transfer against a compliant server or — against a
+// lenient one — file contents and directory listings crossing the wire in
+// cleartext on a connection the author configured as FTPS.
+//
+// Control vs data is decided by order: the client dials the control connection
+// exactly once, during Dial, before any data connection exists. The control
+// conn is therefore left plaintext for the library to upgrade via AUTH TLS.
+//
+// The wrap mirrors the library's own data path: tls.Client with no explicit
+// handshake, letting the first Read or Write trigger it (jlaffaye/ftp#282 —
+// an eager handshake hangs with proftpd and pureftpd).
+type guardedDialer struct {
+	dialer  *net.Dialer
+	ctx     context.Context
+	tls     *tls.Config
+	mu      sync.Mutex
+	control bool // the control connection has been dialed
+}
+
+func (g *guardedDialer) dial(network, address string) (net.Conn, error) {
+	conn, err := g.dialer.DialContext(g.ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
+	g.mu.Lock()
+	isControl := !g.control
+	g.control = true
+	g.mu.Unlock()
+
+	if isControl || g.tls == nil {
+		return conn, nil
+	}
+	return tls.Client(conn, g.tls), nil
+}
+
 // realDial connects (network-guarded, FTPS by default with cert verification)
 // and logs in. The returned closer sends QUIT and tears the connection down.
 func realDial(ctx context.Context, c *config) (ftpConn, func() error, error) {
 	addr := net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
-	dialer := &net.Dialer{Timeout: c.timeout(), Control: guard(c.AllowLocal)}
+	gd := &guardedDialer{
+		dialer: &net.Dialer{Timeout: c.timeout(), Control: guard(c.AllowLocal)},
+		ctx:    ctx,
+	}
+	if c.explicitTLS() {
+		gd.tls = c.tlsConfig()
+	}
 	opts := []ftp.DialOption{
 		ftp.DialWithTimeout(c.timeout()),
 		ftp.DialWithContext(ctx),
-		ftp.DialWithDialFunc(func(network, address string) (net.Conn, error) {
-			return dialer.DialContext(ctx, network, address)
-		}),
+		ftp.DialWithDialFunc(gd.dial),
 	}
 	if c.explicitTLS() {
 		opts = append(opts, ftp.DialWithExplicitTLS(c.tlsConfig()))
