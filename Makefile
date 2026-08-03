@@ -17,6 +17,7 @@ build:
 	cd connectors && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-connector-gen ./cmd/shift-connector-gen
 	cd connectors && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-connector-http ./cmd/shift-connector-http
 	cd connectors && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-connector-sftp ./cmd/shift-connector-sftp
+	cd connectors && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-connector-fs ./cmd/shift-connector-fs
 	cd connectors && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-consign ./cmd/shift-consign
 	cd hub && go build -ldflags="$(LDFLAGS)" -o ../bin/shift-bootstrap ./cmd/shift-bootstrap
 
