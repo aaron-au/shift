@@ -5,6 +5,7 @@
 package flow
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -33,6 +34,10 @@ type (
 	CoerceRule = flowdoc.CoerceRule
 	// Agg is one aggregate output column.
 	Agg = flowdoc.Agg
+	// Route is one ordered branch of a v3 router node.
+	Route = flowdoc.Route
+	// JoinOn names a v3 merge/join's linked element (left/right paths).
+	JoinOn = flowdoc.JoinOn
 )
 
 // Parse decodes and validates a flow document.
@@ -60,6 +65,39 @@ func Apply(d *Document, p *stream.Pipeline, opts CompileOptions) (*stream.Pipeli
 		return nil, errors.New("flow: multi-path flows (fan-out/fan-in, ADR-0029) are not yet executable on this runner")
 	}
 	return applyTransforms(plan.Main, p, opts)
+}
+
+// ApplyOps folds a slice of transform steps onto p, stamping each operator
+// with its step id (telemetry + OpError routing key). Unlike Apply, the steps
+// are exactly the operators to apply — no source/sink endpoints — so the
+// multi-path compiler can build the linear segments of a v3 DAG (ADR-0029).
+func ApplyOps(steps []*flowdoc.Step, p *stream.Pipeline, opts CompileOptions) (*stream.Pipeline, error) {
+	for _, s := range steps {
+		np, err := applyOp(&s.Op, p, opts)
+		if err != nil {
+			return nil, fmt.Errorf("flow: step %q: %w", s.ID, err)
+		}
+		p = np.RenameLastOp(s.ID)
+	}
+	return p, nil
+}
+
+// ApplyOpsFold is ApplyOps for callers that cannot return a build error (a
+// fan-out branch builder, whose signature yields only a *Pipeline): any error
+// is folded into the pipeline and surfaced at Run.
+func ApplyOpsFold(steps []*flowdoc.Step, p *stream.Pipeline, opts CompileOptions) *stream.Pipeline {
+	out, err := ApplyOps(steps, p, opts)
+	if err != nil {
+		return p.Fail(err)
+	}
+	return out
+}
+
+// CompilePredicate compiles a filter-grammar predicate (path/op/value) into a
+// record test — used to compile router route predicates (ADR-0029). The path
+// and value were already validated by flowdoc.
+func CompilePredicate(path, cmp string, value json.RawMessage) (func(record.Value) bool, error) {
+	return compileFilter(&Op{Path: path, Cmp: cmp, Value: value})
 }
 
 // applyTransforms folds the middle (non-endpoint) steps of a plan onto p.
