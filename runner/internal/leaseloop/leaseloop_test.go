@@ -35,6 +35,10 @@ type leaseHub struct {
 	secretsStatus   int // default 200
 	secrets         map[string]string
 
+	// failStatusFirst limits failStatus to the first N fail calls (later ones
+	// answer 200), so a test can exercise the report RETRY path.
+	failStatusFirst int
+
 	leaseCalls int
 	heartbeats int
 	completes  []hubclient.Result
@@ -79,6 +83,9 @@ func newLeaseHub(t *testing.T) (*leaseHub, *hubclient.Client) {
 		h.mu.Lock()
 		h.fails = append(h.fails, body.Error)
 		st := h.failStatus
+		if h.failStatusFirst > 0 && len(h.fails) > h.failStatusFirst {
+			st = 0 // the transient failure has passed
+		}
 		h.mu.Unlock()
 		w.WriteHeader(orDefault(st, http.StatusOK))
 	})
