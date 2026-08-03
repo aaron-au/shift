@@ -33,6 +33,8 @@ RUN go build -ldflags "-X github.com/aaron-au/shift/pkg/buildinfo.Version=${VERS
 
 FROM gcr.io/distroless/static-debian12:nonroot AS hubd
 COPY --from=build /out/hubd /usr/local/bin/hubd
+# Third-party attribution must accompany the distribution (Apache-2.0 s4(d)).
+COPY LICENSE NOTICE /usr/local/share/shift/
 ENTRYPOINT ["/usr/local/bin/hubd"]
 
 # runnerd needs a writable connector cache + scratch; distroless static,
@@ -40,6 +42,7 @@ ENTRYPOINT ["/usr/local/bin/hubd"]
 # so the named volume inherits that ownership on first mount.
 FROM gcr.io/distroless/static-debian12:nonroot AS runnerd
 COPY --from=build /out/runnerd /usr/local/bin/runnerd
+COPY LICENSE NOTICE /usr/local/share/shift/
 COPY --from=build --chown=nonroot:nonroot /out/empty /var/lib/shift
 VOLUME ["/var/lib/shift"]
 ENTRYPOINT ["/usr/local/bin/runnerd"]
@@ -51,7 +54,10 @@ ENTRYPOINT ["/usr/local/bin/runnerd"]
 FROM alpine:3.22 AS tools
 COPY --from=build /out/shift-bootstrap /out/shift-consign \
      /out/shift-connector-gen /out/shift-connector-http /out/shift-connector-sftp \
-     /out/shift-connector-fs /out/shift-connector-soap /out/shift-connector-smtp /out/shift-connector-db /out/shift-connector-s3 /out/shift-connector-azureblob /out/shift-connector-amqp /out/shift-connector-ftp /out/shift-connector-redis /usr/local/bin/
+     /out/shift-connector-fs /out/shift-connector-soap /out/shift-connector-smtp \
+     /out/shift-connector-db /out/shift-connector-s3 /out/shift-connector-azureblob \
+     /out/shift-connector-amqp /out/shift-connector-ftp /out/shift-connector-redis /usr/local/bin/
+COPY LICENSE NOTICE /usr/local/share/shift/
 RUN mkdir -p /bootstrap && chown 65532:65532 /bootstrap
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/shift-bootstrap"]

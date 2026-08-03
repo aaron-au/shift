@@ -33,3 +33,5 @@ _archive/**/*.so
 
 # operational e2e evidence captures
 evidence/
+# Agent worktrees (transient, created by tooling).
+.claude/worktrees/
