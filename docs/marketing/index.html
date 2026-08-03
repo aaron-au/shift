@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>SHIFT — the integration platform that doesn't need a bigger server</title>
+<style>
+  /* ── Tokens ───────────────────────────────────────────────────────────
+     Committed single light theme. Neutrals carry a slight teal bias so they
+     read as chosen rather than inherited mid-grey. Burnt orange is semantic
+     only — it marks the buffered baseline in data — never an accent. */
+  :root {
+    --ground:      #F7F9FA;
+    --surface:     #FFFFFF;
+    --surface-alt: #F0F4F5;
+    --ink:         #0B1417;
+    --ink-2:       #45575B;
+    --ink-3:       #7A8C90;
+    --rule:        #DBE4E6;
+    --rule-strong: #B9C7CA;
+    --accent:      #067A87;
+    --accent-deep: #044E58;
+    --data:        #0E9AA7;
+    --baseline:    #C2410C;
+
+    --mono: ui-monospace, "SF Mono", "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+    --measure: 64ch;
+    --gutter: clamp(1.25rem, 4vw, 4rem);
+    --max: 1180px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: var(--max); margin-inline: auto; padding-inline: var(--gutter); }
+
+  section { border-top: 1px solid var(--rule); }
+  section > .wrap { padding-block: clamp(3.5rem, 7vw, 6rem); }
+
+  /* ── Type ───────────────────────────────────────────────────────────── */
+  h1, h2, h3, .num, .label, .tag, code { font-family: var(--mono); }
+
+  h1 {
+    font-size: clamp(2rem, 5vw, 3.6rem);
+    line-height: 1.05;
+    letter-spacing: -0.035em;
+    font-weight: 600;
+    margin: 0 0 1.1rem;
+    text-wrap: balance;
+  }
+  h2 {
+    font-size: clamp(1.4rem, 2.6vw, 1.95rem);
+    line-height: 1.15;
+    letter-spacing: -0.025em;
+    font-weight: 600;
+    margin: 0 0 0.7rem;
+    text-wrap: balance;
+  }
+  h3 { font-size: 0.99rem; letter-spacing: -0.01em; font-weight: 600; margin: 0 0 0.35rem; }
+  p { margin: 0 0 1rem; max-width: var(--measure); }
+  .lede { font-size: 1.1rem; color: var(--ink-2); max-width: 58ch; }
+
+  .label {
+    display: block;
+    font-size: 0.685rem; font-weight: 600;
+    letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--ink-3); margin-bottom: 1.4rem;
+  }
+
+  .num { font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+
+  /* ── Masthead ───────────────────────────────────────────────────────── */
+  header { border-bottom: 1px solid var(--rule); background: var(--surface); }
+  header .wrap {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 1.5rem; padding-block: 1.05rem;
+  }
+  .brand {
+    font-family: var(--mono); font-weight: 700; font-size: 1.06rem;
+    letter-spacing: 0.24em; color: var(--ink); text-decoration: none;
+  }
+  .brand span { color: var(--accent); }
+  nav { display: flex; gap: 1.6rem; font-size: 0.87rem; }
+  nav a { color: var(--ink-2); text-decoration: none; }
+  nav a:hover { color: var(--accent); }
+  @media (max-width: 780px) { nav { display: none; } }
+
+  /* ── Hero ───────────────────────────────────────────────────────────── */
+  .hero { background: var(--surface); border-top: 0; }
+  .hero > .wrap { padding-block: clamp(3rem, 7vw, 5.5rem); }
+  .hero-head { max-width: 62ch; }
+
+  /* The comparison IS the hero. One task, stated once; two platforms
+     measured against it; bars at true proportion so the ratio is seen
+     rather than calculated. */
+  .compare {
+    margin-top: clamp(2.2rem, 4vw, 3.2rem);
+    border: 1px solid var(--rule-strong);
+    background: var(--ground);
+  }
+  .compare-task {
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--rule);
+    font-family: var(--mono); font-size: 0.8rem; color: var(--ink-2);
+    display: flex; flex-wrap: wrap; gap: 0.4rem 1.4rem; align-items: baseline;
+  }
+  .compare-task strong { color: var(--ink); font-weight: 600; }
+  .compare-body { padding: 1.6rem 1.5rem 1.75rem; }
+
+  .row { display: grid; gap: 0.45rem; }
+  .row + .row { margin-top: 1.5rem; }
+  .row-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 1rem; font-family: var(--mono); font-size: 0.78rem;
+  }
+  .row-who { color: var(--ink-2); }
+  .row-who b { color: var(--ink); font-weight: 600; }
+  .row-fig { font-weight: 600; font-variant-numeric: tabular-nums; font-size: 1.5rem; letter-spacing: -0.03em; }
+  .row-fig.us   { color: var(--accent-deep); }
+  .row-fig.them { color: var(--baseline); }
+  .track { background: var(--surface-alt); height: 14px; border: 1px solid var(--rule); }
+  .fill { height: 100%; transform-origin: left center; animation: grow .85s cubic-bezier(.2,.75,.3,1) both; }
+  .fill.us   { background: var(--data); min-width: 3px; }
+  .fill.them { background: var(--baseline); opacity: .85; }
+  @keyframes grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+  @media (prefers-reduced-motion: reduce) { .fill { animation: none; } }
+
+  .verdict {
+    margin-top: 1.6rem; padding-top: 1.1rem; border-top: 1px solid var(--rule);
+    font-family: var(--mono); font-size: 0.82rem; color: var(--ink-2);
+  }
+  .verdict b { color: var(--ink); font-weight: 600; }
+
+  .cta-row { display: flex; flex-wrap: wrap; gap: 0.7rem; margin-top: 1.9rem; }
+  .btn {
+    font-family: var(--mono); font-size: 0.85rem; font-weight: 600;
+    letter-spacing: 0.02em; padding: 0.72rem 1.35rem;
+    text-decoration: none; border: 1px solid transparent; display: inline-block;
+    transition: background-color .15s ease, color .15s ease, border-color .15s ease;
+  }
+  .btn-primary { background: var(--accent-deep); color: #fff; }
+  .btn-primary:hover { background: var(--ink); }
+  .btn-ghost { border-color: var(--rule-strong); color: var(--ink); background: var(--surface); }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+  .fineprint { font-family: var(--mono); font-size: 0.74rem; color: var(--ink-3); margin-top: 0.9rem; }
+
+  /* ── Supporting figures ─────────────────────────────────────────────── */
+  .figs {
+    display: grid; gap: 1px; background: var(--rule);
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    border: 1px solid var(--rule); margin-top: 2.4rem;
+  }
+  .fig { background: var(--surface); padding: 1.2rem 1.3rem; }
+  .fig-n {
+    font-family: var(--mono); font-size: 1.65rem; font-weight: 600;
+    letter-spacing: -0.035em; color: var(--accent-deep); font-variant-numeric: tabular-nums;
+  }
+  .fig-l { font-size: 0.83rem; color: var(--ink-2); margin-top: 0.3rem; }
+
+  /* ── Generic grids ──────────────────────────────────────────────────── */
+  .cols-2 { display: grid; gap: clamp(2rem, 4vw, 3.5rem); grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); }
+  .cols-3 { display: grid; gap: 1.6rem 2.2rem; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); margin-top: 2.2rem; }
+  .feature { border-top: 2px solid var(--ink); padding-top: 0.85rem; }
+  .feature p { font-size: 0.92rem; color: var(--ink-2); margin: 0; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1.8rem; }
+  .tag {
+    font-size: 0.79rem; padding: 0.32rem 0.7rem; background: var(--surface);
+    border: 1px solid var(--rule-strong); color: var(--ink-2);
+  }
+  .tag.soon { border-style: dashed; color: var(--ink-3); }
+
+  .scroll-x { overflow-x: auto; margin-top: 2rem; }
+  table { border-collapse: collapse; width: 100%; min-width: 600px; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.72rem 1rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  thead th {
+    font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.13em;
+    text-transform: uppercase; color: var(--ink-3); font-weight: 600;
+    border-bottom: 1px solid var(--rule-strong);
+  }
+  tbody th { font-weight: 500; color: var(--ink-2); }
+  td.num-cell { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  caption { caption-side: top; }
+
+  /* ── Pricing ────────────────────────────────────────────────────────── */
+  .plans { display: grid; gap: 1.4rem; grid-template-columns: repeat(auto-fit, minmax(258px, 1fr)); margin-top: 2.4rem; }
+  .plan {
+    background: var(--surface); border: 1px solid var(--rule-strong);
+    padding: 1.7rem 1.5rem; display: flex; flex-direction: column; gap: 0.9rem;
+  }
+  .plan.featured { border-color: var(--accent-deep); border-width: 2px; }
+  .plan-name { font-family: var(--mono); font-size: 0.75rem; letter-spacing: 0.15em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+  .plan-price { font-family: var(--mono); font-size: 2.15rem; font-weight: 600; letter-spacing: -0.035em; line-height: 1; font-variant-numeric: tabular-nums; }
+  .plan-price small { font-size: 0.4em; font-weight: 500; letter-spacing: 0; color: var(--ink-3); display: block; margin-top: 0.5rem; line-height: 1.5; }
+  .plan ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; font-size: 0.88rem; color: var(--ink-2); flex: 1; }
+  .plan li { padding-left: 1.15rem; position: relative; }
+  .plan li::before { content: "—"; position: absolute; left: 0; color: var(--rule-strong); }
+  .plan li strong { color: var(--ink); font-weight: 600; }
+  .plan .btn { text-align: center; }
+
+  .note {
+    margin-top: 2rem; padding: 1.1rem 1.3rem; background: var(--surface-alt);
+    border-left: 3px solid var(--accent); font-size: 0.9rem; color: var(--ink-2);
+    max-width: var(--measure);
+  }
+  .note strong { color: var(--ink); }
+  code { font-size: 0.9em; background: var(--surface); padding: 0.1em 0.35em; border: 1px solid var(--rule); }
+
+  /* ── Closing CTA + footer ───────────────────────────────────────────── */
+  .close { background: var(--ink); color: var(--ground); border-top: 0; }
+  .close h2 { color: #fff; }
+  .close .lede { color: #A9BABE; }
+  .close .btn-ghost { background: transparent; border-color: #3A4B4F; color: #fff; }
+  .close .btn-ghost:hover { border-color: var(--data); color: var(--data); }
+  .close .btn-primary { background: var(--data); color: #04252A; }
+  .close .btn-primary:hover { background: #fff; color: var(--ink); }
+
+  footer { background: var(--ink); border-top: 1px solid #223236; }
+  footer .wrap {
+    padding-block: 1.6rem; display: flex; flex-wrap: wrap; gap: 1rem;
+    justify-content: space-between; font-family: var(--mono);
+    font-size: 0.74rem; color: #7C8F93;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a class="brand" href="#top">SHI<span>F</span>T</a>
+    <nav>
+      <a href="#speed">Performance</a>
+      <a href="#platform">Platform</a>
+      <a href="#migrate">Migration</a>
+      <a href="#pricing">Pricing</a>
+    </nav>
+    <a class="btn btn-ghost" href="#pricing">Start free</a>
+  </div>
+</header>
+
+<section class="hero" id="top">
+  <div class="wrap">
+    <div class="hero-head">
+      <span class="label">Integration platform · self-hosted or managed</span>
+      <h1>Same integration. Same data. One eightieth of the memory.</h1>
+      <p class="lede">
+        SHIFT streams records through a pipeline instead of loading documents
+        into memory. That one architectural difference is why it runs on
+        hardware you already have, rather than on the instance size a licence
+        tier tells you to buy.
+      </p>
+    </div>
+
+    <div class="compare">
+      <div class="compare-task">
+        <span><strong>The task:</strong> 256 MiB of JSON</span>
+        <span>parse &rarr; flatten &rarr; filter &rarr; project &rarr; write</span>
+        <span>identical output, both platforms</span>
+      </div>
+      <div class="compare-body">
+        <div class="row">
+          <div class="row-head">
+            <span class="row-who">A platform that buffers whole documents</span>
+            <span class="row-fig them num">1.83 GiB</span>
+          </div>
+          <div class="track"><div class="fill them" style="width:100%; animation-delay:.05s"></div></div>
+        </div>
+        <div class="row">
+          <div class="row-head">
+            <span class="row-who"><b>SHIFT</b> — streaming</span>
+            <span class="row-fig us num">22.9 MiB</span>
+          </div>
+          <div class="track"><div class="fill us" style="width:1.22%; animation-delay:.3s"></div></div>
+        </div>
+        <p class="verdict">
+          Peak memory, measured on the same machine. SHIFT also finished it in
+          <b>half the wall-clock time</b> — because the work it isn't doing is
+          allocating, copying and garbage-collecting a document it never needed
+          to hold.
+        </p>
+      </div>
+    </div>
+
+    <div class="cta-row">
+      <a class="btn btn-primary" href="#pricing">Run it free — 4 cores</a>
+      <a class="btn btn-ghost" href="#migrate">See what your migration costs</a>
+    </div>
+    <p class="fineprint">Self-hosted. No credit card. No sales call to get started.</p>
+
+    <div class="figs">
+      <div class="fig">
+        <div class="fig-n num">24.3 MiB</div>
+        <div class="fig-l">Peak memory transforming a full <strong>1 GiB</strong> stream</div>
+      </div>
+      <div class="fig">
+        <div class="fig-n num">294k/s</div>
+        <div class="fig-l">Records per second, single stream</div>
+      </div>
+      <div class="fig">
+        <div class="fig-n num">74 B</div>
+        <div class="fig-l">Allocated per record — against 1,743 B buffered</div>
+      </div>
+      <div class="fig">
+        <div class="fig-n num">0</div>
+        <div class="fig-l">Allocations per record at steady state</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="speed">
+  <div class="wrap">
+    <span class="label">Why it's different — measured, not claimed</span>
+    <div class="cols-2">
+      <div>
+        <h2>Written in Go, so concurrency is the default rather than the upgrade.</h2>
+        <p>
+          Platforms built on the JVM pay real money for every thread. That cost
+          leaks into the product design: branches execute one after another,
+          parallelism becomes a licensed tier, and the answer to more volume is
+          a larger instance.
+        </p>
+        <p>
+          Goroutines cost almost nothing, so SHIFT runs branches concurrently
+          because there was never a reason not to. It's the same reason a worker
+          fits in tens of megabytes instead of gigabytes — and the two facts have
+          the same cause.
+        </p>
+      </div>
+      <div>
+        <div class="scroll-x" style="margin-top:0">
+          <table>
+            <caption class="label" style="text-align:left;margin-bottom:.9rem">Streaming vs buffered — same pipeline, same input</caption>
+            <thead>
+              <tr><th>Measure</th><th>SHIFT</th><th>Buffered</th><th>Ratio</th></tr>
+            </thead>
+            <tbody>
+              <tr><th>Peak memory</th><td class="num-cell">22.9 MiB</td><td class="num-cell">1.83 GiB</td><td class="num-cell"><strong>80&times;</strong></td></tr>
+              <tr><th>Per record</th><td class="num-cell">74 B</td><td class="num-cell">1,743 B</td><td class="num-cell"><strong>24&times;</strong></td></tr>
+              <tr><th>Wall clock</th><td class="num-cell">2.55 s</td><td class="num-cell">5.10 s</td><td class="num-cell"><strong>2&times;</strong></td></tr>
+              <tr><th>Connector overhead</th><td class="num-cell" colspan="2">1.32&times; vs in-process</td><td class="num-cell">—</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="note">
+      <strong>These are our own numbers, and we ship the harness that produced them.</strong>
+      Every figure comes from <code>shift-bench</code>, which runs in our CI on every
+      commit with the memory ceilings as hard build gates — a change that regresses
+      them doesn't merge. Run it against your own data before you believe us.
+    </div>
+  </div>
+</section>
+
+<section id="platform">
+  <div class="wrap">
+    <span class="label">The platform</span>
+    <h2>Everything an integration team actually needs, and nothing metered.</h2>
+
+    <div class="cols-3">
+      <div class="feature">
+        <h3>Visual flow builder</h3>
+        <p>Drag connectors onto a canvas, branch on data, merge streams back together. Every flow is a plain JSON document underneath — diff it, review it, keep it in Git.</p>
+      </div>
+      <div class="feature">
+        <h3>Concurrent branching</h3>
+        <p>Fan a stream out to several destinations at once, or route records by their content. Branches genuinely run in parallel, not one after another.</p>
+      </div>
+      <div class="feature">
+        <h3>Streaming transformations</h3>
+        <p>Map to a target shape, filter, aggregate, join two sources on a key. Large groupings spill to a single scratch file rather than exhausting memory.</p>
+      </div>
+      <div class="feature">
+        <h3>Triggers that fit the job</h3>
+        <p>Schedules that fire exactly once across replicas, inbound webhooks, or a synchronous call that returns the result in the same response.</p>
+      </div>
+      <div class="feature">
+        <h3>Secrets that stay secret</h3>
+        <p>Envelope-encrypted with a key per secret. Values resolve on the worker at run time — never in the queue, the control plane, or a log line.</p>
+      </div>
+      <div class="feature">
+        <h3>Signed connectors</h3>
+        <p>Every connector is signed by its publisher and verified before it runs. Workers refuse anything that fails, with no override.</p>
+      </div>
+      <div class="feature">
+        <h3>Single sign-on</h3>
+        <p>Any OIDC provider — Entra, Okta, Google, Keycloak. No per-vendor integration and no lock-in to ours.</p>
+      </div>
+      <div class="feature">
+        <h3>Audit and metrics</h3>
+        <p>Every administrative action recorded and exportable. Prometheus metrics from both planes, with per-step timings from the engine itself.</p>
+      </div>
+      <div class="feature">
+        <h3>Workers where you need them</h3>
+        <p>Put workers in your datacentre, your VPC, or both. The control plane never sees your payload data — only metadata about the run.</p>
+      </div>
+    </div>
+
+    <div style="margin-top:2.8rem">
+      <span class="label">Connectors included — every plan, no per-connector fee</span>
+      <div class="chips">
+        <span class="tag">HTTP / REST</span>
+        <span class="tag">PostgreSQL</span>
+        <span class="tag">SFTP</span>
+        <span class="tag">FTP / FTPS</span>
+        <span class="tag">Amazon S3</span>
+        <span class="tag">Azure Blob</span>
+        <span class="tag">RabbitMQ</span>
+        <span class="tag">Redis</span>
+        <span class="tag">SMTP</span>
+        <span class="tag">SOAP</span>
+        <span class="tag">Filesystem</span>
+        <span class="tag">XML</span>
+        <span class="tag">CSV</span>
+        <span class="tag">NDJSON</span>
+        <span class="tag soon">Salesforce — soon</span>
+        <span class="tag soon">ServiceNow — soon</span>
+        <span class="tag soon">Dynamics — soon</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="migrate">
+  <div class="wrap">
+    <span class="label">Migration</span>
+    <div class="cols-2">
+      <div>
+        <h2>We'll tell you what won't move before you commit.</h2>
+        <p>
+          Point our analyzer at an export of your existing processes and it
+          reports, one process at a time, what translates cleanly, what behaves
+          differently, and what has to be rebuilt by hand. It reads files you
+          exported yourself — no credentials, no network, nothing leaves your
+          machine.
+        </p>
+        <p>
+          An estimate that only quotes the good number isn't an estimate. Ours
+          names every gap, including the features we haven't finished yet.
+        </p>
+        <a class="btn btn-primary" href="#pricing" style="margin-top:.5rem">Analyze an export</a>
+      </div>
+      <div class="scroll-x">
+        <table>
+          <caption class="label" style="text-align:left;margin-bottom:.9rem">Sample assessment — 29 processes, 429 steps</caption>
+          <thead>
+            <tr><th>Step type</th><th>Uses</th><th>Verdict</th></tr>
+          </thead>
+          <tbody>
+            <tr><th>Connector call</th><td class="num-cell">15</td><td>Translates</td></tr>
+            <tr><th>Decision</th><td class="num-cell">29</td><td>Translates</td></tr>
+            <tr><th>Map</th><td class="num-cell">17</td><td>Translates</td></tr>
+            <tr><th>Return documents</th><td class="num-cell">44</td><td>Translates</td></tr>
+            <tr><th>Branch</th><td class="num-cell">18</td><td style="color:var(--baseline)">Becomes concurrent — review</td></tr>
+            <tr><th>Try / catch</th><td class="num-cell">18</td><td style="color:var(--baseline)">Review handlers</td></tr>
+            <tr><th>Set properties</th><td class="num-cell">32</td><td>Needs flow variables</td></tr>
+            <tr><th>Custom script</th><td class="num-cell">13</td><td>Rebuild by hand</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="pricing">
+  <div class="wrap">
+    <span class="label">Pricing — per core, not per connector or per record</span>
+    <h2>Pay for the compute you run. Nothing else.</h2>
+    <p class="lede">
+      No charge per connector, per integration, or per record processed. You buy
+      a pool of cores; how you split them across workers is your business.
+    </p>
+
+    <div class="plans">
+      <div class="plan">
+        <span class="plan-name">Community</span>
+        <div class="plan-price">$0<small>4 cores · forever</small></div>
+        <ul>
+          <li>Every connector, every feature</li>
+          <li>Self-hosted, including <strong>air-gapped</strong></li>
+          <li>Unlimited integrations and records</li>
+          <li>Community support</li>
+        </ul>
+        <a class="btn btn-ghost" href="#top">Download</a>
+      </div>
+
+      <div class="plan featured">
+        <span class="plan-name">Professional</span>
+        <div class="plan-price">$99<small>per core / month · 4 core minimum</small></div>
+        <ul>
+          <li>Everything in Community</li>
+          <li><strong>Business-hours support</strong>, 4-hour response</li>
+          <li>Migration analyzer and import tooling</li>
+          <li>Guided upgrades</li>
+          <li>Add cores whenever you need them</li>
+        </ul>
+        <a class="btn btn-primary" href="#top">Start 30-day trial</a>
+      </div>
+
+      <div class="plan">
+        <span class="plan-name">Enterprise</span>
+        <div class="plan-price">Custom<small>volume pricing above 32 cores</small></div>
+        <ul>
+          <li>Everything in Professional</li>
+          <li><strong>24/7 support</strong> with a contractual SLA</li>
+          <li>Named engineer and migration assistance</li>
+          <li>Offline licensing for disconnected sites</li>
+          <li>Security review and architecture support</li>
+        </ul>
+        <a class="btn btn-ghost" href="#top">Talk to us</a>
+      </div>
+    </div>
+
+    <div class="note">
+      <strong>A core is a core, not a marketing unit.</strong> It's one unit of
+      runtime parallelism — the same thing your workers actually consume. Waiting
+      on an API or a database doesn't burn one, so integrations that spend their
+      time on the network cost very little. Support contracts are how we make our
+      money; the software isn't crippled to sell them.
+    </div>
+  </div>
+</section>
+
+<section class="close">
+  <div class="wrap">
+    <h2>Start on four cores. Move up when it earns it.</h2>
+    <p class="lede">
+      The free tier is the whole product, not a demo — same engine, same
+      connectors, same self-hosting, same air-gap support. Run it against your
+      real data and decide from there.
+    </p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="#top">Download SHIFT</a>
+      <a class="btn btn-ghost" href="#top">Read the docs</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>SHIFT — integration platform</span>
+    <span>Internal mock · illustrative pricing, not final</span>
+  </div>
+</footer>
+
+</body>
+</html>
