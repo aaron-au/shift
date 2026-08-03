@@ -32,12 +32,23 @@ internal/connstore     M4b (ADR-0011): fetch signed connector artifacts from the
 
 ## M4b: secrets and signed connectors
 
-- **Secrets**: documents arrive from the hub carrying inert
-  `{"$secret":"name"}` refs. The leaseloop resolves them per task via
-  the runner-realm `POST /api/v1/secrets/resolve` (no cache — revocation
-  is immediate, the runner stays stateless) and substitutes into a copy
-  of the document. Resolution failures fail the task with **names only**;
-  values never appear in logs or reports (e2e: `TestSecretsNeverAtRest`).
+- **Secrets**: documents arrive carrying inert `{"$secret":"name"}` refs.
+  `internal/secretref` resolves them per task via the runner-realm
+  `POST /api/v1/secrets/resolve` (no cache — revocation is immediate, the
+  runner stays stateless) and substitutes into a copy of the document.
+  Resolution failures fail the task with **names only**; values never
+  appear in logs or reports (e2e: `TestSecretsNeverAtRest`).
+  One round trip per task, not per secret — every ref goes in one
+  batched call.
+  Resolution runs on **all four execution paths**: the hub-queued lease
+  loop and the three runner-direct ones (`POST /hooks/{name}`,
+  `/api/flows/execute`, `/api/flows/run`). It lived only in the leaseloop
+  until 2026-08-03, so runner-direct triggers shipped the literal
+  reference object to the connector — a webhook flow using a credential
+  simply did not work. A runner with no hub attached fails such a
+  document with `ErrNoResolver` rather than passing the ref through,
+  because the alternative error describes a bad password instead of a
+  missing hub.
 - **Signed connectors**: with `-hub` set, `connstore.Ensure` becomes the
   pool's locator. Order: operator `-connector-dir` first (local trust,
   unchanged dev workflow), registry second. `SHIFT_REQUIRE_SIGNED=1`
@@ -174,6 +185,53 @@ any runner with no external target — the honest basis for incumbent
 comparison (M6 collateral). An http-sink "extreme" profile is deferred: a
 live endpoint under load would couple the figures to an unrelated network
 target.
+
+## Trigger-path throughput (`internal/api`, Go benchmarks)
+
+The capacity benchmark above measures **records/sec** through one flow.
+What it does not answer is **invocations/sec** through the public HTTP
+surface — the number webhook and request-reply workloads live on, and the
+one any "N tps" claim rests on. `throughput_bench_test.go` measures it end
+to end over a real `httptest` server and a real connector subprocess:
+
+```
+GOMAXPROCS=4 go test ./internal/api/ -run '^$' -bench Throughput -benchmem
+```
+
+Indicative (Apple M4 Max, `GOMAXPROCS=4`, one record per invocation, so
+this is per-invocation OVERHEAD rather than engine work):
+
+| Benchmark | tps @ 4 cores | Path |
+|---|---|---|
+| `SyncRunThroughput` | ~4,300 | `POST /api/flows/run` — caller waits for the output |
+| `WebhookThroughput` | ~7,500 | `POST /hooks/{name}` — 202 then async, timed to completion |
+| `SyncRunReportOverhead` | ~4,270 | as sync, with a 5 ms stand-in hub reporter |
+
+A fast laptop core is not a cloud vCPU — treat the ratios as the durable
+part and re-measure on target hardware before quoting a figure.
+
+`SyncRunReportOverhead` tracking `SyncRunThroughput` is the regression
+guard for ADR-0035 §3: the hub execution report must stay **off** the
+response path. Reported inline it would pin the sync path near
+`in-flight ÷ hub-latency` instead.
+
+Two traps the file documents, because both produced badly wrong numbers
+before they were found:
+
+- **Cold start.** The first connector subprocess launch costs ~1s, so
+  without a warm-up the sync benchmarks settle at `b.N=1` and report ~1
+  tps — the process launch, not the path.
+- **Measuring the instrument.** The async path must be closed-loop
+  (bounded in flight) or `b.N` just measures how fast a queue fills. And
+  completion must be read from the service's lifetime totals, not the
+  execution-report callback: `reportWhenDone` polls at 200 ms, so gating
+  on it capped the result at `in-flight ÷ 200 ms` — 140 tps for a path
+  that actually does ~7,500.
+
+That 200 ms poll is real overhead in production too, not just in the
+benchmark: every direct execution holds a goroutine waking five times a
+second until its task finishes. Replacing it with a completion
+notification is an open improvement.
 
 ## Test-mode data capture (M5c, ADR-0014)
 
