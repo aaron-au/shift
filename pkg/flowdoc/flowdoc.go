@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strings"
 
 	"github.com/aaron-au/shift/engine/record"
 )
@@ -198,7 +199,7 @@ func isConnectorType(t string) bool { return t == "source" || t == "sink" }
 
 func isTransformType(t string) bool {
 	switch t {
-	case "filter", "project", "coerce", "flatten", "aggregate":
+	case "filter", "project", "coerce", "flatten", "aggregate", "map":
 		return true
 	}
 	return false
@@ -258,6 +259,35 @@ type Op struct {
 	// aggregate
 	Key  string `json:"key,omitempty"`
 	Aggs []Agg  `json:"aggs,omitempty"`
+
+	// map (declarative mapper, ADR-0027)
+	Maps []MapField `json:"maps,omitempty"`
+}
+
+// MapField is one output assignment of a map (mapper) op: a value written at a
+// dotted output path (nested maps for a multi-segment path), sourced from a
+// path, a constant, or a concat expression, with an optional default (when the
+// source is missing/null) and an optional inline coercion. Exactly one of
+// From / Const / Concat applies. Concat elements are literals except those
+// beginning with "$", which are source paths.
+type MapField struct {
+	Out     string          `json:"out"`
+	From    string          `json:"from,omitempty"`
+	Const   json.RawMessage `json:"const,omitempty"`
+	Concat  []string        `json:"concat,omitempty"`
+	Default json.RawMessage `json:"default,omitempty"`
+	To      string          `json:"to,omitempty"`
+}
+
+// MapOutSegments splits a mapper output path ("customer.name", "$.a.b") into
+// its segments, stripping any leading "$"/"$." root marker.
+func MapOutSegments(out string) []string {
+	out = strings.TrimPrefix(out, "$.")
+	out = strings.TrimPrefix(out, "$")
+	if out == "" {
+		return nil
+	}
+	return strings.Split(out, ".")
 }
 
 // ProjectField mirrors stream.ProjectField in document form.
@@ -446,10 +476,92 @@ func (o *Op) validate() error {
 				return errors.New("agg needs out name")
 			}
 		}
+	case "map":
+		return validateMap(o.Maps)
 	default:
 		return fmt.Errorf("unknown op type %q", o.Type)
 	}
 	return nil
+}
+
+// validateMap checks a mapper op's field list: each field has a valid output
+// path, exactly one source, parseable paths/values, a known coerce kind, and no
+// output path that collides with another (one a prefix of the other).
+func validateMap(fields []MapField) error {
+	if len(fields) == 0 {
+		return errors.New("map needs fields")
+	}
+	var seen [][]string
+	for i := range fields {
+		m := &fields[i]
+		segs := MapOutSegments(m.Out)
+		if len(segs) == 0 {
+			return fmt.Errorf("map field %d needs an out path", i)
+		}
+		for _, s := range segs {
+			if s == "" {
+				return fmt.Errorf("map field %d: empty path segment in %q", i, m.Out)
+			}
+		}
+		srcs := 0
+		if m.From != "" {
+			srcs++
+		}
+		if len(m.Const) > 0 {
+			srcs++
+		}
+		if len(m.Concat) > 0 {
+			srcs++
+		}
+		if srcs != 1 {
+			return fmt.Errorf("map field %q needs exactly one of from/const/concat", m.Out)
+		}
+		if m.From != "" {
+			if _, err := record.ParsePath(m.From); err != nil {
+				return err
+			}
+		}
+		for _, part := range m.Concat {
+			if strings.HasPrefix(part, "$") {
+				if _, err := record.ParsePath(part); err != nil {
+					return err
+				}
+			}
+		}
+		if len(m.Const) > 0 {
+			if _, err := ScalarValue(m.Const); err != nil {
+				return err
+			}
+		}
+		if len(m.Default) > 0 {
+			if _, err := ScalarValue(m.Default); err != nil {
+				return err
+			}
+		}
+		if m.To != "" && !CoerceKinds[m.To] {
+			return fmt.Errorf("map field %q: unknown coerce kind %q", m.Out, m.To)
+		}
+		for _, prev := range seen {
+			if prefixConflict(prev, segs) {
+				return fmt.Errorf("map: output path %q collides with another field", m.Out)
+			}
+		}
+		seen = append(seen, segs)
+	}
+	return nil
+}
+
+// prefixConflict reports whether two output paths collide: one is a prefix of
+// the other (equal paths included), which would put a leaf where a branch must
+// go (or vice versa).
+func prefixConflict(a, b []string) bool {
+	n := min(len(a), len(b))
+	for i := range n {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // ScalarValue converts a JSON scalar into a record scalar for comparison.

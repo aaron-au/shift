@@ -130,6 +130,26 @@ func TestFilterSemantics(t *testing.T) {
 	}
 }
 
+func TestMapOp(t *testing.T) {
+	input := `{"orderId":5,"name":"X","amount":"9.5","region":"AU"}` + "\n" +
+		`{"orderId":6,"name":"Y","amount":"3"}` + "\n"
+	ops := `[{"type":"map","maps":[
+      {"out":"id","from":"$.orderId"},
+      {"out":"customer.name","from":"$.name"},
+      {"out":"customer.tier","const":"gold"},
+      {"out":"tag","concat":["o-","$.orderId"]},
+      {"out":"amt","from":"$.amount","to":"float"},
+      {"out":"region","from":"$.region","default":"unknown"}
+    ]}]`
+	got := runDoc(t, ops, input)
+	if !strings.Contains(got, `{"id":5,"customer":{"name":"X","tier":"gold"},"tag":"o-5","amt":9.5,"region":"AU"}`) {
+		t.Fatalf("rec1 mapping wrong:\n%s", got)
+	}
+	if !strings.Contains(got, `{"id":6,"customer":{"name":"Y","tier":"gold"},"tag":"o-6","amt":3,"region":"unknown"}`) {
+		t.Fatalf("rec2 mapping (default region) wrong:\n%s", got)
+	}
+}
+
 func TestOpsPipelineEndToEnd(t *testing.T) {
 	input := `{"id":"1","amount":"10.5","meta":{"region":"AU"}}` + "\n" +
 		`{"id":"2","amount":"3.25","meta":{"region":"AU"}}` + "\n" +
