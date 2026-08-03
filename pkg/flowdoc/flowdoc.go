@@ -407,6 +407,17 @@ func validatePredicate(path, cmp string, value json.RawMessage) error {
 		if _, err := ScalarValue(value); err != nil {
 			return err
 		}
+	case "contains", "startsWith", "endsWith":
+		if len(value) == 0 {
+			return fmt.Errorf("filter %s needs a value", cmp)
+		}
+		v, err := ScalarValue(value)
+		if err != nil {
+			return err
+		}
+		if v.Kind() != record.KindString {
+			return fmt.Errorf("filter %s needs a string value", cmp)
+		}
 	case "exists":
 	default:
 		return fmt.Errorf("unknown filter op %q", cmp)
