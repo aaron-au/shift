@@ -37,6 +37,19 @@ type fakeHub struct {
 	// mutators for failure-mode tests
 	serveKey      func() []byte // publisher key returned by /publisher-keys
 	serveArtifact func() []byte // bytes served by /artifact
+
+	// resolveKey, when set, is the publisher key advertised in the RESOLVE
+	// response only (serveKey still answers /publisher-keys), so a test can
+	// present a signer the hub's key list does not vouch for.
+	resolveKey func() []byte
+	// mutate rewrites the resolve response just before it is encoded, so a
+	// test can serve a malformed field and assert the fail-closed edge.
+	mutate func(map[string]any)
+
+	// non-zero status codes make the corresponding endpoint fail.
+	resolveStatus  int
+	artifactStatus int
+	keysStatus     int
 }
 
 func newFakeHub(t *testing.T) (*fakeHub, *httptest.Server) {
@@ -57,23 +70,45 @@ func newFakeHub(t *testing.T) (*fakeHub, *httptest.Server) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/connectors/gen/resolve", func(w http.ResponseWriter, _ *http.Request) {
+		if f.resolveStatus != 0 {
+			w.WriteHeader(f.resolveStatus)
+			_, _ = w.Write([]byte(`{"error":"registry down"}`))
+			return
+		}
+		key := f.serveKey()
+		if f.resolveKey != nil {
+			key = f.resolveKey()
+		}
 		resp := map[string]any{
 			"name": m.Name, "version": m.Version, "os": m.OS, "arch": m.Arch,
 			"digest":        hex.EncodeToString(f.manifest.Digest[:]),
 			"signature":     base64.StdEncoding.EncodeToString(f.sig),
-			"publisher_key": base64.StdEncoding.EncodeToString(f.serveKey()),
+			"publisher_key": base64.StdEncoding.EncodeToString(key),
 			"size_bytes":    len(f.artifact),
 		}
 		if d := f.serveDescriptor(); len(d) > 0 {
 			resp["descriptor"] = base64.StdEncoding.EncodeToString(d)
 		}
+		if f.mutate != nil {
+			f.mutate(resp)
+		}
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 	mux.HandleFunc("GET /api/v1/connectors/gen/versions/1.0.0/artifact", func(w http.ResponseWriter, _ *http.Request) {
 		f.fetches.Add(1)
+		if f.artifactStatus != 0 {
+			w.WriteHeader(f.artifactStatus)
+			_, _ = w.Write([]byte(`{"error":"artifact unavailable"}`))
+			return
+		}
 		_, _ = w.Write(f.serveArtifact())
 	})
 	mux.HandleFunc("GET /api/v1/publisher-keys", func(w http.ResponseWriter, _ *http.Request) {
+		if f.keysStatus != 0 {
+			w.WriteHeader(f.keysStatus)
+			_, _ = w.Write([]byte(`{"error":"key list unavailable"}`))
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []map[string]string{
 			{"public_key": base64.StdEncoding.EncodeToString(f.serveKey())},
 		}})
