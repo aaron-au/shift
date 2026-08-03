@@ -13,14 +13,14 @@ type generator struct {
 	limit     int64  // total bytes to emit
 	emitted   int64
 	records   int64
-	groups    int64
+	groups    uint64
 	buf       []byte
 	off       int
 	rng       uint64
 	wroteHead bool
 }
 
-func newGenerator(format string, limit, groups int64) *generator {
+func newGenerator(format string, limit int64, groups uint64) *generator {
 	return &generator{format: format, limit: limit, groups: groups, rng: 0x5DEECE66D}
 }
 
@@ -52,7 +52,7 @@ func (g *generator) fill() {
 	for len(g.buf) < 64<<10 && g.emitted+int64(len(g.buf)) < g.limit {
 		r := g.next()
 		id := g.records
-		region := r % uint64(g.groups) //nolint:gosec // groups is validated positive at startup
+		region := r % g.groups
 		amount := float64(r%1_000_000) / 100.0
 		active := r&1 == 0
 		city := cities[r%uint64(len(cities))]

@@ -57,8 +57,10 @@ const genSchema = `{
 type SourceConfig struct {
 	// Records to emit.
 	Records int64 `json:"records"`
-	// Groups is the distinct-region cardinality (default 1000).
-	Groups int64 `json:"groups"`
+	// Groups is the distinct-region cardinality (default 1000). Unsigned:
+	// a negative cardinality is meaningless, and the type rejects it at
+	// decode rather than needing a range check on every record.
+	Groups uint64 `json:"groups"`
 	// BatchRecords sizes emitted batches (default 1024).
 	BatchRecords int `json:"batch_records"`
 	// DelayMS sleeps per batch — makes deliberately slow flows for
@@ -80,7 +82,7 @@ func (s *source) Open(_ context.Context, config []byte) error {
 	if s.cfg.Records <= 0 {
 		return errors.New("gen: records must be positive")
 	}
-	if s.cfg.Groups <= 0 {
+	if s.cfg.Groups == 0 {
 		s.cfg.Groups = 1000
 	}
 	if s.cfg.BatchRecords <= 0 {
@@ -116,7 +118,7 @@ func (s *source) Next(ctx context.Context) (*record.Batch, error) {
 		id := s.next
 		nameBuf = fmt.Appendf(nameBuf[:0], "customer-%06d", id%1_000_000)
 		emailBuf = fmt.Appendf(emailBuf[:0], "user%d@example.com", id)
-		regionBuf = fmt.Appendf(regionBuf[:0], "g%05d", r%uint64(s.cfg.Groups)) //nolint:gosec // groups validated positive
+		regionBuf = fmt.Appendf(regionBuf[:0], "g%05d", r%s.cfg.Groups)
 
 		bld.BeginMap()
 		bld.KeyLiteral("id")
