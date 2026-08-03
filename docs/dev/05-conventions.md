@@ -88,3 +88,16 @@ and `go test -race` across every module. Rules:
   errors.
 - Ports/paths/limits are flags or config with sane defaults — no
   hardcoded magic (another v0 lesson; see `_archive`).
+
+## Customer designs never enter this repository
+
+`pkg/boomi` analyzes Boomi exports, which are customer integration designs:
+folder hierarchies, endpoint names, author email addresses, business logic. The
+analyzer therefore takes an export **path** and is run against designs wherever
+they are allowed to live — it never needs a copy inside the repo, and one must
+never be committed.
+
+Everything under `pkg/boomi/testdata/` is hand-authored to mirror the *shape*
+of a real export with invented content. If a future fixture needs a construct
+we have only seen in a customer file, re-create it synthetically rather than
+copying it.

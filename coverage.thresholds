@@ -47,6 +47,7 @@ github.com/aaron-au/shift/hub/internal/ratelimit 86
 github.com/aaron-au/shift/hub/internal/scheduler 83
 github.com/aaron-au/shift/hub/internal/secrets 85
 github.com/aaron-au/shift/hub/internal/store 83
+github.com/aaron-au/shift/pkg/boomi 77
 github.com/aaron-au/shift/pkg/buildinfo 81
 github.com/aaron-au/shift/pkg/consign 91
 github.com/aaron-au/shift/pkg/flowdoc 88

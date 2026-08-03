@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<bns:Component xmlns:bns="http://api.platform.boomi.com/" componentId="proc-0003"
+  version="2" name="Passthrough" type="process" folderFullPath="Demo"
+  deleted="false" currentVersion="true" modifiedDate="2026-01-04T00:00:00Z">
+  <bns:encryptedValues/>
+  <bns:object>
+    <process xmlns="">
+      <shapes>
+        <shape name="shape1" shapetype="start" x="0" y="0"/>
+        <shape name="shape2" shapetype="connectoraction" userlabel="PUT target" x="1" y="0"/>
+        <shape name="shape3" shapetype="returndocuments" x="2" y="0"/>
+      </shapes>
+    </process>
+  </bns:object>
+</bns:Component>

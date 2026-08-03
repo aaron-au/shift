@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<bns:Component xmlns:bns="http://api.platform.boomi.com/" componentId="proc-0002"
+  version="1" name="Enrich" type="process" folderFullPath="Demo/Orders"
+  deleted="false" currentVersion="true" modifiedDate="2026-01-03T00:00:00Z">
+  <bns:encryptedValues/>
+  <bns:object>
+    <process xmlns="">
+      <shapes>
+        <shape name="shape1" shapetype="start" x="0" y="0"/>
+        <shape name="shape2" shapetype="branch" userlabel="Two ways" x="1" y="0"/>
+        <shape name="shape3" shapetype="dataprocess" userlabel="Groovy bits" x="2" y="0"/>
+        <shape name="shape4" shapetype="wormhole" userlabel="Unknown thing" x="3" y="0"/>
+        <shape name="shape5" shapetype="returndocuments" x="4" y="0"/>
+      </shapes>
+    </process>
+  </bns:object>
+</bns:Component>

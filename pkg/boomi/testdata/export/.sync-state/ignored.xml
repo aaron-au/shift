@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<bns:Component xmlns:bns="http://api.platform.boomi.com/" componentId="sync-0001"
+  version="1" name="Sync bookkeeping" type="process" deleted="false" currentVersion="true">
+  <bns:object><process xmlns=""><shapes>
+    <shape name="s1" shapetype="start" x="0" y="0"/>
+  </shapes></process></bns:object>
+</bns:Component>
