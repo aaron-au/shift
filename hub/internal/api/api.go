@@ -169,6 +169,16 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 		mux.Handle("POST /api/v1/secrets/resolve", a.runner(a.resolveSecrets))
 	}
 
+	// Connections: reusable connector config (ADR-0034). Admin manages;
+	// the runner realm resolves the ones its task references. Metadata
+	// only — a connection carries secret REFERENCES, never values, so
+	// this route serves documents and decrypts nothing.
+	mux.Handle("PUT /api/v1/connections/{name}", a.admin(a.putConnection))
+	mux.Handle("GET /api/v1/connections", a.admin(a.listConnections))
+	mux.Handle("GET /api/v1/connections/{name}", a.admin(a.getConnection))
+	mux.Handle("DELETE /api/v1/connections/{name}", a.admin(a.deleteConnection))
+	mux.Handle("POST /api/v1/connections/resolve", a.runner(a.resolveConnections))
+
 	// Connector registry: publishing is admin-only; resolve/fetch and
 	// the trusted-key list serve runners too (their verification path).
 	mux.Handle("POST /api/v1/publisher-keys", a.admin(a.addPublisherKey))
@@ -367,6 +377,10 @@ func (a *api) deployFlow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.checkConnectorPolicy(doc); err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	if err := a.checkConnectionRefs(r, doc); err != nil {
 		writeErr(w, http.StatusUnprocessableEntity, err)
 		return
 	}
