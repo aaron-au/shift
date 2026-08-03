@@ -88,7 +88,16 @@
 </main>
 <script>
 const $=id=>document.getElementById(id);
-const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+// esc: HTML-escape for text and attribute-value sinks. Quotes and backtick are
+// included because values also land in attribute values.
+const esc=s=>String(s??'').replace(/[&<>"'`]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c]));
+// escJS: for a value inside a JS string literal inside an HTML attribute —
+// onclick="fn('${escJS(x)}')". esc() alone is unsafe there: the HTML parser
+// decodes character references BEFORE the JS parser sees the handler, so &#39;
+// turns back into a quote that closes the literal. JS-escape first, then
+// HTML-escape, so entity decoding yields the backslash-escaped literal.
+const escJS=s=>esc(String(s??'').replace(/[\\'"\n\r\u2028\u2029]/g,
+  c=>({'\\':'\\\\',"'":"\\'",'"':'\\"','\n':'\\n','\r':'\\r','\u2028':'\\u2028','\u2029':'\\u2029'}[c])));
 const fmt=n=>n>=1e6?(n/1e6).toFixed(2)+'M':n>=1e3?(n/1e3).toFixed(1)+'k':String(Math.round(n));
 const fmtB=n=>n>=2**30?(n/2**30).toFixed(1)+' GiB':n>=2**20?(n/2**20).toFixed(0)+' MiB':fmt(n)+' B';
 const dur=(a,b)=>a&&b?((new Date(b)-new Date(a))/1000).toFixed(2)+'s':'—';
@@ -148,19 +157,19 @@ function render(s,tasks){
     ? '⚠ '+tt.waiting+' task(s) waiting for capacity — consider adding compute (or raising this runner\'s memory budget).'
     : 'No tasks waiting — capacity is sufficient for current load.';
   // connectors
-  $('conns').innerHTML=(st.connectors||[]).map(c=>`<tr><td>${c.name}</td><td class="mono">${c.version}</td><td>${c.in_use}</td></tr>`).join('')||'<tr><td colspan=3 class="mono">none launched yet</td></tr>';
+  $('conns').innerHTML=(st.connectors||[]).map(c=>`<tr><td>${esc(c.name)}</td><td class="mono">${esc(c.version)}</td><td>${esc(c.in_use)}</td></tr>`).join('')||'<tr><td colspan=3 class="mono">none launched yet</td></tr>';
   // tasks
   $('tasks').innerHTML=tasks.map(t=>{
-    const rows=`<tr class="task" onclick="toggle('${t.id}')">
-      <td>${t.flow}${t.benchmark?'<span class="chip bench">bench</span>':''}</td>
-      <td><span class="chip ${t.state}">${t.state}</span></td>
+    const rows=`<tr class="task" onclick="toggle('${escJS(t.id)}')">
+      <td>${esc(t.flow)}${t.benchmark?'<span class="chip bench">bench</span>':''}</td>
+      <td><span class="chip ${esc(t.state)}">${esc(t.state)}</span></td>
       <td>${fmt(t.records_in||0)} → ${fmt(t.records_out||0)}</td>
       <td>${dur(t.started,t.finished)}</td>
       <td>${new Date(t.submitted).toLocaleTimeString()}</td>
-      <td class="mono">${t.id.slice(0,12)}</td></tr>`;
+      <td class="mono">${esc(t.id.slice(0,12))}</td></tr>`;
     if(!open.has(t.id)) return rows;
-    const ops=(t.ops||[]).map(o=>`<tr><td>${o.name}</td><td>${fmt(o.records_in)} → ${fmt(o.records_out)}</td><td>${o.seconds.toFixed(3)}s</td></tr>`).join('');
-    const err=t.error?`<div class="err">${t.error}</div>`:'';
+    const ops=(t.ops||[]).map(o=>`<tr><td>${esc(o.name)}</td><td>${fmt(o.records_in)} → ${fmt(o.records_out)}</td><td>${o.seconds.toFixed(3)}s</td></tr>`).join('');
+    const err=t.error?`<div class="err">${esc(t.error)}</div>`:'';
     const cap=(t.captured||[]).map(c=>{
       const recs=(c.records||[]).map(r=>`<div class="mono caprec">${esc(JSON.stringify(r))}</div>`).join('');
       return `<div class="capstep"><b>${esc(c.step_id)}</b> · ${(c.records||[]).length} sampled${c.more?' (+more)':''}${recs}</div>`;

@@ -230,11 +230,20 @@
 'use strict';
 let bearer = sessionStorage.getItem('shift_admin_token') || '';
 const $ = id => document.getElementById(id);
-// Escapes &<>" AND ' ` — the single quote and backtick matter because several
-// handlers interpolate values into single-quoted inline attributes
-// (onclick="fn('${esc(x)}')"); without escaping ' a value could break out of
-// the JS string literal (stored XSS). Covers both attribute and JS-string sinks.
+// esc: HTML-escape for text and attribute-value sinks. Correct wherever the
+// value lands in markup that the HTML parser reads as data.
 const esc = s => String(s ?? '').replace(/[&<>"'`]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c]));
+// escJS: the escaper for a value interpolated into a JS STRING LITERAL that
+// itself sits inside an HTML attribute — onclick="fn('${escJS(x)}')".
+//
+// esc() alone is NOT safe there, which is the subtle part: the HTML parser
+// decodes character references in an attribute value BEFORE the JS parser ever
+// sees the handler, so esc()'s &#39; becomes a real ' and closes the string
+// literal (stored XSS). The fix is to escape for JS first — backslash, quote,
+// and line terminators — and HTML-escape that result. Entity decoding then
+// hands the JS parser exactly the backslash-escaped literal we intended.
+const escJS = s => esc(String(s ?? '').replace(/[\\'"\n\r\u2028\u2029]/g,
+  c => ({'\\':'\\\\',"'":"\\'",'"':'\\"','\n':'\\n','\r':'\\r','\u2028':'\\u2028','\u2029':'\\u2029'}[c])));
 // b64utf8 decodes base64 to a proper UTF-8 string. atob() alone yields a byte
 // string, so multibyte content (emoji icons, non-ASCII descriptions/labels in a
 // connector descriptor) would mangle under JSON.parse — decode the bytes first.
@@ -454,7 +463,7 @@ function renderOverview(ov) {
 
 function renderFlows(flows, scheds) {
   const byFlow = {}; scheds.forEach(s => byFlow[s.flow_name] = s);
-  $('flows').innerHTML = flows.map(f => {
+  $('flows').innerHTML = flows.map((f, i) => {
     const s = byFlow[f.name];
     const schedTxt = s ? `<span class="mono">${esc(s.cron)}</span> ${s.enabled ? '' : '(disabled)'}` +
       (s.last_error ? ` <span class="err">${esc(s.last_error)}</span>` : '') : '—';
@@ -462,40 +471,40 @@ function renderFlows(flows, scheds) {
       ? `<span class="chip published">v${f.published_version}</span>` : '<span class="chip draft">none</span>';
     let opts = '';
     for (let v = 1; v <= f.latest_version; v++) opts += `<option value="${v}"${v === (f.published_version || f.latest_version) ? ' selected' : ''}>v${v}</option>`;
-    const pubCtl = f.latest_version ? `<select id="pv-${esc(f.name)}" style="padding:.2rem;font-size:.75rem">${opts}</select>
-        <button onclick="publishSel('${esc(f.name)}')">Publish</button>` : '';
+    const pubCtl = f.latest_version ? `<select id="pv-${i}" style="padding:.2rem;font-size:.75rem">${opts}</select>
+        <button onclick="publishSel(${i},'${escJS(f.name)}')">Publish</button>` : '';
     return `<tr><td>${esc(f.name)}</td><td>v${f.latest_version}</td><td>${pubChip}</td>
       <td>${schedTxt}</td>
       <td style="white-space:nowrap">
-        <button onclick="openGraph('${esc(f.name)}')">Open</button>
+        <button onclick="openGraph('${escJS(f.name)}')">Open</button>
         ${pubCtl}
-        <button class="ghost" onclick="editSchedule('${esc(f.name)}')">Schedule…</button>
-        <button class="ghost" onclick="runNow('${esc(f.name)}')">Run</button></td></tr>`;
+        <button class="ghost" onclick="editSchedule('${escJS(f.name)}')">Schedule…</button>
+        <button class="ghost" onclick="runNow('${escJS(f.name)}')">Run</button></td></tr>`;
   }).join('') || '<tr><td colspan="5" class="hint">no flows deployed — open the Builder to create one</td></tr>';
 }
 
-async function publish(name, v) { await api(`/api/v1/flows/${name}/versions/${v}/publish`, {method: 'POST'}); refresh(); }
-async function publishSel(name) {
-  const v = ($('pv-' + name) || {}).value; if (!v) return;
+async function publish(name, v) { await api(`/api/v1/flows/${encodeURIComponent(name)}/versions/${v}/publish`, {method: 'POST'}); refresh(); }
+async function publishSel(i, name) {
+  const v = ($('pv-' + i) || {}).value; if (!v) return;
   try { await publish(name, v); } catch (e) { alert('publish failed: ' + e.message); }
 }
 async function runNow(name) {
-  try { await api(`/api/v1/flows/${name}/execute`, {method: 'POST', body: '{}'}); refresh(); }
+  try { await api(`/api/v1/flows/${encodeURIComponent(name)}/execute`, {method: 'POST', body: '{}'}); refresh(); }
   catch (e) { alert('run failed: ' + e.message); }
 }
 async function editSchedule(name) {
   const cron = prompt(`Cron for "${name}" (UTC, 5-field; empty to remove):`, '*/5 * * * *');
   if (cron === null) return;
   try {
-    if (cron.trim() === '') { await api(`/api/v1/flows/${name}/schedule`, {method: 'DELETE'}); }
-    else { await api(`/api/v1/flows/${name}/schedule`, {method: 'PUT', body: JSON.stringify({cron: cron.trim()})}); }
+    if (cron.trim() === '') { await api(`/api/v1/flows/${encodeURIComponent(name)}/schedule`, {method: 'DELETE'}); }
+    else { await api(`/api/v1/flows/${encodeURIComponent(name)}/schedule`, {method: 'PUT', body: JSON.stringify({cron: cron.trim()})}); }
     refresh();
   } catch (e) { alert('schedule failed: ' + e.message); }
 }
 
 function renderTasks(tasks) {
   $('tasks').innerHTML = tasks.map(t =>
-    `<tr class="task" onclick="toggleTask(this,'${t.id}')">
+    `<tr class="task" onclick="toggleTask(this,'${escJS(t.id)}')">
       <td>${esc(t.flow_name)}</td><td>v${t.flow_version}</td>
       <td><span class="chip ${esc(t.state)}">${esc(t.state)}</span></td>
       <td>${t.attempt}/${t.max_attempts}</td>
@@ -558,7 +567,7 @@ function renderMarketplace() {
         <span class="mver">v${esc(c.version)}</span></div>
       ${desc}
       <div class="tags">${cat}${tags}</div>
-      <button class="ghost" onclick="openVersions('${esc(c.name)}')">Versions</button>
+      <button class="ghost" onclick="openVersions('${escJS(c.name)}')">Versions</button>
     </div>`;
   }).join('') || `<div class="hint">${q ? 'no connectors match' : 'registry empty (operator-provisioned connectors do not appear here)'}</div>`;
 }
@@ -573,8 +582,8 @@ async function openVersions(name) {
       const yanked = !!v.yanked_at;
       const state = yanked ? '<span class="yk">yanked</span>' : '<span class="chip published">live</span>';
       const btn = yanked
-        ? `<button class="ghost" onclick="yankVersion('${esc(name)}','${esc(v.version)}','${esc(v.os)}','${esc(v.arch)}',false)">Restore</button>`
-        : `<button class="ghost" onclick="yankVersion('${esc(name)}','${esc(v.version)}','${esc(v.os)}','${esc(v.arch)}',true)">Yank</button>`;
+        ? `<button class="ghost" onclick="yankVersion('${escJS(name)}','${escJS(v.version)}','${escJS(v.os)}','${escJS(v.arch)}',false)">Restore</button>`
+        : `<button class="ghost" onclick="yankVersion('${escJS(name)}','${escJS(v.version)}','${escJS(v.os)}','${escJS(v.arch)}',true)">Yank</button>`;
       return `<tr><td>${esc(v.version)}</td><td class="mono">${esc(v.os)}/${esc(v.arch)}</td>
         <td class="mono">${(v.size_bytes / 1048576).toFixed(1)} MiB</td><td>${state}</td><td>${btn}</td></tr>`;
     }).join('');
@@ -1065,15 +1074,15 @@ function renderEditor() {
   const s = studio.sel && stepById(studio.sel);
   if (!s) { el.innerHTML = '<div class="hint">select a node to edit, or add one above</div>'; return; }
   const row = (label, html) => `<div class="efield"><label>${esc(label)}</label>${html}</div>`;
-  const inp = (field, val) => `<input value="${esc(val ?? '')}" onchange="editField('${esc(s.id)}','${field}',this.value)">`;
-  const ta = (field, val) => `<textarea onchange="editField('${esc(s.id)}','${field}',this.value)">${esc(val ?? '')}</textarea>`;
-  let body = row('id', `<input value="${esc(s.id)}" onchange="renameStep('${esc(s.id)}',this.value)">`) +
+  const inp = (field, val) => `<input value="${esc(val ?? '')}" onchange="editField('${escJS(s.id)}','${escJS(field)}',this.value)">`;
+  const ta = (field, val) => `<textarea onchange="editField('${escJS(s.id)}','${escJS(field)}',this.value)">${esc(val ?? '')}</textarea>`;
+  let body = row('id', `<input value="${esc(s.id)}" onchange="renameStep('${escJS(s.id)}',this.value)">`) +
     row('type', `<span class="mono">${esc(s.type)}</span>`);
   if (s.type === 'source' || s.type === 'sink') {
     body += connectorPickers(s) + configEditor(s);
   } else if (s.type === 'filter') {
     body += row('path', inp('path', s.path)) +
-      row('op', `<select onchange="editField('${esc(s.id)}','op',this.value)">` +
+      row('op', `<select onchange="editField('${escJS(s.id)}','op',this.value)">` +
         CMP_OPS.map(o => `<option${o===s.op?' selected':''}>${o}</option>`).join('') + `</select>`) +
       row('value (JSON)', inp('value', jsonStr(s.value)));
   } else if (s.type === 'project') {
@@ -1093,36 +1102,36 @@ function renderEditor() {
     body += `<div class="hint" style="margin:.2rem 0">Each record takes the <b>first</b> matching route, else the default. Drag the green port onto a target to add a route.</div>`;
     rs.forEach((r, i) => {
       body += `<div class="efield" style="gap:.3rem;flex-wrap:wrap"><label>→ ${esc(r.to)}</label>`
-        + `<input style="flex:1;min-width:5rem" value="${esc(r.path || '')}" placeholder="$.path" onchange="editRoute('${esc(s.id)}',${i},'path',this.value)">`
-        + `<select onchange="editRoute('${esc(s.id)}',${i},'op',this.value)">` + CMP_OPS.map(o => `<option${o === r.op ? ' selected' : ''}>${o}</option>`).join('') + `</select>`
-        + `<input style="width:4.5rem" value="${esc(jsonStr(r.value))}" placeholder="value" onchange="editRoute('${esc(s.id)}',${i},'value',this.value)">`
-        + `<button class="wbtn" title="remove route" onclick="removeRoute('${esc(s.id)}',${i})">×</button></div>`;
+        + `<input style="flex:1;min-width:5rem" value="${esc(r.path || '')}" placeholder="$.path" onchange="editRoute('${escJS(s.id)}',${i},'path',this.value)">`
+        + `<select onchange="editRoute('${escJS(s.id)}',${i},'op',this.value)">` + CMP_OPS.map(o => `<option${o === r.op ? ' selected' : ''}>${o}</option>`).join('') + `</select>`
+        + `<input style="width:4.5rem" value="${esc(jsonStr(r.value))}" placeholder="value" onchange="editRoute('${escJS(s.id)}',${i},'value',this.value)">`
+        + `<button class="wbtn" title="remove route" onclick="removeRoute('${escJS(s.id)}',${i})">×</button></div>`;
     });
     const targets = rs.map(r => r.to);
-    body += row('default', `<select onchange="setRouterDefault('${esc(s.id)}',this.value)"><option value="">— drop unmatched —</option>`
+    body += row('default', `<select onchange="setRouterDefault('${escJS(s.id)}',this.value)"><option value="">— drop unmatched —</option>`
       + targets.map(t => `<option${t === s.default ? ' selected' : ''}>${esc(t)}</option>`).join('')
       + (s.default && !targets.includes(s.default) ? `<option selected>${esc(s.default)}</option>` : '') + `</select>`);
   } else if (s.type === 'merge') {
     const ins = s.inputs || [];
     body += row('inputs', ins.length ? `<span class="mono">${ins.map(esc).join(', ')}</span>` : `<span class="hint">wire producers' green ports into this node</span>`);
-    body += row('mode', `<select onchange="editMerge('${esc(s.id)}','mode',this.value)"><option value="concat"${s.mode !== 'join' ? ' selected' : ''}>concat (union)</option><option value="join"${s.mode === 'join' ? ' selected' : ''}>join (keyed)</option></select>`);
+    body += row('mode', `<select onchange="editMerge('${escJS(s.id)}','mode',this.value)"><option value="concat"${s.mode !== 'join' ? ' selected' : ''}>concat (union)</option><option value="join"${s.mode === 'join' ? ' selected' : ''}>join (keyed)</option></select>`);
     if (s.mode === 'join') {
-      body += row('build side', `<select onchange="editMerge('${esc(s.id)}','build',this.value)"><option value="">— choose —</option>` + ins.map(x => `<option${x === s.build ? ' selected' : ''}>${esc(x)}</option>`).join('') + `</select>`);
-      body += row('on.left', `<input value="${esc((s.on && s.on.left) || '')}" placeholder="$.key (probe)" onchange="editJoinOn('${esc(s.id)}','left',this.value)">`);
-      body += row('on.right', `<input value="${esc((s.on && s.on.right) || '')}" placeholder="$.key (build)" onchange="editJoinOn('${esc(s.id)}','right',this.value)">`);
-      body += row('type', `<select onchange="editMerge('${esc(s.id)}','joinType',this.value)"><option value="inner"${s.joinType !== 'left' ? ' selected' : ''}>inner</option><option value="left"${s.joinType === 'left' ? ' selected' : ''}>left</option></select>`);
-      body += row('as', `<input value="${esc(s.as || '')}" placeholder="field for matched record" onchange="editMerge('${esc(s.id)}','as',this.value)">`);
+      body += row('build side', `<select onchange="editMerge('${escJS(s.id)}','build',this.value)"><option value="">— choose —</option>` + ins.map(x => `<option${x === s.build ? ' selected' : ''}>${esc(x)}</option>`).join('') + `</select>`);
+      body += row('on.left', `<input value="${esc((s.on && s.on.left) || '')}" placeholder="$.key (probe)" onchange="editJoinOn('${escJS(s.id)}','left',this.value)">`);
+      body += row('on.right', `<input value="${esc((s.on && s.on.right) || '')}" placeholder="$.key (build)" onchange="editJoinOn('${escJS(s.id)}','right',this.value)">`);
+      body += row('type', `<select onchange="editMerge('${escJS(s.id)}','joinType',this.value)"><option value="inner"${s.joinType !== 'left' ? ' selected' : ''}>inner</option><option value="left"${s.joinType === 'left' ? ' selected' : ''}>left</option></select>`);
+      body += row('as', `<input value="${esc(s.as || '')}" placeholder="field for matched record" onchange="editMerge('${escJS(s.id)}','as',this.value)">`);
     }
   }
   // Happy-edge intent toggle (success vs complete) when a happy edge exists.
   const happyTo = s.onSuccess || s.onComplete;
   if (happyTo) {
     const kind = s.onSuccess ? 'onSuccess' : 'onComplete';
-    body += row('happy edge', `<select onchange="setHappyKind('${esc(s.id)}',this.value)">` +
+    body += row('happy edge', `<select onchange="setHappyKind('${escJS(s.id)}',this.value)">` +
       `<option value="onSuccess"${kind==='onSuccess'?' selected':''}>onSuccess → ${esc(happyTo)}</option>` +
       `<option value="onComplete"${kind==='onComplete'?' selected':''}>onComplete → ${esc(happyTo)}</option></select>`);
   }
-  body += `<div class="efield"><label></label><button class="ghost" onclick="deleteNode('${esc(s.id)}')">Delete node</button></div>`;
+  body += `<div class="efield"><label></label><button class="ghost" onclick="deleteNode('${escJS(s.id)}')">Delete node</button></div>`;
   el.innerHTML = body;
 }
 
@@ -1194,7 +1203,7 @@ function connectorPickers(s) {
   // node "type" up front. @webhook stays a special source trigger.
   const opts = ['@webhook', ...Object.keys(studio.catalog).sort()];
   if (s.connector && !opts.includes(s.connector)) opts.push(s.connector); // preserve unknown/unpublished
-  const connSel = `<select onchange="setConnector('${esc(s.id)}',this.value)">` +
+  const connSel = `<select onchange="setConnector('${escJS(s.id)}',this.value)">` +
     `<option value=""${!s.connector ? ' selected' : ''}>— choose —</option>` +
     opts.map(c => `<option${c === s.connector ? ' selected' : ''}>${esc(c)}</option>`).join('') + `</select>`;
 
@@ -1207,10 +1216,10 @@ function connectorPickers(s) {
       return {dir: k.slice(0, i), name: k.slice(i + 1)};
     }).sort((a, b) => a.name.localeCompare(b.name));
     if (s.action && !acts.some(a => a.name === s.action)) acts.push({dir: s.type, name: s.action});
-    actCtl = `<select onchange="setAction('${esc(s.id)}',this.value)"><option value="">— choose verb —</option>` +
+    actCtl = `<select onchange="setAction('${escJS(s.id)}',this.value)"><option value="">— choose verb —</option>` +
       acts.map(a => `<option value="${esc(a.name)}"${a.name === s.action ? ' selected' : ''}>${esc(a.name)} (${esc(a.dir)})</option>`).join('') + `</select>`;
   } else { // @webhook or unpublished connector → free-text action, no schema
-    actCtl = `<input value="${esc(s.action ?? '')}" onchange="setAction('${esc(s.id)}',this.value)">`;
+    actCtl = `<input value="${esc(s.action ?? '')}" onchange="setAction('${escJS(s.id)}',this.value)">`;
   }
   return `<div class="efield"><label>connector</label>${connSel}</div>` +
          `<div class="efield"><label>verb</label>${actCtl}</div>`;
@@ -1251,7 +1260,7 @@ function configEditor(s) {
     return `<div class="hint" style="margin-top:.5rem">config</div>` + schemaForm(s, schema, []);
   }
   // No schema (unknown/old connector, or none declared) → raw JSON fallback.
-  return `<div class="efield"><label>config (JSON)</label><textarea onchange="editField('${esc(s.id)}','config',this.value)">${esc(jsonStr(s.config))}</textarea></div>`;
+  return `<div class="efield"><label>config (JSON)</label><textarea onchange="editField('${escJS(s.id)}','config',this.value)">${esc(jsonStr(s.config))}</textarea></div>`;
 }
 
 function schemaForm(s, schema, path) {

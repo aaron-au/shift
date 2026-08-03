@@ -21,6 +21,12 @@ import (
 // runner refuses anything else, so reject it at publish time.
 var connectorNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
+// connectorVersionRE constrains versions to a version charset. The value is
+// publisher-supplied, travels into URL path segments, and is rendered in the
+// studio's registry views, so an unconstrained 64 bytes was too permissive —
+// defense in depth alongside the UI's output escaping.
+var connectorVersionRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$`)
+
 var osArchAllow = map[string]bool{
 	"linux/amd64": true, "linux/arm64": true,
 	"darwin/amd64": true, "darwin/arm64": true,
@@ -40,8 +46,8 @@ func (a *api) uploadConnector(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf("connector name must match %s", connectorNameRE))
 		return
 	}
-	if version == "" || len(version) > 64 {
-		writeErr(w, http.StatusUnprocessableEntity, errors.New("version must be 1-64 characters"))
+	if !connectorVersionRE.MatchString(version) {
+		writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf("connector version must match %s", connectorVersionRE))
 		return
 	}
 	osName, arch := r.URL.Query().Get("os"), r.URL.Query().Get("arch")

@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aaron-au/shift/pkg/httpsec"
 	"github.com/aaron-au/shift/runner/internal/auth"
 	"github.com/aaron-au/shift/runner/internal/flow"
 	"github.com/aaron-au/shift/runner/internal/ratelimit"
@@ -310,7 +311,7 @@ func Handler(svc *service.Service, runnerName, version string, started time.Time
 		_, _ = w.Write(uiHTML)
 	})
 
-	return guard.Wrap(mux, permFor)
+	return httpsec.Headers(guard.Wrap(mux, permFor))
 }
 
 // permFor maps a request to the permission its endpoint needs. Health checks

@@ -27,6 +27,7 @@ import (
 	"github.com/aaron-au/shift/hub/internal/secrets"
 	"github.com/aaron-au/shift/hub/internal/store"
 	"github.com/aaron-au/shift/pkg/flowdoc"
+	"github.com/aaron-au/shift/pkg/httpsec"
 )
 
 // Options configure the API.
@@ -199,7 +200,7 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("POST /api/v1/tasks/{id}/fail", a.runner(a.fail))
 	mux.Handle("POST /api/v1/executions", a.runner(a.reportExecution))
 
-	return a.observe(mux), nil
+	return httpsec.Headers(a.observe(mux)), nil
 }
 
 type reqIDKey struct{}

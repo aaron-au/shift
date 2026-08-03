@@ -360,6 +360,9 @@ func (d *Document) Validate() error {
 	if d.Name == "" {
 		return errors.New("flow: name is required")
 	}
+	if !NamePattern.MatchString(d.Name) {
+		return fmt.Errorf("flow: name %q must match %s (letters, digits, space, . _ -)", d.Name, NamePattern)
+	}
 	switch d.Delivery {
 	case "", DeliveryAtLeastOnce, DeliveryAtMostOnce:
 	default:
