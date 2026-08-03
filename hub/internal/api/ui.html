@@ -5,13 +5,40 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SHIFT Hub</title>
 <style>
-  :root{--bg:#0e1116;--panel:#161b23;--line:#232b37;--text:#dbe2ec;--dim:#8b98ab;
-        --accent:#4da3ff;--ok:#3ecf8e;--warn:#f5a623;--bad:#ef5f6b;
-        /* node-type header colours — Okabe-Ito-derived, colour-blind-safe,
-           distinct in BOTH hue and lightness; uniform per component type */
-        --n-connector:#0e9e75;--n-transform:#9673d6;--n-util:#3b82c4;--n-handler:#e0836b;
-        font-size:15px}
+  /* Theme tokens. Dark is the default (brighter than the old near-black);
+     light and colour-blind variants override via data-theme / data-cb on
+     <html>. Surfaces are all variables so both themes render everywhere. */
+  :root{
+    color-scheme:dark;
+    --bg:#141a23;--panel:#1c2531;--line:#2b3746;--text:#e4eaf2;--dim:#93a1b5;
+    --accent:#5cb0ff;--ok:#37d29a;--warn:#f5b342;--bad:#f2707c;
+    --canvas:#0f1620;--node-bg:#212c3a;--hdr-text:#08121a;--hover:#243040;--input-bg:#131a24;--titlebar:#12161d;
+    /* node-type header colours — Okabe-Ito-derived, colour-blind-safe,
+       distinct in BOTH hue and lightness; uniform per component type */
+    --n-connector:#0e9e75;--n-transform:#9673d6;--n-util:#3b82c4;--n-handler:#e0836b;--n-branch:#e6a417;
+    /* edge colours: success=ok, failure=bad, tee-branch=n-branch, route=edge-route.
+       All four stay mutually distinct in every theme (edge-route flips to amber
+       under CB, where blue is taken by the success colour). */
+    --edge-route:#5cb0ff;
+    font-size:15px}
+  :root[data-theme="light"]{
+    color-scheme:light;
+    --bg:#eef2f7;--panel:#ffffff;--line:#d4dce6;--text:#1b2530;--dim:#5c6b7d;
+    --accent:#1f7ae0;--ok:#12a06a;--warn:#c67c10;--bad:#d6414f;
+    --canvas:#f2f5fa;--node-bg:#ffffff;--hdr-text:#0b1420;--hover:#eef2f8;--input-bg:#f7f9fc;--titlebar:#e9eef5;
+    --n-connector:#0b8f68;--n-transform:#7d54c9;--n-util:#2f74b3;--n-handler:#cf6f52;--n-branch:#c4820c;
+    --edge-route:#1f7ae0}
+  /* Colour-blind mode retunes the red/green success/failure pair (the classic
+     deuteranopia problem) to an Okabe-Ito blue / vermillion pair, plus distinct
+     branch (purple) and route (amber) hues — applied on top of either theme. */
+  :root[data-cb="1"]{--ok:#37a9e8;--bad:#e8600d;--warn:#e6b800;--n-branch:#cc79a7;--edge-route:#e6b800}
+  :root[data-cb="1"][data-theme="light"]{--ok:#0072b2;--bad:#d55e00;--warn:#b8860b;--n-branch:#b3437f;--edge-route:#b8860b}
   *{box-sizing:border-box;margin:0}
+  html{scrollbar-color:var(--line) transparent;scrollbar-width:thin}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:var(--line);border-radius:6px;border:2px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:var(--dim);background-clip:content-box}
+  ::-webkit-scrollbar-track{background:transparent}
   body{background:var(--bg);color:var(--text);font:1rem/1.5 -apple-system,'Segoe UI',Roboto,sans-serif;padding:1.2rem}
   h1{font-size:1.15rem;font-weight:600;display:flex;gap:.6rem;align-items:baseline}
   h1 .v{color:var(--dim);font-size:.8rem;font-weight:400}
@@ -26,50 +53,50 @@
   table{width:100%;border-collapse:collapse;font-size:.85rem}
   th{color:var(--dim);text-align:left;font-weight:500;padding:.35rem .5rem;border-bottom:1px solid var(--line)}
   td{padding:.4rem .5rem;border-bottom:1px solid var(--line);vertical-align:top}
-  tr.task{cursor:pointer} tr.task:hover{background:#1b2230}
+  tr.task{cursor:pointer} tr.task:hover{background:var(--hover)}
   .chip{padding:.1rem .55rem;border-radius:99px;font-size:.72rem;font-weight:600}
-  .chip.completed,.chip.published{background:#12352a;color:var(--ok)}
-  .chip.leased,.chip.running{background:#12283f;color:var(--accent)}
-  .chip.failed{background:#3a1a1f;color:var(--bad)}
-  .chip.queued,.chip.draft{background:#3a2d12;color:var(--warn)}
+  .chip.completed,.chip.published{background:color-mix(in srgb,var(--ok) 20%,transparent);color:var(--ok)}
+  .chip.leased,.chip.running{background:color-mix(in srgb,var(--accent) 20%,transparent);color:var(--accent)}
+  .chip.failed{background:color-mix(in srgb,var(--bad) 20%,transparent);color:var(--bad)}
+  .chip.queued,.chip.draft{background:color-mix(in srgb,var(--warn) 22%,transparent);color:var(--warn)}
   button{background:var(--accent);border:0;color:#04101f;font-weight:600;padding:.35rem .7rem;border-radius:8px;cursor:pointer;font-size:.78rem}
   button.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
   .hint{color:var(--dim);font-size:.78rem;margin-top:.6rem}
   .err{color:var(--bad);font-size:.78rem}
   .mono{font-family:ui-monospace,Menlo,monospace;font-size:.78rem;color:var(--dim)}
   /* --- connector marketplace (M6e) --- */
-  #mkt-search{background:#10141b;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:.3rem .6rem;font-size:.8rem;flex:1}
+  #mkt-search{background:var(--input-bg);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:.3rem .6rem;font-size:.8rem;flex:1}
   .mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.6rem;margin-top:.4rem}
-  .mcard{background:#10141b;border:1px solid var(--line);border-radius:10px;padding:.7rem;display:flex;flex-direction:column;gap:.35rem}
+  .mcard{background:var(--input-bg);border:1px solid var(--line);border-radius:10px;padding:.7rem;display:flex;flex-direction:column;gap:.35rem}
   .mcard .mhead{display:flex;gap:.5rem;align-items:baseline}
   .mcard .icon{font-size:1.3rem;line-height:1}
   .mcard .mname{font-weight:600}
   .mcard .mver{color:var(--dim);font-size:.75rem}
   .mcard .mdesc{font-size:.78rem;color:var(--text);opacity:.85;flex:1}
   .mcard .tags{display:flex;gap:.3rem;flex-wrap:wrap}
-  .tag{background:#12283f;color:var(--accent);border-radius:6px;padding:.05rem .4rem;font-size:.68rem}
-  .tag.cat{background:#1c1630;color:#b79bff}
+  .tag{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent);border-radius:6px;padding:.05rem .4rem;font-size:.68rem}
+  .tag.cat{background:color-mix(in srgb,var(--n-transform) 22%,transparent);color:var(--n-transform)}
   .mvlist td{font-size:.78rem}
   .mvlist .yk{color:var(--warn)}
-  .ops{background:#10141b;border-radius:8px;margin:.3rem 0 .6rem;padding:.5rem .7rem;font-size:.78rem}
+  .ops{background:var(--input-bg);border-radius:8px;margin:.3rem 0 .6rem;padding:.5rem .7rem;font-size:.78rem}
   .ops td{border:0;padding:.15rem .5rem;color:var(--dim)} .ops td:first-child{color:var(--text)}
   #login{max-width:420px;margin:4rem auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1.5rem;display:none}
-  #login input{width:100%;background:#10141b;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:.5rem .7rem;margin:.6rem 0}
+  #login input{width:100%;background:var(--input-bg);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:.5rem .7rem;margin:.6rem 0}
   .glegend{display:flex;gap:1rem;font-size:.72rem;color:var(--dim);margin:.2rem 0 .8rem;flex-wrap:wrap}
   .glegend b{font-weight:600}
   .gtoolbar{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;margin:.4rem 0}
   .gtoolbar button{padding:.15rem .5rem;font-size:.75rem}
   .b-err{min-height:1rem;margin:.2rem 0}
   /* builder canvas: grid-backed scroll surface; the grid itself is drawn in the SVG */
-  .b-graph{background:#0d1117;border:1px solid var(--line);border-radius:8px;overflow:auto;max-height:62vh}
+  .b-graph{background:var(--canvas);border:1px solid var(--line);border-radius:8px;overflow:auto;max-height:62vh}
   .b-editor{margin-top:.8rem}
   .b-editor .efield{display:flex;gap:.5rem;align-items:center;margin:.3rem 0;font-size:.82rem}
   .b-editor .efield label{width:7rem;color:var(--dim)}
-  .b-editor input,.b-editor select,.b-editor textarea{background:#0d1117;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:.25rem .4rem;font-size:.82rem}
+  .b-editor input,.b-editor select,.b-editor textarea{background:var(--canvas);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:.25rem .4rem;font-size:.82rem}
   .b-editor input,.b-editor select{flex:1}
   .b-editor textarea{flex:1;min-height:5rem;font-family:ui-monospace,monospace}
   /* node-type legend swatches (share the --n-* header colours) */
-  .ntag{font-size:.68rem;padding:.05rem .45rem;border-radius:6px;color:#08121a;font-weight:700}
+  .ntag{font-size:.68rem;padding:.05rem .45rem;border-radius:6px;color:var(--hdr-text);font-weight:700}
   /* --- OS-lite windowed shell (ADR-0019) --- */
   body.shell{padding:0;height:100vh;overflow:hidden}
   #shell{display:none;height:100vh}
@@ -87,7 +114,7 @@
   .win{position:absolute;background:var(--panel);border:1px solid var(--line);border-radius:10px;
     display:flex;flex-direction:column;min-width:280px;min-height:120px;box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden}
   .win.min{display:none}
-  .win .titlebar{display:flex;align-items:center;gap:.5rem;padding:.4rem .6rem;background:#12161d;border-bottom:1px solid var(--line);cursor:move;user-select:none}
+  .win .titlebar{display:flex;align-items:center;gap:.5rem;padding:.4rem .6rem;background:var(--titlebar);border-bottom:1px solid var(--line);cursor:move;user-select:none}
   .win .titlebar .wtitle{font-size:.8rem;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .win .titlebar .wbtn{width:20px;height:20px;border-radius:6px;background:transparent;border:1px solid var(--line);color:var(--dim);
     font-size:.7rem;padding:0;display:flex;align-items:center;justify-content:center}
@@ -118,6 +145,8 @@
     <b>SHIFT Hub</b><span class="v" id="ident">connecting…</span>
     <span class="hint" id="schedline" style="margin:0"></span>
     <span class="spacer"></span>
+    <button class="ghost" id="cbbtn" title="Colour-blind-safe palette" onclick="toggleCB()">◑ CB</button>
+    <button class="ghost" id="themebtn" title="Toggle light / dark" onclick="toggleTheme()">☾</button>
     <button class="ghost" id="logoutbtn" style="display:none" onclick="logout()">Sign out</button>
   </div>
   <div id="dock"></div>
@@ -285,13 +314,37 @@ function wireWindow(w) {
     if (w.dataset.builderKey) setActiveBuilder(w.dataset.builderKey);
   }, true);
   const tb = w.querySelector('.titlebar');
+  // Inject a maximise button (before the existing min/close) so every window —
+  // static tools and dynamic builders — gets it without editing each titlebar.
+  if (!tb.querySelector('[data-act="max"]')) {
+    const b = document.createElement('button');
+    b.className = 'wbtn'; b.dataset.act = 'max'; b.textContent = '▢'; b.title = 'Maximise / restore';
+    tb.insertBefore(b, tb.querySelector('.wbtn'));
+  }
   tb.querySelectorAll('.wbtn').forEach(btn => btn.onclick = ev => {
     ev.stopPropagation();
-    if (btn.dataset.act === 'close') { if (w.dataset.builderKey) destroyBuilder(w.dataset.builderKey); else closeWin(w.id); }
+    const act = btn.dataset.act;
+    if (act === 'close') { if (w.dataset.builderKey) destroyBuilder(w.dataset.builderKey); else closeWin(w.id); }
+    else if (act === 'max') toggleMax(w);
     else minWin(w.id);
   });
+  tb.addEventListener('dblclick', ev => { if (!ev.target.closest('.wbtn')) toggleMax(w); });
   dragEl(tb, w, false);
   dragEl(w.querySelector('.resize'), w, true);
+}
+
+// toggleMax fills the desktop with the window (storing its prior geometry to
+// restore on a second click / double-click). Runtime-only; not persisted.
+function toggleMax(w) {
+  if (w.dataset.max) {
+    const g = JSON.parse(w.dataset.max);
+    w.style.left = g.x; w.style.top = g.y; w.style.width = g.w; w.style.height = g.h;
+    delete w.dataset.max;
+  } else {
+    w.dataset.max = JSON.stringify({x: w.style.left, y: w.style.top, w: w.style.width, h: w.style.height});
+    w.style.left = '0px'; w.style.top = '0px'; w.style.width = '100%'; w.style.height = '100%';
+  }
+  focusWin(w.id);
 }
 
 function restoreWindows(wins) {
@@ -704,15 +757,20 @@ function createBuilderWindow(winId, key, uid) {
          <button class="ghost" onclick="addNode('coerce')">coerce</button>
          <button class="ghost" onclick="addNode('flatten')">flatten</button>
          <button class="ghost" onclick="addNode('aggregate')">aggregate</button>
+         <span class="hint" style="margin-left:.3rem">branch:</span>
+         <button class="ghost" onclick="addNode('tee')">tee</button>
+         <button class="ghost" onclick="addNode('router')">router</button>
+         <button class="ghost" onclick="addNode('merge')">merge</button>
        </div>
        <div class="glegend">
          <span><b style="color:var(--ok)">─▸</b> success / complete</span>
          <span><b style="color:var(--bad)">─▸</b> failure</span>
          <span class="ntag" style="background:var(--n-connector)">connector</span>
          <span class="ntag" style="background:var(--n-transform)">transform</span>
+         <span class="ntag" style="background:var(--n-branch)">branch/merge</span>
          <span class="ntag" style="background:var(--n-util)">built-in</span>
          <span class="ntag" style="background:var(--n-handler)">error handler</span>
-         <span class="hint">left = input · right = success (green, upper) + failure (red, lower) · drag a right port onto a node to wire · drag a node to move (snaps to grid) · click an edge to remove</span>
+         <span class="hint"><b style="color:var(--ok)">▸</b> success · <b style="color:var(--bad)">▸</b> failure · <b style="color:var(--n-branch)">▸</b> tee branch (concurrent) · <b style="color:var(--edge-route)">▸</b> router route · drag a right port onto a node to wire · into a merge to fan-in · click an edge to remove</span>
        </div>
        <div class="b-err err"></div>
        <div class="b-graph"></div>
@@ -778,12 +836,18 @@ function toModel(doc) {
 // clientGraph projects the editable model into the {nodes,edges,main}
 // shape renderGraph consumes — computed locally so edits show instantly.
 function clientGraph(m) {
+  reconcileMerges(m);
   const nodes = m.steps.map(s => ({id:s.id, type:s.type, connector:s.connector, action:s.action, step:s}));
   const edges = [];
   m.steps.forEach(s => {
     if (s.onSuccess) edges.push({from:s.id, to:s.onSuccess, kind:'success'});
     if (s.onComplete) edges.push({from:s.id, to:s.onComplete, kind:'complete'});
     if (s.onFailure) edges.push({from:s.id, to:s.onFailure, kind:'failure'});
+    // v3 fan-out edges carry their target in the kind so a single click-delete
+    // removes the right branch/route (a tee/router has many).
+    (s.branches || []).forEach(b => edges.push({from:s.id, to:b, kind:'branch:'+b}));
+    (s.routes || []).forEach(r => { if (r.to) edges.push({from:s.id, to:r.to, kind:'route:'+r.to}); });
+    if (s.default) edges.push({from:s.id, to:s.default, kind:'route:'+s.default});
   });
   const failTargets = new Set(edges.filter(e => e.kind === 'failure').map(e => e.to));
   nodes.forEach(n => n.role = failTargets.has(n.id) ? 'handler' : 'main');
@@ -916,17 +980,37 @@ function nodeUnder(ev) {
 function stepById(id) { return studio.model.steps.find(s => s.id === id); }
 
 function setEdge(from, port, to) {
-  const s = stepById(from); if (!s) return;
-  if (port === 'happy') { s.onSuccess = to; delete s.onComplete; }
-  else { s.onFailure = to; }
-  if (!studio.model.start) studio.model.start = from;
+  const s = stepById(from), t = stepById(to); if (!s || !t) return;
+  if (port === 'fail') { s.onFailure = to; }
+  else if (s.type === 'tee') {                       // fan-out: add a branch
+    s.branches = s.branches || []; if (!s.branches.includes(to)) s.branches.push(to);
+  } else if (s.type === 'router') {                  // fan-out: add a route (predicate edited below)
+    s.routes = s.routes || [];
+    if (s.default !== to && !s.routes.some(r => r.to === to)) s.routes.push({path: '$.field', op: 'exists', to});
+  } else {                                            // linear happy edge (also feeds a merge; inputs derived)
+    s.onSuccess = to; delete s.onComplete;
+  }
+  if (!studio.model.start && s.type === 'source') studio.model.start = from;
+  renderEditor();
 }
 function removeEdge(from, kind) {
   const s = stepById(from); if (!s) return;
   if (kind === 'success') delete s.onSuccess;
   else if (kind === 'complete') delete s.onComplete;
   else if (kind === 'failure') delete s.onFailure;
+  else if (kind.startsWith('branch:')) { const to = kind.slice(7); s.branches = (s.branches || []).filter(b => b !== to); }
+  else if (kind.startsWith('route:')) { const to = kind.slice(6); s.routes = (s.routes || []).filter(r => r.to !== to); if (s.default === to) s.default = ''; }
   drawStudio(); renderEditor();
+}
+// reconcileMerges keeps each merge's inputs list in sync with the producers
+// whose happy edge points at it — so wiring a producer INTO a merge is just a
+// normal edge, and inputs (which name the join build side) never drift.
+function reconcileMerges(m) {
+  m.steps.forEach(mg => {
+    if (mg.type !== 'merge') return;
+    mg.inputs = m.steps.filter(x => x.onSuccess === mg.id || x.onComplete === mg.id).map(x => x.id);
+    if (mg.mode === 'join' && mg.build && !mg.inputs.includes(mg.build)) mg.build = '';
+  });
 }
 
 function addNode(type) {
@@ -940,6 +1024,9 @@ function addNode(type) {
   const id = base + n;
   const step = {id, type: nodeType};
   if (isConn || nodeType === 'source' || nodeType === 'sink') { step.connector = ''; step.action = ''; }
+  else if (nodeType === 'tee') { step.branches = []; }
+  else if (nodeType === 'router') { step.routes = []; step.default = ''; }
+  else if (nodeType === 'merge') { step.inputs = []; step.mode = 'concat'; }
   studio.model.steps.push(step);
   if (!studio.model.start && nodeType === 'source') studio.model.start = id;
   // Place it to the right of the current spread.
@@ -952,6 +1039,10 @@ function deleteNode(id) {
   studio.model.steps = studio.model.steps.filter(s => s.id !== id);
   studio.model.steps.forEach(s => {
     ['onSuccess','onComplete','onFailure'].forEach(k => { if (s[k] === id) delete s[k]; });
+    if (s.branches) s.branches = s.branches.filter(b => b !== id);
+    if (s.routes) s.routes = s.routes.filter(r => r.to !== id);
+    if (s.default === id) s.default = '';
+    if (s.inputs) s.inputs = s.inputs.filter(i => i !== id);
   });
   if (studio.model.start === id) studio.model.start = (studio.model.steps[0] || {}).id || '';
   delete studio.pos[id];
@@ -993,6 +1084,35 @@ function renderEditor() {
     body += row('sep', inp('sep', s.sep));
   } else if (s.type === 'aggregate') {
     body += row('key', inp('key', s.key)) + row('aggs (JSON)', ta('aggs', jsonStr(s.aggs)));
+  } else if (s.type === 'tee') {
+    const bs = s.branches || [];
+    body += row('branches', bs.length ? `<span class="mono">${bs.map(esc).join(', ')}</span>` : `<span class="hint">drag the green port onto targets</span>`);
+    body += `<div class="hint" style="margin:.2rem 0">Duplicates every record to all branches — branches run <b>concurrently</b>.</div>`;
+  } else if (s.type === 'router') {
+    const rs = s.routes || [];
+    body += `<div class="hint" style="margin:.2rem 0">Each record takes the <b>first</b> matching route, else the default. Drag the green port onto a target to add a route.</div>`;
+    rs.forEach((r, i) => {
+      body += `<div class="efield" style="gap:.3rem;flex-wrap:wrap"><label>→ ${esc(r.to)}</label>`
+        + `<input style="flex:1;min-width:5rem" value="${esc(r.path || '')}" placeholder="$.path" onchange="editRoute('${esc(s.id)}',${i},'path',this.value)">`
+        + `<select onchange="editRoute('${esc(s.id)}',${i},'op',this.value)">` + CMP_OPS.map(o => `<option${o === r.op ? ' selected' : ''}>${o}</option>`).join('') + `</select>`
+        + `<input style="width:4.5rem" value="${esc(jsonStr(r.value))}" placeholder="value" onchange="editRoute('${esc(s.id)}',${i},'value',this.value)">`
+        + `<button class="wbtn" title="remove route" onclick="removeRoute('${esc(s.id)}',${i})">×</button></div>`;
+    });
+    const targets = rs.map(r => r.to);
+    body += row('default', `<select onchange="setRouterDefault('${esc(s.id)}',this.value)"><option value="">— drop unmatched —</option>`
+      + targets.map(t => `<option${t === s.default ? ' selected' : ''}>${esc(t)}</option>`).join('')
+      + (s.default && !targets.includes(s.default) ? `<option selected>${esc(s.default)}</option>` : '') + `</select>`);
+  } else if (s.type === 'merge') {
+    const ins = s.inputs || [];
+    body += row('inputs', ins.length ? `<span class="mono">${ins.map(esc).join(', ')}</span>` : `<span class="hint">wire producers' green ports into this node</span>`);
+    body += row('mode', `<select onchange="editMerge('${esc(s.id)}','mode',this.value)"><option value="concat"${s.mode !== 'join' ? ' selected' : ''}>concat (union)</option><option value="join"${s.mode === 'join' ? ' selected' : ''}>join (keyed)</option></select>`);
+    if (s.mode === 'join') {
+      body += row('build side', `<select onchange="editMerge('${esc(s.id)}','build',this.value)"><option value="">— choose —</option>` + ins.map(x => `<option${x === s.build ? ' selected' : ''}>${esc(x)}</option>`).join('') + `</select>`);
+      body += row('on.left', `<input value="${esc((s.on && s.on.left) || '')}" placeholder="$.key (probe)" onchange="editJoinOn('${esc(s.id)}','left',this.value)">`);
+      body += row('on.right', `<input value="${esc((s.on && s.on.right) || '')}" placeholder="$.key (build)" onchange="editJoinOn('${esc(s.id)}','right',this.value)">`);
+      body += row('type', `<select onchange="editMerge('${esc(s.id)}','joinType',this.value)"><option value="inner"${s.joinType !== 'left' ? ' selected' : ''}>inner</option><option value="left"${s.joinType === 'left' ? ' selected' : ''}>left</option></select>`);
+      body += row('as', `<input value="${esc(s.as || '')}" placeholder="field for matched record" onchange="editMerge('${esc(s.id)}','as',this.value)">`);
+    }
   }
   // Happy-edge intent toggle (success vs complete) when a happy edge exists.
   const happyTo = s.onSuccess || s.onComplete;
@@ -1009,6 +1129,34 @@ function renderEditor() {
 function setHappyKind(id, kind) {
   const s = stepById(id); const to = s.onSuccess || s.onComplete; if (!to) return;
   delete s.onSuccess; delete s.onComplete; s[kind] = to; drawStudio(); renderEditor();
+}
+
+// --- v3 structural-node editors (tee / router / merge) ---
+function editRoute(id, i, field, val) {
+  const s = stepById(id); const r = s && s.routes && s.routes[i]; if (!r) return;
+  if (field === 'value') {
+    if (val.trim() === '') { delete r.value; }
+    else { try { r.value = JSON.parse(val); } catch (e) { studio.errEl.textContent = 'route value: invalid JSON'; return; } }
+  } else { r[field] = val; }
+  studio.errEl.textContent = ''; drawStudio(); renderEditor();
+}
+function removeRoute(id, i) { const s = stepById(id); if (s && s.routes) s.routes.splice(i, 1); drawStudio(); renderEditor(); }
+function setRouterDefault(id, to) {
+  const s = stepById(id); if (!s) return;
+  if (to) s.routes = (s.routes || []).filter(r => r.to !== to); // a default target is not also a predicated route
+  s.default = to || '';
+  drawStudio(); renderEditor();
+}
+function editMerge(id, field, val) {
+  const s = stepById(id); if (!s) return;
+  if (val === '') delete s[field]; else s[field] = val;
+  if (field === 'mode' && val === 'join' && !s.on) s.on = {left: '', right: ''};
+  drawStudio(); renderEditor();
+}
+function editJoinOn(id, side, val) {
+  const s = stepById(id); if (!s) return;
+  s.on = s.on || {left: '', right: ''}; s.on[side] = val;
+  drawStudio(); renderEditor();
 }
 
 // editField writes a value back to the step. JSON-typed fields parse; a bad
@@ -1204,15 +1352,17 @@ async function saveLayout() {
 async function deployModel(layoutOnly) {
   if (!studio.name || !studio.model) return;
   const m = studio.model;
+  reconcileMerges(m);
   const doc = {name: m.name || studio.name, layout: Object.assign({}, studio.pos)};
   if (m.start) doc.start = m.start;
   doc.steps = m.steps.map(cleanStep);
   // Auto-terminate: a flow's happy path must end at a sink. Any non-sink step
-  // left without a happy edge (e.g. a lone SFTP mkdir source) is routed to a
-  // built-in @discard sink, added once — so a single verb node "just works"
-  // without the author placing an explicit terminal. (An explicit @response
-  // terminal that returns output to the caller is Phase 2.)
-  const dangling = doc.steps.filter(s => s.type !== 'sink' && !s.onSuccess && !s.onComplete);
+  // left without ANY outgoing edge (onSuccess/onComplete, a tee's branches, a
+  // router's routes) is routed to a built-in @discard sink, added once — so a
+  // single verb node "just works" without the author placing an explicit
+  // terminal. Structural fan-out nodes carry their own edges and are exempt.
+  const hasOut = s => s.onSuccess || s.onComplete || (s.branches && s.branches.length) || (s.routes && s.routes.length) || s.default;
+  const dangling = doc.steps.filter(s => s.type !== 'sink' && !hasOut(s));
   if (dangling.length) {
     let tid = 'discard'; let n = 1;
     while (doc.steps.some(s => s.id === tid)) tid = 'discard_' + (++n);
@@ -1243,7 +1393,15 @@ function cleanStep(s) {
   } else if (s.type === 'project') { out.fields = s.fields || [];
   } else if (s.type === 'coerce') { out.rules = s.rules || [];
   } else if (s.type === 'flatten') { out.sep = s.sep || '';
-  } else if (s.type === 'aggregate') { out.key = s.key || ''; out.aggs = s.aggs || []; }
+  } else if (s.type === 'aggregate') { out.key = s.key || ''; out.aggs = s.aggs || [];
+  } else if (s.type === 'tee') { out.branches = s.branches || [];
+  } else if (s.type === 'router') {
+    out.routes = (s.routes || []).map(r => { const o = {path: r.path || '', op: r.op || 'exists', to: r.to || ''}; if (r.value !== undefined) o.value = r.value; return o; });
+    if (s.default) out.default = s.default;
+  } else if (s.type === 'merge') {
+    out.inputs = s.inputs || []; out.mode = s.mode || 'concat';
+    if (out.mode === 'join') { if (s.on) out.on = s.on; if (s.build) out.build = s.build; if (s.joinType) out.joinType = s.joinType; if (s.as) out.as = s.as; }
+  }
   if (s.onSuccess) out.onSuccess = s.onSuccess;
   if (s.onComplete) out.onComplete = s.onComplete;
   if (s.onFailure) out.onFailure = s.onFailure;
@@ -1256,11 +1414,12 @@ function cleanStep(s) {
 function nodeCat(n) {
   if (n.role === 'handler') return 'handler';
   const c = n.connector || '';
+  if (n.type === 'tee' || n.type === 'router' || n.type === 'merge') return 'branch';
   if (c === '@discard' || c === '@response') return 'util';
   if (n.type === 'source' || n.type === 'sink') return 'connector';
   return 'transform';
 }
-const TYPE_ICON = {source:'▷', sink:'▮', filter:'▽', project:'▤', coerce:'⇄', flatten:'≋', aggregate:'Σ'};
+const TYPE_ICON = {source:'▷', sink:'▮', filter:'▽', project:'▤', coerce:'⇄', flatten:'≋', aggregate:'Σ', tee:'⋔', router:'◈', merge:'⋈'};
 function nodeIcon(n) {
   if (n.role === 'handler') return '⚠';
   const c = n.connector || '';
@@ -1290,6 +1449,9 @@ function nodeSummary(n) {
   if (n.type === 'coerce') return `${(s.rules || []).length} rule(s)`;
   if (n.type === 'flatten') return `sep "${s.sep || ''}"`;
   if (n.type === 'aggregate') return `by ${s.key || '?'}`;
+  if (n.type === 'tee') return `${(s.branches || []).length} branch(es) · concurrent`;
+  if (n.type === 'router') return `${(s.routes || []).length} route(s)${s.default ? ' + default' : ''}`;
+  if (n.type === 'merge') return s.mode === 'join' ? `join on ${(s.on && s.on.left) || '?'}` : `concat · ${(s.inputs || []).length} in`;
   return n.type;
 }
 function clip(s, n) { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
@@ -1307,11 +1469,14 @@ function renderGraph(g, pos, sel, uid) {
   const edges = (g.edges || []).map(e => {
     const a = pos[e.from], b = pos[e.to]; if (!a || !b) return '';
     const fail = e.kind === 'failure';
-    const col = fail ? 'var(--bad)' : 'var(--ok)';
+    const branch = e.kind.startsWith('branch'), route = e.kind.startsWith('route');
+    const mk = fail ? 'r' : branch ? 'b' : route ? 'o' : 'g';
+    const col = fail ? 'var(--bad)' : branch ? 'var(--n-branch)' : route ? 'var(--edge-route)' : 'var(--ok)';
+    // Branch/route edges leave the happy (upper) port; failure leaves the lower.
     const d = edgePath(a.x + W, fail ? outFy(a) : outSy(a), b.x, inY(b));
     // Wide transparent hit-path under the visible one for easy click-delete.
-    return `<path d="${d}" fill="none" stroke="transparent" stroke-width="12" data-edge="${esc(e.from)}|${e.kind}" style="cursor:pointer"/>
-      <path d="${d}" fill="none" stroke="${col}" stroke-width="2" marker-end="url(#arr-${fail ? 'r' : 'g'}-${uid})" style="pointer-events:none"/>`;
+    return `<path d="${d}" fill="none" stroke="transparent" stroke-width="12" data-edge="${esc(e.from)}|${esc(e.kind)}" style="cursor:pointer"/>
+      <path d="${d}" fill="none" stroke="${col}" stroke-width="2" marker-end="url(#arr-${mk}-${uid})" style="pointer-events:none"/>`;
   }).join('');
   const nodes = (g.nodes || []).map(n => {
     const p = pos[n.id]; if (!p) return '';
@@ -1320,16 +1485,16 @@ function renderGraph(g, pos, sel, uid) {
     const selStroke = sel === n.id ? 'var(--accent)' : 'var(--line)';
     // Handlers are terminal (no outgoing edges, ADR-0013) → no output ports.
     const outPorts = isHandler ? '' :
-      `<circle data-id="${esc(n.id)}" data-port="happy" cx="${p.x+W}" cy="${outSy(p)}" r="6" fill="var(--ok)" stroke="#0d1117" stroke-width="1.5" style="cursor:crosshair"><title>success →</title></circle>
-       <circle data-id="${esc(n.id)}" data-port="fail" cx="${p.x+W}" cy="${outFy(p)}" r="6" fill="var(--bad)" stroke="#0d1117" stroke-width="1.5" style="cursor:crosshair"><title>failure →</title></circle>`;
+      `<circle data-id="${esc(n.id)}" data-port="happy" cx="${p.x+W}" cy="${outSy(p)}" r="6" fill="var(--ok)" stroke="var(--canvas)" stroke-width="1.5" style="cursor:crosshair"><title>success →</title></circle>
+       <circle data-id="${esc(n.id)}" data-port="fail" cx="${p.x+W}" cy="${outFy(p)}" r="6" fill="var(--bad)" stroke="var(--canvas)" stroke-width="1.5" style="cursor:crosshair"><title>failure →</title></circle>`;
     return `<g data-id="${esc(n.id)}">
-      <rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="9" fill="#161b23" stroke="${selStroke}" stroke-width="${sel===n.id?2:1}" style="cursor:grab"/>
+      <rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="9" fill="var(--node-bg)" stroke="${selStroke}" stroke-width="${sel===n.id?2:1}" filter="url(#nsh-${uid})" style="cursor:grab"/>
       <path d="M${p.x},${p.y+HDR} L${p.x},${p.y+9} Q${p.x},${p.y} ${p.x+9},${p.y} L${p.x+W-9},${p.y} Q${p.x+W},${p.y} ${p.x+W},${p.y+9} L${p.x+W},${p.y+HDR} Z" fill="${hdr}" style="pointer-events:none"/>
-      <text x="${p.x+9}" y="${p.y+15}" fill="#08121a" font-size="12" style="pointer-events:none">${esc(nodeIcon(n))}</text>
-      <text x="${p.x+27}" y="${p.y+15}" fill="#08121a" font-size="11.5" font-weight="700" style="pointer-events:none">${esc(clip(nodeLabel(n),20))}</text>
+      <text x="${p.x+9}" y="${p.y+15}" fill="var(--hdr-text)" font-size="12" style="pointer-events:none">${esc(nodeIcon(n))}</text>
+      <text x="${p.x+27}" y="${p.y+15}" fill="var(--hdr-text)" font-size="11.5" font-weight="700" style="pointer-events:none">${esc(clip(nodeLabel(n),20))}</text>
       <text x="${p.x+11}" y="${p.y+HDR+18}" fill="var(--text)" font-size="12" font-weight="600" style="pointer-events:none">${esc(clip(n.id,24))}</text>
       <text x="${p.x+11}" y="${p.y+HDR+34}" fill="var(--dim)" font-size="10.5" style="pointer-events:none">${esc(clip(nodeSummary(n),27))}</text>
-      <circle cx="${p.x}" cy="${inY(p)}" r="5" fill="#0d1117" stroke="var(--dim)" stroke-width="1.5"><title>input</title></circle>
+      <circle cx="${p.x}" cy="${inY(p)}" r="5" fill="var(--canvas)" stroke="var(--dim)" stroke-width="1.5"><title>input</title></circle>
       ${outPorts}</g>`;
   }).join('');
   // Marker + grid ids are namespaced per builder window so multiple open
@@ -1337,10 +1502,32 @@ function renderGraph(g, pos, sel, uid) {
   const arrow = (id, color) => `<marker id="arr-${id}-${uid}" markerWidth="8" markerHeight="8" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="${color}"/></marker>`;
   const grid = `<pattern id="grid-${uid}" width="${GRID}" height="${GRID}" patternUnits="userSpaceOnUse"><path d="M${GRID} 0 H0 V${GRID}" fill="none" stroke="var(--line)" stroke-width="1" opacity=".45"/></pattern>`;
   return `<svg width="${width}" height="${height}" style="max-width:none;touch-action:none;display:block">
-    <defs>${grid}${arrow('g','var(--ok)')}${arrow('r','var(--bad)')}</defs>
-    <rect width="${width}" height="${height}" fill="url(#grid-${uid})"/>${edges}${nodes}</svg>`;
+    <defs>${grid}${arrow('g','var(--ok)')}${arrow('r','var(--bad)')}${arrow('b','var(--n-branch)')}${arrow('o','var(--edge-route)')}
+      <filter id="nsh-${uid}" x="-20%" y="-25%" width="140%" height="150%"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.28"/></filter></defs>
+    <rect width="${width}" height="${height}" fill="url(#grid-${uid})"/>${edges}${nodes}${(g.nodes || []).length ? '' : `<text x="${width / 2}" y="${height / 2}" fill="var(--dim)" font-size="13" text-anchor="middle" dominant-baseline="middle">empty canvas — add a node from the toolbar above</text>`}</svg>`;
 }
 
+// --- theming: light/dark + colour-blind, persisted, respects OS preference ---
+function applyTheme() {
+  const root = document.documentElement;
+  const t = localStorage.getItem('shift.theme') ||
+    (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  root.setAttribute('data-theme', t);
+  const cb = localStorage.getItem('shift.cb') === '1';
+  if (cb) root.setAttribute('data-cb', '1'); else root.removeAttribute('data-cb');
+  const tb = document.getElementById('themebtn'); if (tb) tb.textContent = t === 'light' ? '☀' : '☾';
+  const cbb = document.getElementById('cbbtn'); if (cbb) cbb.style.borderColor = cb ? 'var(--accent)' : '';
+}
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  localStorage.setItem('shift.theme', cur === 'light' ? 'dark' : 'light');
+  applyTheme();
+}
+function toggleCB() {
+  localStorage.setItem('shift.cb', localStorage.getItem('shift.cb') === '1' ? '0' : '1');
+  applyTheme();
+}
+applyTheme();
 boot();
 </script>
 </body>
