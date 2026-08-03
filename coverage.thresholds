@@ -22,6 +22,7 @@ default 0
 github.com/aaron-au/shift/connectors/internal/genconn 78
 github.com/aaron-au/shift/connectors/internal/httpconn 77
 github.com/aaron-au/shift/engine/format/csvf 84
+github.com/aaron-au/shift/engine/format/xmlf 90
 github.com/aaron-au/shift/engine/format/ndjson 76
 github.com/aaron-au/shift/engine/mem 98
 github.com/aaron-au/shift/engine/record 85
