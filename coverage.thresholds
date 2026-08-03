@@ -20,6 +20,7 @@
 default 0
 
 github.com/aaron-au/shift/connectors/internal/fsconn 80
+github.com/aaron-au/shift/connectors/internal/soapconn 85
 github.com/aaron-au/shift/connectors/internal/genconn 78
 github.com/aaron-au/shift/connectors/internal/httpconn 77
 github.com/aaron-au/shift/engine/format/csvf 84
