@@ -1,0 +1,115 @@
+SHIFT — third-party notices
+===========================
+
+SHIFT is proprietary software (see LICENSE). This file exists to satisfy the
+attribution terms of the open-source components it links against, and is
+distributed with every SHIFT binary and container image.
+
+The list covers the modules that actually ship in the hubd, runnerd and
+connector binaries (Go's build graph, `go list -deps`), not the wider module
+graph. All are permissive licences; none imposes a source-disclosure or
+reciprocity obligation on SHIFT itself.
+
+Regenerate with `make notice` after changing dependencies.
+
+Apache-2.0
+----------
+
+Apache License 2.0 — https://www.apache.org/licenses/LICENSE-2.0
+Section 4(d) requires that the NOTICE files of these components travel with
+any distribution; where a component ships its own NOTICE it is marked below.
+
+  github.com/aws/aws-sdk-go-v2   (ships a NOTICE file)
+  github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream
+  github.com/aws/aws-sdk-go-v2/credentials
+  github.com/aws/aws-sdk-go-v2/internal/configsources
+  github.com/aws/aws-sdk-go-v2/internal/endpoints/v2
+  github.com/aws/aws-sdk-go-v2/internal/v4a
+  github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding
+  github.com/aws/aws-sdk-go-v2/service/internal/checksum
+  github.com/aws/aws-sdk-go-v2/service/internal/presigned-url
+  github.com/aws/aws-sdk-go-v2/service/internal/s3shared
+  github.com/aws/aws-sdk-go-v2/service/s3
+  github.com/aws/smithy-go   (ships a NOTICE file)
+  github.com/coreos/go-oidc/v3   (ships a NOTICE file)
+  github.com/go-jose/go-jose/v4
+  github.com/go-logr/logr
+  github.com/go-logr/stdr
+  github.com/prometheus/client_golang   (ships a NOTICE file)
+  github.com/prometheus/client_model   (ships a NOTICE file)
+  github.com/prometheus/common   (ships a NOTICE file)
+  github.com/prometheus/otlptranslator
+  go.opentelemetry.io/auto/sdk
+  go.opentelemetry.io/otel
+  go.opentelemetry.io/otel/exporters/prometheus
+  go.opentelemetry.io/otel/metric
+  go.opentelemetry.io/otel/sdk
+  go.opentelemetry.io/otel/sdk/metric
+  go.opentelemetry.io/otel/trace
+  go.yaml.in/yaml/v2   (ships a NOTICE file)
+  google.golang.org/genproto/googleapis/rpc
+  google.golang.org/grpc   (ships a NOTICE file)
+
+MIT
+---
+
+MIT License — the copyright notice and permission notice of each component
+are retained in the component's own source distribution.
+
+  github.com/Azure/azure-sdk-for-go/sdk/azcore
+  github.com/Azure/azure-sdk-for-go/sdk/internal
+  github.com/Azure/azure-sdk-for-go/sdk/storage/azblob
+  github.com/beorn7/perks
+  github.com/cespare/xxhash/v2
+  github.com/jackc/pgpassfile
+  github.com/jackc/pgservicefile
+  github.com/jackc/pgx/v5
+  github.com/jackc/puddle/v2
+  github.com/robfig/cron/v3
+  go.uber.org/atomic
+
+BSD-3-Clause
+------------
+
+BSD 3-Clause License — redistribution requires the copyright notice, this
+list of conditions and the disclaimer; the name of the copyright holder may
+not be used to endorse products derived from the software.
+
+  github.com/google/uuid
+  github.com/kr/fs
+  github.com/munnerz/goautoneg
+  golang.org/x/crypto
+  golang.org/x/net
+  golang.org/x/oauth2
+  golang.org/x/sync
+  golang.org/x/sys
+  golang.org/x/text
+  golang.org/x/time
+  google.golang.org/protobuf
+
+BSD-2-Clause
+------------
+
+BSD 2-Clause License — redistribution requires the copyright notice, this
+list of conditions and the disclaimer.
+
+  github.com/pkg/sftp
+  github.com/rabbitmq/amqp091-go
+  github.com/redis/go-redis/v9
+
+ISC
+---
+
+ISC License — the copyright notice and permission notice are retained in
+the component's own source distribution.
+
+  github.com/jlaffaye/ftp
+
+Runtime components (separate processes, not linked)
+--------------------------------------------------
+
+The "just runs" bundle (deploy/) starts these as their own containers. They are
+not linked into any SHIFT binary and impose no obligation on it:
+
+  PostgreSQL      PostgreSQL License (permissive, BSD-like)
+  Dex             Apache License 2.0

@@ -1,4 +1,4 @@
-.PHONY: setup build proto test bench bench-report cover cover-bump fmt fmt-check vet lint actions vuln leaks check tidy tidy-check clean fuzz
+.PHONY: setup build proto notice test bench bench-report cover cover-bump fmt fmt-check vet lint actions vuln leaks check tidy tidy-check clean fuzz
 
 MODULES := engine sdk pkg runner hub connectors
 VERSION ?= dev
@@ -40,6 +40,12 @@ proto:
 ## the test cache so a gate never trusts a stale pass.
 test:
 	@for m in $(MODULES); do echo "--- test $$m"; (cd $$m && go test -race -shuffle=on -count=1 ./...) || exit 1; done
+
+## notice: regenerate NOTICE (third-party attribution) from the modules that
+## actually ship in the binaries. Apache-2.0 dependencies require their notices
+## to travel with any distribution; run this after changing dependencies.
+notice:
+	./scripts/notice.sh
 
 ## cover: per-package coverage gate (coverage.thresholds) + coverage/ artifacts
 ## (coverage.html browsable, coverage.md job summary, coverage.json badge). Runs
