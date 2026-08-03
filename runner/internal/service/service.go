@@ -136,6 +136,12 @@ type SubmitOpts struct {
 	// when its source is the built-in @webhook (ADR-0016 direct execution).
 	// Required for such flows; ignored otherwise.
 	WebhookBody []byte
+	// OnDone, when set, is called once with the recorded task after it
+	// reaches a terminal state. It replaces polling the store from outside:
+	// the async trigger paths use it to report execution metadata to the
+	// hub. It runs on its own goroutine, so a slow report cannot hold the
+	// task's goroutine (and therefore cannot delay drain).
+	OnDone func(t task.Task)
 	// Response, when set, is where the built-in @response sink streams the
 	// flow's terminal output (NDJSON) to return it to the caller of a
 	// synchronous direct execution (ADR-0016; payload never touches the hub).
@@ -198,6 +204,17 @@ func (s *Service) register(doc *flow.Document, o SubmitOpts) (string, error) {
 
 func (s *Service) run(id string, doc *flow.Document, o SubmitOpts) {
 	defer s.wg.Done()
+
+	// Registered BEFORE the panic guard so it runs AFTER it (defers are
+	// LIFO): the callback must see the final state, including a task the
+	// guard failed.
+	if o.OnDone != nil {
+		defer func() {
+			if t, ok := s.store.Get(id); ok {
+				go o.OnDone(t)
+			}
+		}()
+	}
 
 	// Build the redactor first so the panic guard can scrub any secret value
 	// out of a recovered panic message before it is recorded/reported.

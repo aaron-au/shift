@@ -334,7 +334,15 @@ func syncWebhooks(ctx context.Context, client *hubclient.Client, hooks *webhook.
 		} else {
 			hs := make([]webhook.Hook, 0, len(cfgs))
 			for _, c := range cfgs {
-				hs = append(hs, webhook.Hook{Name: c.Name, Doc: c.Document, TokenHash: c.TokenHash})
+				// Parse once per sync, not once per inbound request. One bad
+				// document must not cost the runner every other hook, so it
+				// is skipped and logged rather than aborting the replace.
+				h, err := webhook.NewHook(c.Name, c.Document, c.TokenHash)
+				if err != nil {
+					log.Printf("runnerd: webhook sync: hook %q has an invalid document, skipping: %v", c.Name, err)
+					continue
+				}
+				hs = append(hs, h)
 			}
 			hooks.Replace(hs)
 		}

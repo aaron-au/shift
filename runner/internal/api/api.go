@@ -152,12 +152,12 @@ func Handler(svc *service.Service, o Options) http.Handler {
 			writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf("secret resolution: %w", err))
 			return
 		}
+		opts.OnDone = onDone(report, "api")
 		id, err := svc.SubmitWith(doc, opts)
 		if err != nil {
 			writeErr(w, http.StatusUnprocessableEntity, err)
 			return
 		}
-		reportWhenDone(svc, id, "api", report)
 		writeJSON(w, http.StatusAccepted, map[string]string{"task_id": id})
 	})
 
@@ -252,12 +252,15 @@ func Handler(svc *service.Service, o Options) http.Handler {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		if _, err := flow.Parse(req.Document); err != nil { // validate at registration
+		name := r.PathValue("name")
+		// Validate AND parse once, here: the hook's document is fixed from
+		// now on, so the trigger endpoint must not re-parse it per request.
+		h, err := webhook.NewHook(name, req.Document, hashHookToken(req.Token))
+		if err != nil {
 			writeErr(w, http.StatusUnprocessableEntity, err)
 			return
 		}
-		name := r.PathValue("name")
-		hooks.Put(webhook.Hook{Name: name, Doc: req.Document, TokenHash: hashHookToken(req.Token)})
+		hooks.Put(h)
 		writeJSON(w, http.StatusOK, map[string]any{"name": name, "protected": req.Token != ""})
 	})
 
@@ -303,10 +306,14 @@ func Handler(svc *service.Service, o Options) http.Handler {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		doc, err := flow.Parse(h.Doc)
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
-			return
+		doc := h.Parsed
+		if doc == nil {
+			// Only reachable for a Hook built without NewHook. Parse rather
+			// than fail, but this is the slow path and not expected.
+			if doc, err = flow.Parse(h.Doc); err != nil {
+				writeErr(w, http.StatusInternalServerError, err)
+				return
+			}
 		}
 		doc, secretValues, err := secrets.Apply(r.Context(), doc)
 		if err != nil {
@@ -315,12 +322,12 @@ func Handler(svc *service.Service, o Options) http.Handler {
 		}
 		id, err := svc.SubmitWith(doc, service.SubmitOpts{
 			WebhookBody: body, SecretValues: secretValues,
+			OnDone: onDone(report, "webhook"),
 		})
 		if err != nil {
 			writeErr(w, http.StatusUnprocessableEntity, err)
 			return
 		}
-		reportWhenDone(svc, id, "webhook", report)
 		writeJSON(w, http.StatusAccepted, map[string]string{"task_id": id})
 	})
 
@@ -408,27 +415,20 @@ func reportNow(t task.Task, trigger string, report ExecReporter) {
 	go report(t, trigger)
 }
 
-func reportWhenDone(svc *service.Service, id, trigger string, report ExecReporter) {
+// onDone adapts an ExecReporter to the service's completion callback. nil
+// when there is no hub to report to, which the service then skips entirely.
+//
+// This replaced a per-task goroutine that polled the task store every 200ms
+// until the task finished. That cost a goroutine and five timer wakeups per
+// second for the whole life of every direct execution — dead weight at any
+// real trigger rate — and delayed each report by up to 200ms for no reason.
+// It also made the throughput benchmark measure the poll interval instead of
+// the path (docs/dev/04-runner.md).
+func onDone(report ExecReporter, trigger string) func(task.Task) {
 	if report == nil {
-		return
+		return nil
 	}
-	go func() {
-		deadline := time.Now().Add(10 * time.Minute)
-		for {
-			t, ok := svc.Task(id)
-			if !ok {
-				return // evicted before we saw it finish
-			}
-			if t.State == task.StateCompleted || t.State == task.StateFailed {
-				report(t, trigger)
-				return
-			}
-			if time.Now().After(deadline) {
-				return
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-	}()
+	return func(t task.Task) { report(t, trigger) }
 }
 
 func decodeFlow(r *http.Request) (*flow.Document, error) {
