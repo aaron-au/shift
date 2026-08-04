@@ -324,14 +324,43 @@ intercept or redirect the hub's connection to that recorded address. That is
 the ordinary mTLS threat model, and it is a much smaller target than "anyone
 holding this token can register".
 
-**Identity renewal must be pushed before expiry.** This is the hazard specific
-to a component that never dials out, and it needs designing in rather than
-discovering. If the gateway's own certificate expires, the hub can no longer
-complete the handshake; the gateway cannot request a renewal, because
-requesting anything means dialling. It is then permanently stranded and only a
-manual bundle replacement recovers it. So the hub tracks expiry per gateway
-record, warns well ahead, and pushes the replacement over the still-valid
-connection.
+**Identity is two-tiered, and after enrollment it is ordinary configuration.**
+Aaron's framing (2026-08-04): once the bundle is placed, why should the
+identity not be hub-managed like everything else — the way an OAuth offline
+refresh token mints access tokens? It should, and the analogy maps directly:
+
+| | OAuth | Gateway |
+|---|---|---|
+| Obtained once, out of band | refresh token | **enrollment identity** (the manually placed bundle) |
+| Short-lived, auto-rotated | access token | **operational certificate** (hub-pushed) |
+| Renewal | client presents the refresh token | hub re-enrolls the gateway |
+
+So the manual step happens exactly once. Thereafter the operational certificate
+rotates on a schedule, pushed over the existing channel, and no human touches
+the gateway again.
+
+**One asymmetry inverts a usual intuition.** OAuth refresh is a *pull* — a
+client that has been offline simply refreshes when it returns. The gateway
+cannot pull, so renewal is push-only, which means **shorter operational
+certificates are worse for availability here**: if the hub is unreachable past
+expiry, the handshake fails, the gateway cannot request anything (requesting
+means dialling), and it is stranded.
+
+The fix is the direct analogue of the refresh exchange. **The hub accepts an
+expired operational certificate for re-enrollment only** — never for serving —
+provided the key matches and the gateway record is still valid and unrevoked.
+Same identity, same key, provably issued by us, merely stale. The hub then
+pushes a fresh operational certificate.
+
+That converts stranding from "manual bundle replacement" into "self-heals after
+an outage of any length", and revocation is unaffected because it is hub-side
+record state rather than something the certificate carries. Renewal at ~50% of
+lifetime (the kubelet/Vault pattern) becomes a hygiene target rather than a
+hard deadline: missing it costs a re-enrollment round trip, not a site visit.
+
+**One manual step is the floor.** The first trust anchor always requires an
+out-of-band act; the only alternative is trust-on-first-use, which is not a
+trade worth making for the one component sitting in the DMZ.
 
 **An unconfigured gateway must be visible from the hub.** A passive component
 that is never dialled — wrong address in the record, a missing firewall rule —
