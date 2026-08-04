@@ -134,6 +134,15 @@ type Result struct {
 	SinkConfirmed int64    `json:"sink_confirmed,omitempty"`
 	Ops           []OpStat `json:"ops,omitempty"`
 	RunnerTaskID  string   `json:"runner_task_id,omitempty"`
+
+	// Stopped reports that the flow ended on a deliberate @stop terminal and
+	// StopStep names it (ADR-0031 §3). Metadata only — no payload, matching
+	// the control-plane contract (ADR-0016). The hub keeps the result as
+	// opaque JSON, so these ride along with no schema change; they exist so a
+	// deliberate early exit is visible in the durable record rather than
+	// indistinguishable from a flow that ran to its natural end.
+	Stopped  bool   `json:"stopped,omitempty"`
+	StopStep string `json:"stop_step,omitempty"`
 }
 
 // OpStat mirrors the runner's per-operator stats. Field layout matches

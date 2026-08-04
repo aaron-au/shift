@@ -183,10 +183,22 @@ const DiscardSink = "@discard"
 // needs no action; exempt from capability policy + signing. (ADR-0024 Phase 2.)
 const ResponseSink = "@response"
 
+// StopSink is the reserved built-in terminal that ends a flow early and
+// deliberately, as a SUCCESS (ADR-0031 §3). Routing a record into it — the
+// usual shape is one arm of a router, "if this condition holds, stop" — ends
+// the whole execution: the task is `completed` with a stopped marker, not
+// failed and not retried.
+//
+// It is distinct from @discard, which drops records and lets the stream run
+// to its natural end. @stop terminates. Connector-free and side-effect-free;
+// valid only on a sink step; needs no action; exempt from capability policy
+// and signing.
+const StopSink = "@stop"
+
 // isBuiltinSink reports whether name is a built-in that may terminate a flow
-// (the two side-effect-free terminals). @webhook is a source, not a sink.
+// (the side-effect-free terminals). @webhook is a source, not a sink.
 func isBuiltinSink(name string) bool {
-	return name == DiscardSink || name == ResponseSink
+	return name == DiscardSink || name == ResponseSink || name == StopSink
 }
 
 // IsBuiltinConnector reports whether name is a reserved built-in (the

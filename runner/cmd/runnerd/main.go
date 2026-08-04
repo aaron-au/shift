@@ -216,6 +216,7 @@ func main() {
 			GovBudget: st.Governor.Budget, GovUsed: st.Governor.Used, GovPeak: st.Governor.Peak,
 			MaxByMem:  st.MaxByMem,
 			Submitted: st.Totals.Submitted, Completed: st.Totals.Completed, Failed: st.Totals.Failed,
+			Stopped: st.Totals.Stopped,
 			Waiting: st.Totals.Waiting, Running: st.Totals.Running, RecordsIn: st.Totals.RecordsIn,
 		}
 		for _, c := range st.Connectors {

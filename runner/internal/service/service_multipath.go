@@ -54,6 +54,8 @@ func (s *Service) bindSink(step *flow.Step, o SubmitOpts) (stream.Sink, func() i
 	case flowdoc.ResponseSink:
 		rs := newResponseSink(o.Response)
 		return rs, func() int64 { return rs.n }, func() {}, nil
+	case flowdoc.StopSink:
+		return &stopSink{}, func() int64 { return 0 }, func() {}, nil
 	default:
 		proc, err := s.pool.Get(s.baseCtx, step.Connector)
 		if err != nil {
@@ -260,7 +262,7 @@ func (s *Service) executeFanIn(ctx context.Context, doc *flow.Document, plan *fl
 // aggregateFanout folds per-branch reports and confirmed counts into one
 // execResult.
 func aggregateFanout(frep stream.FanoutReport, confirmers []func() int64) execResult {
-	var res execResult
+	res := execResult{stopped: frep.Stopped, stopStep: frep.StopStep}
 	for _, br := range frep.Branches {
 		res.rep.Ops = append(res.rep.Ops, br.Ops...)
 		res.rep.RecordsOut += br.RecordsOut
@@ -274,13 +276,15 @@ func aggregateFanout(frep stream.FanoutReport, confirmers []func() int64) execRe
 // routeMultiError applies the shared onFailure routing (ADR-0013) to a
 // multi-path run's error, tagging by the failing step id.
 func (s *Service) routeMultiError(ctx context.Context, plan *flowdoc.Plan, doc *flow.Document, redact func(string) string, res execResult, runErr error) (execResult, error) {
+	// The fan-out executor already classified its own branch errors (it has to
+	// — only it can tell its teardown cancel from the caller's). Running the
+	// rule again here is harmless and covers the fan-in path, which runs a
+	// single pipeline and arrives with a raw error.
+	runErr = classify(ctx, &res, runErr)
 	if runErr == nil {
 		return res, nil
 	}
-	failStep := ""
-	if oe, ok := errors.AsType[*stream.OpError](runErr); ok {
-		failStep = oe.Op
-	}
+	failStep := failingStep(runErr)
 	if h := plan.HandlerFor(failStep); h != nil {
 		res.handled = true
 		res.handlerStep = h.ID

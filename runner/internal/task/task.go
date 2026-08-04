@@ -66,6 +66,15 @@ type Task struct {
 	HandlerStep  string `json:"handler_step,omitempty"`
 	HandlerError string `json:"handler_error,omitempty"`
 
+	// Stopped records that the flow ended on a deliberate @stop terminal
+	// (ADR-0031 §3) and which step requested it. The task state is
+	// StateCompleted — a stop is a SUCCESS, not an error — so this marker is
+	// the only thing distinguishing "ran to the end" from "the author ended it
+	// early". It must not be modelled as a failure: the hub would retry a flow
+	// that was deliberately stopped.
+	Stopped  bool   `json:"stopped,omitempty"`
+	StopStep string `json:"stop_step,omitempty"`
+
 	// Captured holds per-step INPUT/OUTPUT samples when capture is enabled
 	// (test mode). Runner-only, redacted, ephemeral (evicted with the task).
 	Captured []StepCapture `json:"captured,omitempty"`
@@ -85,6 +94,10 @@ type Totals struct {
 	Submitted int64 `json:"submitted"`
 	Completed int64 `json:"completed"`
 	Failed    int64 `json:"failed"`
+	// Stopped counts completions that ended on a deliberate @stop. It is a
+	// SUBSET of Completed, not a peer of it — Completed + Failed still totals
+	// every terminal task.
+	Stopped   int64 `json:"stopped"`
 	Waiting   int64 `json:"waiting"`
 	Running   int64 `json:"running"`
 	RecordsIn int64 `json:"records_in"`
@@ -150,6 +163,13 @@ func (s *Store) Update(id string, fn func(*Task)) {
 	case StateCompleted:
 		s.totals.Completed++
 		s.totals.RecordsIn += t.RecordsIn
+		if t.Stopped {
+			// Counted as well as completed, not instead of it: a stop IS a
+			// completion. The separate count is what makes a deliberate stop
+			// observable rather than an outcome silently folded into success
+			// (ADR-0031 §3, ADR-0005 "never silently dropped").
+			s.totals.Stopped++
+		}
 	case StateFailed:
 		s.totals.Failed++
 	default:

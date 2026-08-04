@@ -310,6 +310,8 @@ func (s *Service) run(id string, doc *flow.Document, o SubmitOpts) {
 			return
 		}
 		t.State = task.StateCompleted
+		t.Stopped = res.stopped
+		t.StopStep = res.stopStep
 		t.SinkConfirmed = res.confirmed
 		t.RecordsOut = res.rep.RecordsOut
 		if len(res.rep.Ops) > 0 {
@@ -328,14 +330,47 @@ func (s *Service) run(id string, doc *flow.Document, o SubmitOpts) {
 }
 
 // execResult carries an execution's outcome, including whether an error
-// was routed to an onFailure handler.
+// was routed to an onFailure handler and whether the flow ended on a
+// deliberate @stop.
 type execResult struct {
 	rep         stream.Report
 	confirmed   int64
 	handled     bool
 	handlerStep string
 	handlerErr  string
+	stopped     bool
+	stopStep    string
 	captured    []task.StepCapture
+}
+
+// classify resolves an execution's terminal result (ADR-0031 §1) and folds a
+// deliberate @stop into the result as a SUCCESS. Every execution path funnels
+// through here so a stop cannot be mistaken for a failure on one path and not
+// another — that mistake is precisely what would get a deliberately-ended flow
+// retried, or dead-lettered as if it had gone wrong.
+func classify(ctx context.Context, res *execResult, runErr error) error {
+	// An already-recorded stop is final. The fan-out executor resolves the
+	// outcome itself — only it can tell its own teardown cancel from the
+	// caller's — and reports a stop on the FanoutReport with a NIL error.
+	// Re-running the rule over that nil would not merely fail to see the stop:
+	// if the caller's context happened to be done too (a client timeout racing
+	// the stop), rule 3 would promote it to a genuine cancellation and fail a
+	// task the author deliberately ended.
+	if res.stopped {
+		return nil
+	}
+	out := stream.Classify(ctx, runErr)
+	res.stopped, res.stopStep = out.Stopped, out.StopStep
+	return out.Err
+}
+
+// failingStep names the step an error is tagged to, or "" when it carries no
+// step tag. The engine tags by step id (ADR-0013), never by string parsing.
+func failingStep(err error) string {
+	if oe, ok := errors.AsType[*stream.OpError](err); ok {
+		return oe.Op
+	}
+	return ""
 }
 
 // execute binds connectors, runs the compiled pipeline, and on failure
@@ -380,6 +415,7 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 	if sampler != nil {
 		res.captured = sampler.result()
 	}
+	runErr = classify(ctx, &res, runErr)
 	if runErr == nil {
 		return res, nil
 	}
@@ -387,10 +423,7 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 	// Error routing: identify the failing step (the OpError tag) and, if the
 	// flow declares an onFailure handler covering it, run the handler with a
 	// payload-free, redacted error record. The task still fails.
-	failStep := ""
-	if oe, ok := errors.AsType[*stream.OpError](runErr); ok {
-		failStep = oe.Op
-	}
+	failStep := failingStep(runErr)
 	if h := plan.HandlerFor(failStep); h != nil {
 		res.handled = true
 		res.handlerStep = h.ID
@@ -413,6 +446,22 @@ func (d *discardSink) Write(_ context.Context, b *record.Batch) error {
 }
 
 func (d *discardSink) Close() error { return nil }
+
+// stopSink is the built-in @stop terminal (ADR-0031 §3): reaching it ends the
+// flow early and deliberately, as a success. The first batch to arrive raises
+// stream.ErrStopRequested, which Pipeline.Run tags with this step's id and
+// which stream.Classify resolves to a stopped-not-failed outcome.
+//
+// The distinction from @discard is the point: @discard drops records and lets
+// the stream run to its natural end; @stop terminates the execution. A flow
+// that merely wants to throw records away wants @discard.
+//
+// A stop that never fires (no record is ever routed here) leaves the flow
+// completely unaffected — Write is simply never called.
+type stopSink struct{}
+
+func (*stopSink) Write(_ context.Context, _ *record.Batch) error { return stream.ErrStopRequested }
+func (*stopSink) Close() error                                   { return nil }
 
 // responseSink is the built-in @response terminal: it serializes the flow's
 // terminal stream as NDJSON to the caller-supplied writer (bounded by the

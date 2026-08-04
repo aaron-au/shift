@@ -347,3 +347,37 @@ func TestStepIDCharset(t *testing.T) {
 		}
 	}
 }
+
+func TestStopSink(t *testing.T) {
+	// Valid: a router arm ending at @stop — the shape the terminal exists for
+	// ("if this holds, end the flow"). No action is needed on @stop.
+	ok := `{"name":"x","start":"in","steps":[
+	  {"id":"in","type":"source","connector":"gen","action":"gen","onSuccess":"r"},
+	  {"id":"r","type":"router","routes":[{"path":"$.halt","op":"eq","value":true,"to":"halt"}],"default":"keep"},
+	  {"id":"halt","type":"sink","connector":"@stop"},
+	  {"id":"keep","type":"sink","connector":"@discard"}]}`
+	d, err := Parse([]byte(ok))
+	if err != nil {
+		t.Fatalf("@stop sink rejected: %v", err)
+	}
+	// Connector-free: it must never reach registry resolution, capability
+	// policy, or signature verification.
+	for _, c := range d.Connectors() {
+		if c == StopSink {
+			t.Fatalf("@stop leaked into resolvable connectors: %v", d.Connectors())
+		}
+	}
+	// Role-locked to a terminal: a flow cannot be *sourced* from a stop.
+	if _, err := Parse([]byte(`{"name":"x","start":"s","steps":[
+	  {"id":"s","type":"source","connector":"@stop","onSuccess":"k"},
+	  {"id":"k","type":"sink","connector":"@discard"}]}`)); err == nil {
+		t.Error("@stop as source accepted, want rejection")
+	}
+	// Built-ins talk to no external system, so a connection on one is a
+	// mistake worth surfacing rather than ignoring.
+	if _, err := Parse([]byte(`{"name":"x","start":"in","steps":[
+	  {"id":"in","type":"source","connector":"gen","action":"gen","onSuccess":"h"},
+	  {"id":"h","type":"sink","connector":"@stop","connection":"prod"}]}`)); err == nil {
+		t.Error("@stop with a connection accepted, want rejection")
+	}
+}

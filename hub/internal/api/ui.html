@@ -1424,7 +1424,7 @@ function nodeCat(n) {
   if (n.role === 'handler') return 'handler';
   const c = n.connector || '';
   if (n.type === 'tee' || n.type === 'router' || n.type === 'merge') return 'branch';
-  if (c === '@discard' || c === '@response') return 'util';
+  if (c === '@discard' || c === '@response' || c === '@stop') return 'util';
   if (n.type === 'source' || n.type === 'sink') return 'connector';
   return 'transform';
 }
@@ -1434,6 +1434,7 @@ function nodeIcon(n) {
   const c = n.connector || '';
   if (c === '@discard') return '⌦';
   if (c === '@response') return '↩';
+  if (c === '@stop') return '⏹';
   if (c === '@webhook') return '⚡';
   return TYPE_ICON[n.type] || '◻';
 }
