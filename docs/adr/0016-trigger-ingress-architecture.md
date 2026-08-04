@@ -1,7 +1,16 @@
 # ADR-0016: Trigger & ingress architecture — pull leases vs direct (webhook) execution
 
 Date: 2026-07-20
-Status: Accepted
+Status: Accepted; **ingress half superseded by ADR-0038** (2026-08-04).
+
+The two-plane split, the payload/control separation and the pull-lease model
+below all stand. What ADR-0038 reverses is this ADR's position that "runner
+APIs are a public, authenticated surface": runners now bind **privately in
+every deployment**, and the sole publicly reachable component is the optional
+DMZ-deployable `shift-gateway`. The runner is the highest-value target in the
+system — plaintext secrets, live payload — so exposing it to the internet once
+per runner was the wrong way round. `@webhook` as a flow source is unchanged;
+what changes is who terminates the public connection.
 
 ## Context
 
