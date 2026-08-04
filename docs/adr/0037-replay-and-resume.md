@@ -315,6 +315,98 @@ default archive so "every flow is replayable" is a policy choice, mirroring the
 hub-wide dead-letter toggle in ADR-0031 §2 — and, like that one, it is an
 operator decision rather than an engine default.
 
+### 5c. Execution-scoped retention: crypto-shredding, not a wipe
+
+Amendment, 2026-08-04. Aaron proposed a fourth application — an encrypted
+store holding captured payloads for the duration of an execution and wiping
+them on success. The **capability** is right and closes the one gap §3 leaves
+open (ephemeral inbound payload dies with the runner). The **component** is
+not needed, and the alternative gives a stronger guarantee.
+
+**Per-execution DEK, destroyed on completion.** Captured payload is encrypted
+with a DEK unique to that execution, wrapped by the account KEK — the ADR-0010
+machinery, unchanged. Ciphertext goes to the destination from §5a. When the
+execution reaches a terminal state and retention expires, the hub **destroys
+the DEK**.
+
+That is materially better than a wipe. A delete is a call you have to trust
+succeeded; key destruction makes the bytes unrecoverable *regardless* of
+whether the delete landed, whether a bucket lifecycle rule fired, or whether a
+replica lagged. Best-effort deletion still runs, but as **housekeeping to
+reclaim space** — the shred is the guarantee.
+
+The duty separation falls out for free, and is worth stating because it is the
+property that makes captured payload defensible at all:
+
+| Holds | Ciphertext | Key |
+|---|---|---|
+| The archive destination | yes | no |
+| The hub | no | yes (wrapped) |
+| The runner, during execution only | yes | yes |
+
+Neither the store nor the hub can read a captured payload alone.
+
+It also answers right-to-erasure precisely: erasing one execution's data is
+destroying one key, which is instant and provable, rather than a search across
+a store.
+
+**Cost: zero new binaries.** Where a dedicated storage application *would*
+earn itself is guaranteed low-latency staging (an object-store round trip is
+tens of milliseconds) or a shared spill tier so a single large join can exceed
+one runner's disk. Both are real, both need a workload demanding them, and
+both are easier to justify later than to speculate on now. Recorded as an
+upgrade path with its trigger conditions, not a plan.
+
+### 5d. The retention policy, per flow
+
+Three settings (Aaron, 2026-08-04), each defaulting to the conservative
+answer:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| **Capture payloads** | **OFF** | Master switch. Off ⇒ nothing is written anywhere, ever. |
+| **Maximum retention** | **1 day** | Ceiling from execution start, whatever the outcome. |
+| **Remove on success** | **ON** | Terminal success shreds immediately rather than waiting out the ceiling. |
+
+Which resolves the question the first draft left open — what happens on
+failure. A failed execution keeps its payload until the ceiling, so a retry can
+use it and a human can diagnose it; then the key is destroyed whether or not
+anyone looked.
+
+Four things the settings alone do not settle:
+
+**Only the hub may shred, and only on a hub-acknowledged terminal state.** This
+is a correctness constraint, not a preference. Dispatch is at-least-once
+(ADR-0002): a runner can complete successfully and have its report lost to an
+expired lease, after which the hub re-dispatches. A runner that shredded on its
+own local success would destroy the input to a re-dispatch that is still
+coming, and the retry would fail with nothing to run on. Because the hub holds
+the DEK, it is already the only component that *can* shred — the design makes
+the safe thing the only available thing, and that is not an accident worth
+losing.
+
+**The operator gets a ceiling the flow cannot exceed.** A compliance function
+will require "no flow retains more than N days", and a per-flow setting alone
+cannot express that. Hub-wide maximum, flows may go under it and never over —
+the same shape as ADR-0031 §2's hub-wide dead-letter policy, and an operator
+decision rather than an engine default.
+
+**Retained payload is unredacted, by necessity.** Everything else leaving a
+runner is secret-redacted (ADR-0010). Captured payload cannot be: a redacted
+body is not the input, so replaying it would run against mutilated data — the
+exact failure that disqualifies ADR-0014's capture samples from serving this
+purpose. So an inbound body containing an API key retains that key. This makes
+**access control the entire safety story**, and it means reading a retained
+payload must be an audited action (the M6b audit log) gated on a real
+permission, which lands on the deferred RBAC work (issue #16). Until that
+exists, capture should be treated as an admin-only capability.
+
+**Retention is a duration, not a whole number of days.** A day is the right
+*default*; an hour is a common requirement and "0 days" is a nonsense value the
+integer form invites. Express it as a duration (`1h`, `24h`, `7d`) with a
+non-zero minimum, so "capture but keep nothing" is unrepresentable rather than
+silently useless.
+
 ### 6. Interaction with the existing model
 
 - **Chunking (ADR-0036) composes with both.** A chunk is an ordinary task, so a
@@ -394,6 +486,12 @@ operator decision rather than an engine default.
 - **Replay of a chunked job.** Replaying one chunk is well-defined; replaying a
   whole job means re-planning, and the plan may enumerate differently against
   moved data. Likely a job-level `re-execute` rather than a true replay.
-- **Who may replay.** Replay deliberately re-applies side effects, so it is a
-  higher-privilege action than submitting a flow. This wants a real permission,
-  which lands on the deferred RBAC work (issue #16).
+- **Who may replay, and who may READ a retained payload.** Replay deliberately
+  re-applies side effects, so it is a higher-privilege action than submitting a
+  flow; reading a retained payload is higher still, because §5d retains it
+  unredacted. Both want real permissions, which land on the deferred RBAC work
+  (issue #16). Until then, treat capture as admin-only.
+- **Wrapped-DEK row growth.** One wrapped DEK per captured execution, on the
+  hub. Bounded by retention (1 day by default), but the sweep that expires
+  payload must delete the key row in the same pass, or the table outlives the
+  data it protects.
