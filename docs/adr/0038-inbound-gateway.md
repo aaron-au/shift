@@ -266,6 +266,18 @@ address, group eligibility — and deploys the gateway with a small **identity
 bundle**: its own certificate and key, plus the CA that lets it verify the hub.
 The hub then dials it.
 
+There is no registration exchange. The gateway presents its certificate during
+the mTLS handshake and *that* is the identity assertion — the bundle IS the
+registration, and placing it is the one manual step. Note also what the gateway
+does **not** need: the hub's address. It never dials the hub, so it needs only
+the CA and expected identity to *verify* the hub when the hub dials in.
+
+Key custody has two shapes and both are offered: the hub generates the keypair
+and the admin downloads the bundle (fewer steps), or `gatewayd bootstrap`
+generates the key locally and emits a CSR the admin pastes into the hub (the
+private key never leaves the host). The first is the default; the second exists
+for deployments that require it.
+
 That bundle is genuinely local material, and it is worth being straight about
 why it is acceptable where the config cache was not. It is **small, static and
 identity-only** — it authenticates the gateway and authenticates the hub to it,
@@ -297,11 +309,49 @@ A gateway that restarts holds no configuration and serves 503 until the hub's
 next push. Its health endpoint reports "unconfigured" so the hub reconciles
 immediately rather than waiting out the interval.
 
-**A live duplicate fails loudly.** If a gateway presents an identity the hub
-already considers active elsewhere, the hub rejects it rather than
-silently serving two. A replacement for a *dead* gateway supersedes the old
-record; a second live one is someone having copied an identity bundle, which
-must never be quiet.
+**A copied identity bundle is inert** — better than the "fails loudly"
+rejection an earlier draft claimed, which under push cannot happen: the hub
+dials one address for one record, so it never sees a second gateway at all.
+
+It does not need to. Configuration flows only to the address in the record, and
+a stolen bundle cannot ask for configuration because it cannot dial the hub. An
+attacker holding one gets a gateway nobody ever configures — no routes, no
+served-domain keys, no public listener.
+
+The bundle is still worth protecting, but the threat is narrower and sharper
+than a leaked registration token: a stolen bundle **plus** the ability to
+intercept or redirect the hub's connection to that recorded address. That is
+the ordinary mTLS threat model, and it is a much smaller target than "anyone
+holding this token can register".
+
+**Identity renewal must be pushed before expiry.** This is the hazard specific
+to a component that never dials out, and it needs designing in rather than
+discovering. If the gateway's own certificate expires, the hub can no longer
+complete the handshake; the gateway cannot request a renewal, because
+requesting anything means dialling. It is then permanently stranded and only a
+manual bundle replacement recovers it. So the hub tracks expiry per gateway
+record, warns well ahead, and pushes the replacement over the still-valid
+connection.
+
+**An unconfigured gateway must be visible from the hub.** A passive component
+that is never dialled — wrong address in the record, a missing firewall rule —
+waits silently forever. The gateway logs `unconfigured, awaiting hub` on an
+interval and reports it on health, but the diagnostic that matters is on the
+**hub**: `last contact: never` against the gateway record, where the
+administrator actually is.
+
+**Local configuration is permitted, and the line is exact.** A gateway may
+carry a small local file (ini or equivalent) for **facts about the host**:
+public and control listen addresses, the bundle path, log level, timeouts,
+resource limits. The machine knows its own addresses and the hub should not
+have to.
+
+What must never appear there is **policy about what we serve** — routes,
+allowlists, rate limits, header rules, TLS mode, served-domain certificates,
+group eligibility. The moment one of those lands in a local file it is the
+config cache returning by another name, with two sources of truth and a failure
+mode of serving stale policy instead of a clean 503. The line is worth stating
+because it is the one that will erode quietly.
 
 **The hub validates before it distributes.** A certificate that does not parse,
 has expired, or does not match its declared domain; a malformed CIDR; a route
