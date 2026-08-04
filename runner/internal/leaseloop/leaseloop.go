@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/aaron-au/shift/pkg/flowdoc"
+	"github.com/aaron-au/shift/runner/internal/bind"
 	"github.com/aaron-au/shift/runner/internal/hubclient"
-	"github.com/aaron-au/shift/runner/internal/secretref"
 	"github.com/aaron-au/shift/runner/internal/service"
 )
 
@@ -39,7 +39,7 @@ type Options struct {
 // Loop leases and executes hub tasks until its context ends.
 type Loop struct {
 	opts    Options
-	secrets *secretref.Resolver
+	secrets *bind.Binder
 
 	wg     sync.WaitGroup
 	active atomic.Int64
@@ -58,7 +58,17 @@ func New(opts Options) *Loop {
 	if opts.TaskPoll <= 0 {
 		opts.TaskPoll = 100 * time.Millisecond
 	}
-	return &Loop{opts: opts, secrets: secretref.New(opts.Client.ResolveSecrets)}
+	return &Loop{opts: opts, secrets: bind.New(hubFetch(opts.Client))}
+}
+
+// hubFetch wires the binder to the hub's one-round-trip task-config call.
+func hubFetch(c *hubclient.Client) bind.Fetch {
+	if c == nil {
+		return nil
+	}
+	return bind.FetchFrom(c.ResolveTaskConfig, func(hc hubclient.Connection) bind.Connection {
+		return bind.Connection{Connector: hc.Connector, Config: hc.Config}
+	})
 }
 
 // Status is the intake's dashboard snapshot.

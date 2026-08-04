@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -10,7 +11,7 @@ import (
 	"time"
 
 	"github.com/aaron-au/shift/runner/internal/auth"
-	"github.com/aaron-au/shift/runner/internal/secretref"
+	"github.com/aaron-au/shift/runner/internal/bind"
 	"github.com/aaron-au/shift/runner/internal/task"
 	"github.com/aaron-au/shift/runner/internal/webhook"
 )
@@ -24,14 +25,14 @@ const flowWithRef = `{"name":"f",
   "source":{"connector":"gen","action":"gen","config":{"records":1,"auth":{"$secret":"api-key"}}},
   "sink":{"connector":"gen","action":"discard"}}`
 
-// recordingResolver reports which names each path asked for.
-func recordingResolver(t *testing.T, got *[]string, mu *sync.Mutex) *secretref.Resolver {
+// recordingBinder reports which secret names each path asked for.
+func recordingBinder(t *testing.T, got *[]string, mu *sync.Mutex) *bind.Binder {
 	t.Helper()
-	return secretref.New(func(_ context.Context, names []string) (map[string]string, error) {
+	return bind.New(func(_ context.Context, _, names []string) (map[string]bind.Connection, map[string]string, error) {
 		mu.Lock()
 		*got = append(*got, names...)
 		mu.Unlock()
-		return map[string]string{"api-key": "s3cret"}, nil
+		return nil, map[string]string{"api-key": "s3cret"}, nil
 	})
 }
 
@@ -51,7 +52,7 @@ func TestDirectPathsResolveSecrets(t *testing.T) {
 			h := Handler(newSvc(t), Options{
 				RunnerName: "r", Version: "0", Started: time.Now(),
 				Guard: auth.NewGuard(nil), Hooks: reg,
-				Secrets: recordingResolver(t, &asked, &mu),
+				Binder: recordingBinder(t, &asked, &mu),
 			})
 			if tc.register {
 				hookDoc := `{"document":{"name":"hook",` +
@@ -81,7 +82,7 @@ func TestDirectPathsFailWithoutAResolver(t *testing.T) {
 	h := Handler(newSvc(t), Options{
 		RunnerName: "r", Version: "0", Started: time.Now(),
 		Guard: auth.NewGuard(nil), Hooks: webhook.NewRegistry(),
-		Secrets: secretref.New(nil),
+		Binder: bind.New(nil),
 	})
 	for _, target := range []string{"/api/flows/execute", "/api/flows/run"} {
 		rec := serve(h, req(http.MethodPost, target, flowWithRef))
@@ -146,7 +147,35 @@ func TestSyncRunDoesNotBlockOnTheHubReport(t *testing.T) {
 }
 
 func TestNoResolverErrorIsTyped(t *testing.T) {
-	if !errors.Is(secretref.ErrNoResolver, secretref.ErrNoResolver) {
+	if !errors.Is(bind.ErrNoResolver, bind.ErrNoResolver) {
 		t.Fatal("ErrNoResolver must be comparable for callers branching on it")
+	}
+}
+
+// The runner-direct paths must bind CONNECTIONS too, not just secrets —
+// the same four-path coverage, one ADR later (ADR-0034).
+func TestDirectPathsResolveConnections(t *testing.T) {
+	var mu sync.Mutex
+	var asked []string
+	h := Handler(newSvc(t), Options{
+		RunnerName: "r", Version: "0", Started: time.Now(),
+		Guard: auth.NewGuard(nil), Hooks: webhook.NewRegistry(),
+		Binder: bind.New(func(_ context.Context, conns, _ []string) (map[string]bind.Connection, map[string]string, error) {
+			mu.Lock()
+			asked = append(asked, conns...)
+			mu.Unlock()
+			return map[string]bind.Connection{"gen-conn": {
+				Connector: "gen", Config: json.RawMessage(`{"records":1}`),
+			}}, nil, nil
+		}),
+	})
+	doc := `{"name":"f","source":{"connector":"gen","action":"gen","connection":"gen-conn"},
+	  "sink":{"connector":"gen","action":"discard"}}`
+	serve(h, req(http.MethodPost, "/api/flows/execute", doc))
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(asked) != 1 || asked[0] != "gen-conn" {
+		t.Fatalf("asked for connections %v, want [gen-conn]", asked)
 	}
 }

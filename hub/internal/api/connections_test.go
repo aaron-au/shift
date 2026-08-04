@@ -306,6 +306,14 @@ func TestResolveConnectionsIsRunnerRealm(t *testing.T) {
 	}
 }
 
+// secretsServer is a hub with a KEK configured, so the secrets endpoints
+// (and therefore the task-config bootstrap) exist.
+func secretsServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv, _, _ := newOIDCServer(t)
+	return srv
+}
+
 // errEnvelope is the hub's stable error shape (ADR-0023).
 type errEnvelope struct {
 	Error struct {
@@ -321,4 +329,79 @@ func manyNames(n int) string {
 	}
 	b, _ := json.Marshal(names)
 	return string(b)
+}
+
+// The one-round-trip bootstrap (ADR-0035 §3). The runner cannot name the
+// secrets a connection references until it has the connection, so asking
+// separately would be two sequential calls; the hub folds them because it
+// holds both.
+func TestResolveTaskConfigReturnsConnectionsAndTheirSecrets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs postgres")
+	}
+	srv := secretsServer(t)
+	if code := call(t, "PUT", srv.URL+"/api/v1/secrets/sftp-pw", adminToken,
+		`{"value":"hunter2"}`, nil); code != 201 {
+		t.Fatal("setup: put secret")
+	}
+	if code := putConnection(t, srv, "prod-sftp",
+		`{"connector":"sftp","config":{"host":"h","password":{"$secret":"sftp-pw"}}}`); code != 201 {
+		t.Fatal("setup: put connection")
+	}
+	secret := registerRunner(t, srv.URL, "tc-runner")
+
+	var out struct {
+		Connections map[string]struct {
+			Connector string          `json:"connector"`
+			Config    json.RawMessage `json:"config"`
+		} `json:"connections"`
+		Secrets map[string]string `json:"secrets"`
+	}
+	if code := call(t, "POST", srv.URL+"/api/v1/task-config/resolve", secret,
+		`{"connections":["prod-sftp"],"secrets":[]}`, &out); code != 200 {
+		t.Fatalf("resolve = %d, want 200", code)
+	}
+	// The connection travels with its reference INTACT — substitution is
+	// runner-side, so this adds no new place for plaintext to sit.
+	if !strings.Contains(string(out.Connections["prod-sftp"].Config), "$secret") {
+		t.Fatalf("connection config = %s, want the reference left in place",
+			out.Connections["prod-sftp"].Config)
+	}
+	// ...but its secret comes back in the same response, unasked for.
+	if out.Secrets["sftp-pw"] != "hunter2" {
+		t.Fatalf("secrets = %v, want the connection's own reference resolved", out.Secrets)
+	}
+}
+
+func TestResolveTaskConfigRejectsUnknownNames(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs postgres")
+	}
+	srv := secretsServer(t)
+	secret := registerRunner(t, srv.URL, "tc-runner2")
+	if code := call(t, "POST", srv.URL+"/api/v1/task-config/resolve", secret,
+		`{"connections":["ghost"],"secrets":[]}`, nil); code != 404 {
+		t.Errorf("unknown connection = %d, want 404", code)
+	}
+	if code := call(t, "POST", srv.URL+"/api/v1/task-config/resolve", secret,
+		`{"connections":[],"secrets":["ghost"]}`, nil); code != 404 {
+		t.Errorf("unknown secret = %d, want 404", code)
+	}
+	if code := call(t, "POST", srv.URL+"/api/v1/task-config/resolve", "",
+		`{"connections":[],"secrets":[]}`, nil); code != 401 {
+		t.Error("unauthenticated resolve was not rejected")
+	}
+}
+
+// An empty request is legitimate — a flow with neither — and must not error.
+func TestResolveTaskConfigEmptyRequest(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs postgres")
+	}
+	srv := secretsServer(t)
+	secret := registerRunner(t, srv.URL, "tc-runner3")
+	if code := call(t, "POST", srv.URL+"/api/v1/task-config/resolve", secret,
+		`{"connections":[],"secrets":[]}`, nil); code != 200 {
+		t.Fatalf("empty resolve = %d, want 200", code)
+	}
 }

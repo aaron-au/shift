@@ -328,6 +328,47 @@ func (c *Client) ResolveSecrets(ctx context.Context, names []string) (map[string
 	return out.Secrets, nil
 }
 
+// Connection is a reusable connector configuration (ADR-0034) as the hub
+// serves it. Config keeps its {"$secret":...} references intact —
+// substitution is runner-side.
+type Connection struct {
+	Connector string          `json:"connector"`
+	Config    json.RawMessage `json:"config"`
+}
+
+// ResolveTaskConfig fetches, in ONE round trip, the connections a task's
+// flow references plus every secret needed to run it — including the ones
+// those connections themselves reference, which the runner cannot name
+// until it has them. Two sequential calls would double hub latency on the
+// request-reply and webhook paths (ADR-0035 §3).
+//
+// Callers must never log the returned secret map or wrap its contents into
+// errors — names only.
+func (c *Client) ResolveTaskConfig(ctx context.Context, connections, secrets []string) (map[string]Connection, map[string]string, error) {
+	raw, err := json.Marshal(map[string][]string{
+		"connections": connections, "secrets": secrets,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, err := c.do(ctx, http.MethodPost, "/api/v1/task-config/resolve", string(raw))
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("hubclient: resolve task config: %s", readErr(resp))
+	}
+	var out struct {
+		Connections map[string]Connection `json:"connections"`
+		Secrets     map[string]string     `json:"secrets"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&out); err != nil {
+		return nil, nil, fmt.Errorf("hubclient: resolve task config: %w", err)
+	}
+	return out.Connections, out.Secrets, nil
+}
+
 // WebhookConfig is a hub-authored hook the runner should serve: the name,
 // the token hash to check, and the published flow document to run.
 type WebhookConfig struct {

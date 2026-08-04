@@ -111,7 +111,7 @@ decides.
 ### 2. All four execution paths resolve
 
 Resolution moves out of `leaseloop` into a shared runner-side resolver
-(`runner/internal/secretref`) used by the queued path and the three
+(`runner/internal/bind`) used by the queued path and the three
 runner-direct paths alike. A document reaching the engine with an unresolved
 `{"$secret":...}` reference is a **task failure with a clear error**, not a
 value passed through — silently handing a connector a reference object is how

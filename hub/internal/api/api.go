@@ -178,6 +178,9 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("GET /api/v1/connections/{name}", a.admin(a.getConnection))
 	mux.Handle("DELETE /api/v1/connections/{name}", a.admin(a.deleteConnection))
 	mux.Handle("POST /api/v1/connections/resolve", a.runner(a.resolveConnections))
+	// One-round-trip task bootstrap: connections + every secret needed,
+	// including those the connections themselves reference (ADR-0035 §3).
+	mux.Handle("POST /api/v1/task-config/resolve", a.runner(a.resolveTaskConfig))
 
 	// Connector registry: publishing is admin-only; resolve/fetch and
 	// the trusted-key list serve runners too (their verification path).
