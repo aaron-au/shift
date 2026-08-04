@@ -18,16 +18,39 @@ func (p *Process) Source(action string, config []byte) *SourceStream {
 	return &SourceStream{p: p, action: action, config: config, batch: record.NewBatch()}
 }
 
+// ResumeFrom sets the opaque position the stream restarts at (ADR-0037). It
+// must be called before the first Next, since the cursor travels in the Pull
+// request that Next opens. An empty cursor is a no-op, so a caller can pass
+// whatever the hub returned without testing it first.
+//
+// A cursor sent to an action that cannot resume fails the stream rather than
+// silently starting over: the runner asked to continue from a position, and a
+// quiet full replay would let it record progress that never happened.
+func (s *SourceStream) ResumeFrom(cur []byte) *SourceStream {
+	s.resumeFrom = cur
+	return s
+}
+
+// Checkpoint returns the most recent position the connector reported as safe
+// to resume from, or nil if it has reported none. It advances as batches
+// arrive, so a caller must pair it with its own record of how far downstream
+// processing has actually got — this is source progress, not confirmed
+// progress, and persisting it directly would skip records that were read but
+// never written.
+func (s *SourceStream) Checkpoint() []byte { return s.checkpoint }
+
 // SourceStream adapts a connector Pull stream to stream.Source. The batch
 // returned by Next is valid until the next Next/Close call.
 type SourceStream struct {
-	p      *Process
-	action string
-	config []byte
-	stream frameRecvStream
-	cancel context.CancelFunc
-	batch  *record.Batch
-	done   bool
+	p          *Process
+	action     string
+	config     []byte
+	resumeFrom []byte
+	checkpoint []byte
+	stream     frameRecvStream
+	cancel     context.CancelFunc
+	batch      *record.Batch
+	done       bool
 }
 
 // frameRecvStream is the minimal recv surface of the Pull stream.
@@ -41,7 +64,9 @@ func (s *SourceStream) Next(ctx context.Context) (*record.Batch, error) {
 	}
 	if s.stream == nil {
 		sctx, cancel := context.WithCancel(s.p.withToken(ctx))
-		stream, err := s.p.client.Pull(sctx, &connectorpb.PullRequest{Action: s.action, Config: s.config})
+		stream, err := s.p.client.Pull(sctx, &connectorpb.PullRequest{
+			Action: s.action, Config: s.config, ResumeFrom: s.resumeFrom,
+		})
 		if err != nil {
 			cancel()
 			return nil, fmt.Errorf("host: pull %s: %w", s.action, err)
@@ -63,6 +88,12 @@ func (s *SourceStream) Next(ctx context.Context) (*record.Batch, error) {
 		s.done = true
 		s.cancel()
 		return nil, err
+	}
+	// Only advance on a frame that actually carries one: a connector reports
+	// nil mid-page (no safe position yet), and overwriting the last good
+	// cursor with that would throw away resumable progress.
+	if cp := frame.GetCheckpoint(); len(cp) > 0 {
+		s.checkpoint = cp
 	}
 	return s.batch, nil
 }

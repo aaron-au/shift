@@ -28,6 +28,47 @@ type SourceAction interface {
 	Close() error
 }
 
+// ResumableSource is an OPTIONAL capability on a SourceAction: the ability to
+// restart a stream from a position the action previously emitted (ADR-0037).
+// A source that does not implement it is not broken — it replays from the
+// beginning after a lost runner, which is today's behaviour and remains
+// correct under at-least-once dispatch (ADR-0002).
+//
+// The cursor is opaque. The runner and the hub move these bytes around and
+// store them as control metadata; only the connector that produced a cursor
+// can interpret it. That opacity is what keeps resumption on the control
+// plane: a page token, a byte offset, a CDC LSN and a keyset high-water mark
+// are all a few bytes, and none of them is payload.
+//
+// Implement this on paginated, seekable or ordered sources — an object read,
+// a keyset-paginated query, a change feed. Do not implement it on a source
+// whose position is not meaningful (a one-shot request body); returning a
+// cursor there would promise a resumption that cannot be honoured.
+type ResumableSource interface {
+	SourceAction
+	// Resume positions the stream at cur, and is called after Open and
+	// before the first Next. A nil or empty cursor means "from the
+	// beginning" and MUST behave identically to not resuming at all.
+	//
+	// Return an error if cur cannot be honoured — a cursor from an
+	// incompatible version, a range that no longer exists. Failing here is
+	// correct and safe: the runner falls back to a full replay, which is
+	// slower but never wrong. Silently starting from the beginning while
+	// reporting success would let the runner record progress that did not
+	// happen.
+	Resume(ctx context.Context, cur []byte) error
+
+	// Checkpoint returns a position that is safe to resume from ON THE
+	// ASSUMPTION that every batch returned so far has been fully processed
+	// downstream. It is called after each Next and must be cheap. Return nil
+	// when no safe position exists yet (mid-page, mid-transaction).
+	//
+	// The runner never persists a checkpoint until the terminal sink has
+	// confirmed the records it covers, so an implementation may report
+	// progress freely without risking data loss.
+	Checkpoint() []byte
+}
+
 // SinkAction consumes record batches. One instance serves one Push stream.
 type SinkAction interface {
 	Open(ctx context.Context, config []byte) error

@@ -58,6 +58,63 @@ sink (`docs/bench-M2.md`).
   extract the signed *descriptor* (see below). Config stays opaque `bytes`
   on `Pull`/`Push`; `Describe` only publishes its *shape*.
 
+## Resumable sources (ADR-0037)
+
+A source may optionally support restarting from a position it previously
+emitted. Two additive proto fields carry it, both absent by default, so every
+existing connector is unaffected:
+
+- `PullRequest.resume_from` — the opaque position to restart at. Empty means
+  "from the beginning".
+- `Frame.checkpoint` — an opaque position the connector asserts is safe to
+  resume from *once every record up to that frame has been processed
+  downstream*. Optional; nil means "no safe position yet" (mid-page,
+  mid-transaction).
+
+On the author side it is an optional interface, not a change to
+`SourceAction`:
+
+```go
+type ResumableSource interface {
+    SourceAction
+    Resume(ctx context.Context, cur []byte) error
+    Checkpoint() []byte
+}
+```
+
+Three rules that are easy to get wrong:
+
+- **A cursor is opaque to everyone but its producer.** The runner and the hub
+  move these bytes around and store them as control metadata; neither parses
+  them. That opacity is what keeps resumption on the control plane — a page
+  token, a byte offset, a CDC LSN and a keyset high-water mark are all a few
+  bytes, and none of them is payload.
+- **An empty cursor must behave exactly like no cursor**, so the runner can
+  forward whatever the hub returned without testing it first.
+- **A cursor sent to a source that cannot honour it fails the stream**
+  (`InvalidArgument`), and a `Resume` that cannot honour its cursor should
+  return an error (`FailedPrecondition`). Neither may quietly start from the
+  beginning: the runner asked to continue from a position, and a silent full
+  replay lets it record progress that never happened — so the *next* resume
+  skips that range for real. Failing is slower and correct; the runner falls
+  back to a full replay.
+
+Safety does not rest on the connector. The runner persists a checkpoint only
+once the terminal sink has **confirmed** the records it covers, so an
+implementation may report progress on every batch. A cursor recorded on source
+progress alone would, on resume, skip records that were read but never
+written.
+
+The reference implementation is `fs`'s `get` source
+(`connectors/internal/fsconn/resume.go`). It uses a **record ordinal** rather
+than a byte offset, because the format readers buffer — the file position after
+a batch is wherever the scanner filled to, not the logical end of the last
+record. Skipping N records re-parses the prefix, which costs read bandwidth but
+never mis-positions, and re-reading is far cheaper than re-writing to the sink.
+The cursor also fingerprints the file (size + mtime) and pins the path, and
+refuses to resume if either changed: an ordinal against a mutated file resumes
+at the wrong place silently, which is worse than replaying.
+
 ## Config schemas & the descriptor (ADR-0018)
 
 So the studio builder can render a typed config form per action, a

@@ -89,6 +89,12 @@ message PullRequest {
   string action = 1;
   // Connector-specific configuration document (JSON).
   bytes config = 2;
+  // Opaque position to restart the stream from, previously emitted as a
+  // Frame.checkpoint by this same action (ADR-0037 resume). Absent or empty
+  // means "from the beginning" — the behaviour of every connector that does
+  // not implement resumption. Neither the runner nor the hub interprets these
+  // bytes; only the connector that produced them can.
+  bytes resume_from = 3;
 }
 
 // Frame carries one encoded record batch.
@@ -99,6 +105,13 @@ message Frame {
   // Record count in this frame (redundant with payload; lets hosts
   // meter without decoding).
   int64 records = 2;
+  // Opaque position the connector asserts is safe to resume from ONCE every
+  // record up to and including this frame has been processed downstream
+  // (ADR-0037). Optional; absent means "no safe position yet". The runner
+  // only ever persists a checkpoint the terminal sink has confirmed —
+  // persisting on source progress would skip records that were read but never
+  // written, turning a resume into silent data loss.
+  bytes checkpoint = 3;
 }
 
 message PushMessage {
