@@ -64,11 +64,14 @@ cover-bump:
 ## The seed corpus already runs under `make test`; this is the discovery
 ## pass. FUZZTIME overridable (default 30s per target).
 FUZZTIME ?= 30s
+## Each target runs via scripts/fuzz.sh, which retries ONCE on the
+## end-of-budget "context deadline exceeded" flake but fails immediately on a
+## real crasher (see the script header).
 fuzz:
-	@echo "--- fuzz flowdoc.Parse";   cd pkg    && go test ./flowdoc/       -run='^$$' -fuzz='^FuzzParse$$'  -fuzztime=$(FUZZTIME)
-	@echo "--- fuzz consign.Verify";  cd pkg    && go test ./consign/       -run='^$$' -fuzz='^FuzzVerify$$' -fuzztime=$(FUZZTIME)
-	@echo "--- fuzz ndjson.Reader";   cd engine && go test ./format/ndjson/ -run='^$$' -fuzz='^FuzzReader$$' -fuzztime=$(FUZZTIME)
-	@echo "--- fuzz spill.Decode";    cd engine && go test ./spill/         -run='^$$' -fuzz='^FuzzDecode$$' -fuzztime=$(FUZZTIME)
+	@echo "--- fuzz flowdoc.Parse";   FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh pkg    ./flowdoc       FuzzParse
+	@echo "--- fuzz consign.Verify";  FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh pkg    ./consign       FuzzVerify
+	@echo "--- fuzz ndjson.Reader";   FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh engine ./format/ndjson FuzzReader
+	@echo "--- fuzz spill.Decode";    FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh engine ./spill         FuzzDecode
 
 ## bench: micro-benchmarks + shift-bench RSS regression checks (ADR-0003)
 bench:
