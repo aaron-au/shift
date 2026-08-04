@@ -235,6 +235,53 @@ session (`git stash`, measure, pop, measure) or it is measuring the
 machine, not the change. Two plausible-looking wins evaporated under that
 test — see below.
 
+### Does tps change with integration complexity?
+
+`SyncRunThroughput` measures one record through source → sink, which is the
+cheapest flow that can exist — per-invocation **overhead** and nothing else.
+`shape_bench_test.go` sweeps the two axes separately (shapes mirror the
+tiers above, so invocations/sec sits beside the tiered records/sec figure
+for the same workload).
+
+**Operator depth barely matters.** At one record, passthrough → the
+four-operator "extreme" shape costs about 10%, which is barely outside
+run-to-run noise:
+
+| Shape @ 1 record | tps @ 4 cores |
+|---|---|
+| simple (passthrough) | ~5,200 |
+| standard (filter + coerce + project) | ~5,360 |
+| complex (flatten + aggregate) | ~4,910 |
+| extreme (filter + flatten + project + aggregate) | ~4,680 |
+
+**Records per invocation is the whole story:**
+
+| Records | standard | extreme |
+|---|---|---|
+| 1 | ~5,000 tps | ~4,310 tps |
+| 100 | ~3,450 tps | ~3,000 tps |
+| 1,000 | ~1,090 tps | ~1,080 tps |
+| 10,000 | ~271 tps | ~285 tps |
+
+Two things fall out of this.
+
+**A simple cost model fits both series**: roughly **200 µs fixed per
+invocation plus ~350 ns per record**, near enough independent of shape. The
+crossover — where payload starts costing more than the trigger machinery —
+lands around **500–600 records**. Below that you are measuring overhead;
+above it you are measuring the engine.
+
+**Standard and extreme converge as payload grows** (1,090 vs 1,080 at 1,000
+records; the heavier shape is even nominally *faster* at 10,000). Operators
+are close to free next to moving records across the connector boundary,
+which is the streaming thesis showing up as a measurement. The aggregate in
+the heavier shapes also *reduces* what reaches the sink, paying back some of
+its own cost.
+
+Practical reading: for trigger-rate sizing, payload size is the question to
+ask, not flow complexity. Even 10,000-record invocations sustain ~275/sec on
+four cores.
+
 ### What the execution-report rewrite did and did not buy
 
 `reportWhenDone`'s 200 ms poller is gone, replaced by
