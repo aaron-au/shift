@@ -122,11 +122,12 @@ it is **what an attacker gets when it falls**:
 | Hub | the control plane: DB, KEK, OIDC secrets, registry |
 | Runner | plaintext secrets and live payload |
 
-So the gateway holds, at rest: **its own hub credential and its TLS material.
-Nothing else.** No database connection, no KEK, no user secrets, no durable
-payload. Its routing configuration is pulled from the hub over the same
-authenticated control channel runners already use and held in memory, so a
-stolen disk yields nothing and a restarted gateway re-converges from the hub.
+So the gateway holds, at rest: **its own hub credential, and an encrypted
+last-known-good copy of the configuration that credential fetched.** No
+database connection, no KEK, no user secrets, no durable payload, and — in
+every mode except the `file` escape hatch — **no plaintext TLS private key on
+disk** (§6). Everything else lives in memory and is re-fetched from the hub on
+start.
 
 ### 4. Reaching the runner
 
@@ -170,39 +171,93 @@ intake). Load balancing is therefore a query over data we already have, not a
 new subsystem — which is what makes the gateway a genuine replacement for a
 customer-supplied load balancer rather than an addition to one.
 
-### 6. Certificates
+### 6. The hub is the single source of configuration
 
-TLS terminates at the gateway, so certificate lifecycle belongs there — and
-"ACME" is not the whole answer. Plenty of enterprises buy certificates from a
-CA on a purchase order, and plenty terminate TLS before traffic ever reaches
-us. Four supported arrangements:
+**Every piece of gateway configuration comes from the hub.** Domains, routes,
+allowlists, header requirements, size caps, rate limits, trusted-proxy CIDRs,
+TLS mode, and certificate material. An administrator prepares and updates it in
+the hub; the gateway converges on it.
 
-1. **Mounted files — the default, and the answer for purchased certificates.**
-   A cert/key pair on disk (a Kubernetes secret, a Docker volume, a config
-   management drop), watched for change and reloaded without a restart. The
-   private key never touches the control plane at all, which is the strongest
-   posture available and the one an enterprise PKI process already produces.
-2. **ACME, run by the gateway itself.** For self-managed public certificates.
-   The gateway *is* the endpoint an HTTP-01 or TLS-ALPN-01 challenge is served
-   from, so routing that through the hub would be backwards, and it keeps the
-   key on the host that uses it.
-3. **Hub-distributed, envelope-encrypted.** Only for **multiple gateway
-   replicas**, which need a shared view of one certificate — applies equally to
-   purchased and ACME certs. The hub stores the bundle encrypted like any other
-   secret (ADR-0010) and gateways fetch it. A single-gateway deployment skips
-   this entirely. Called out as a trade-off rather than a default, because it
-   is the one place this design lets key material onto the control plane.
-4. **No TLS at the gateway at all** — running **behind** a TLS-terminating
-   load balancer or WAF appliance (F5, ALB, Cloudflare), which is how a large
-   share of enterprise DMZs are already built. The gateway listens plain HTTP
-   on a private interface and honours `X-Forwarded-For` / `X-Forwarded-Proto`
-   **only from a configured trusted-proxy list** — never from an arbitrary
-   caller, since a spoofable forwarded header would defeat the IP allowlist in
-   §1.
+An earlier draft of this section made mounted local files the default for
+purchased certificates, on the reasoning that keeping the private key off the
+control plane is the strongest posture. Aaron rejected that (2026-08-04) —
+*all* config should come from the hub — and on reflection the earlier position
+was wrong on both counts:
 
-In every arrangement the hub's role is **configuration, not custody**: domains,
-ACME account, DNS-01 provider credentials as `{"$secret":…}` references
-(ADR-0010/0035), trusted-proxy CIDRs. Custody is arrangement 3 only.
+- **It does not reduce blast radius.** The hub already holds the KEK, every
+  user secret, database credentials and OIDC client secrets. A hub compromise
+  is already total. Declining to put TLS keys in that store buys nothing while
+  costing a whole parallel management path.
+- **It is worse at rest, not better.** Hub-delivered material is held **in
+  gateway memory**; a mounted file is on the DMZ host's disk. A stolen or
+  imaged DMZ box yields a key in the file case and nothing in the hub case.
+  That is the opposite of what the earlier draft claimed.
+- **It costs the operational property that matters most.** A DMZ host is
+  exactly the machine an ops team least wants to log into. Hub-delivered config
+  means the gateway needs no local administrative access at all — rotation,
+  route changes and allowlist edits are one action in one place, and they
+  work identically for one gateway or five.
+
+So configuration is hub-owned, and the four TLS arrangements become **modes
+selected by that configuration** rather than four different management stories:
+
+| Mode | Key material | For |
+|---|---|---|
+| `acme` | Gateway obtains and renews; hub supplies account, directory, DNS-01 credentials as `{"$secret":…}` | Self-managed public certs |
+| `provided` | Hub delivers the bundle, encrypted; gateway holds it in memory | Purchased / enterprise-PKI certs |
+| `upstream-tls` | None — the gateway serves plain HTTP behind an F5/ALB/Cloudflare | DMZs that already terminate TLS |
+| `file` | Mounted path, hot-reloaded | Air-gapped or bootstrap only; **not** the default |
+
+ACME stays gateway-executed because the gateway *is* the endpoint an HTTP-01 or
+TLS-ALPN-01 challenge is served from — routing that through the hub would be
+backwards. But its *configuration* is still hub-owned, so ACME is not an
+exception to the rule; only the challenge response is local.
+
+`upstream-tls` carries one non-negotiable: `X-Forwarded-For` and
+`X-Forwarded-Proto` are honoured **only from the hub-configured trusted-proxy
+CIDRs**, never from an arbitrary caller. A spoofable forwarded header would
+defeat the IP allowlist in §1, so this is a correctness constraint on the mode,
+not hardening to add later.
+
+`file` survives only as an escape hatch for a deployment that genuinely cannot
+reach a hub at start-up. It is documented as such rather than offered as a
+peer.
+
+### 6a. How configuration reaches the gateway
+
+Three constraints shape this, and they are in tension.
+
+**Bootstrap.** The gateway cannot fetch its hub address and its own identity
+from the hub. Minimum local state is therefore a **hub URL plus a single-use
+registration token**, which mints a hashed bearer credential — precisely the
+runner registration flow (ADR-0009), reused rather than reinvented. That is the
+*only* configuration a gateway is deployed with.
+
+**Pull, not push.** Aaron described the hub sending config to the gateway; the
+administrator experience is identical either way, and pull is the right
+mechanism here. The established hub↔spoke wire is HTTP/JSON long-poll
+(ADR-0009), deliberately not WebSockets and deliberately not the hub dialling
+out. Pull also means the hub never needs to know a gateway's address or hold
+open a connection into the DMZ — the connection direction stays outbound from
+the DMZ, which is what a firewall review will expect to see.
+
+**Restart availability.** Config held only in memory means a gateway that
+restarts while the hub is unreachable cannot serve — the public front door
+would inherit the control plane's availability. That is a real regression and
+the mitigation is deliberate: the gateway persists a **last-known-good config,
+encrypted**, unwrapped by a key it already holds locally (the same shape as the
+runner's `SHIFT_HUB_CRED_FILE`). Honestly stated, that is one small piece of
+local key material securing everything else — but it is one small piece rather
+than a full parallel config path, and it converts a hard dependency into a
+graceful one.
+
+**The hub validates before it distributes.** A certificate that does not parse,
+has expired, or does not match its declared domain; a malformed CIDR; a route
+naming a flow that does not exist — all are rejected at configuration time, not
+discovered when the public front door fails to start. This is the same posture
+`pkg/flowdoc` already takes as the validation authority, and it matters more
+here because the blast radius of a bad config is "the internet cannot reach
+us".
 
 ### 7. Interaction with replay (ADR-0037)
 
@@ -292,10 +347,11 @@ decisions, and a reader should see it stated rather than infer it.
 
 ## Open questions
 
-- **Gateway HA.** Multiple replicas need a shared certificate view (§6) and
-  raise whether per-webhook rate limits are per-replica or coordinated.
-  Per-replica is cheap and approximately right; coordinated needs shared state
-  the DMZ should not hold.
+- **Gateway HA.** Hub-owned configuration (§6) answers the shared-certificate
+  half — every replica converges on the same bundle. What remains open is
+  whether per-webhook rate limits are per-replica or coordinated. Per-replica
+  is cheap and approximately right; coordinated needs shared state the DMZ
+  should not hold.
 - **Long-poll ingress latency under load.** In the no-inbound topology, a
   request arriving when no runner is currently polling waits for the next poll.
   Bounded by poll interval; whether that is acceptable for synchronous flows
