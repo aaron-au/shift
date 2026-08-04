@@ -15,10 +15,9 @@ with `engine/cmd/shift-bench`; the generator is deterministic.
 | `csv` (typed CSV→filter→NDJSON, 13M records) | **13.5 MiB** | 22.0 s | 47 MiB/s · 591k rec/s | 0 B |
 | `aggregate` (group-by, 1M groups, 64 MiB watermark) | **164 MiB**¹ | 16.4 s | 62 MiB/s · 298k rec/s | 337 MiB (single scratch file) |
 
-¹ Aggregate RSS ≈ 2.5× the 64 MiB watermark: governor-tracked state is
-bounded at 64 MiB; the remainder is merge-partition state plus Go GC
-headroom. Tighter accounting is a known follow-up, not a leak — the RSS is
-flat with cardinality once spilling engages.
+¹ **This footnote was wrong and is corrected below** ("Small runners").
+Aggregate RSS does not track the watermark and is *not* flat with
+cardinality — it scales with distinct keys.
 
 ## Streaming vs naive buffered baseline (256 MiB input)
 
@@ -75,6 +74,52 @@ constraint.
 volumes, and real warehouse targets. And there is no checkpoint/resume
 anywhere in the tree — a load that fails part-way restarts from zero, which
 is the actual gap between "handles ETL volumes" and "is an ETL tool".
+
+## Small runners: what actually bounds memory (added 2026-08-04)
+
+Can a customer run on a 1 GiB box? For streaming flows, comfortably — and
+for aggregates, the answer is set by **cardinality, not configuration**,
+which is not what the M1 footnote claimed.
+
+Squeezing the watermark 32× barely moves RSS (1 GiB input, 1M groups):
+
+| Watermark | Peak RSS | Spill | Wall |
+|---|---|---|---|
+| 64 MiB | 177.4 MiB | 337 MiB | 7.27 s |
+| 8 MiB | 163.2 MiB | 399 MiB | 7.10 s |
+| 2 MiB | 153.2 MiB | 408 MiB | 7.05 s |
+
+So ~150 MiB is not governor-tracked at all. Holding the watermark at 2 MiB
+and varying distinct keys shows what it actually is:
+
+| Groups | Peak RSS | Spill | Wall |
+|---|---|---|---|
+| 1,000,000 | 154.4 MiB | 408 MiB | 7.53 s |
+| 100,000 | 33.0 MiB | 387 MiB | 6.58 s |
+| 10,000 | 22.2 MiB | 112 MiB | 5.24 s |
+| 1,000 | 17.7 MiB | 0 B | 4.78 s |
+
+**Sizing rule: aggregate RSS ≈ 18 MiB + ~150 B per distinct key.** Spilling
+is close to free — the 2 MiB watermark spills 20% more than 64 MiB and runs
+marginally *faster*, so trading memory for scratch is a good trade.
+
+Streaming-only flows (filter/project/flatten/map) never touch the governor
+and stay at ~24 MiB regardless of input size or runner size.
+
+### The admission-accounting gap (risk, not yet fixed)
+
+Admission (ADR-0005) charges every task `TaskWatermark + TaskOverhead`
+(80 MiB by default) and the governor tracks only the watermarked portion. A
+1M-group aggregate really costs ~154 MiB, of which the governor sees 2 MiB
+at a 2 MiB watermark. **Admission therefore under-charges high-cardinality
+aggregates**, and a small runner can admit several of them and exceed the
+memory it was told to respect.
+
+Practical guidance until accounting improves: on a memory-constrained
+runner set `-mem-budget` to roughly half of physical RAM, and size
+high-cardinality aggregate work against the rule above rather than against
+the watermark. `max_concurrent_by_mem` in the capacity report is derived
+from the 80 MiB figure and is optimistic for this shape.
 
 ## Micro-benchmarks (`go test -bench`)
 
