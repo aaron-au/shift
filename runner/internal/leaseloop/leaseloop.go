@@ -208,6 +208,8 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 						RecordsOut:    lt.RecordsOut,
 						SinkConfirmed: lt.SinkConfirmed,
 						RunnerTaskID:  localID,
+						Stopped:       lt.Stopped,
+						StopStep:      lt.StopStep,
 					}
 					for _, op := range lt.Ops {
 						res.Ops = append(res.Ops, hubclient.OpStat(op))

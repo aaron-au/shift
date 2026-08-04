@@ -157,6 +157,51 @@ yet executable**; they fail with an explicit error rather than mis-running
 (issue #59). Two further gaps are tracked: test-mode capture is dropped on
 DAG flows (#60) and per-branch idempotency keys are not derived (#61).
 
+### The error model: one cause, and a deliberate stop (ADR-0031)
+
+Once an execution is more than one goroutine, "what went wrong" stops being
+obvious. A fan-out cancels its shared context the instant any branch fails, so
+the innocent siblings and the driver all return `context.Canceled`. Reporting
+one of those buries the real cause; picking whichever finished first makes the
+report a race.
+
+`stream.Canonical` resolves the single error worth reporting, in order:
+
+1. A deliberate `@stop` wins outright and resolves to **no error**.
+2. The first **non-cancellation** error is the cause. Order is the caller's
+   (the fan-out passes branches in declaration order), so it is deterministic.
+3. A cancellation is the cause only when the **parent** context is done — the
+   caller aborted, a client disconnected, a deadline fired. The executor's own
+   teardown cancel is a derived context, so it never satisfies this.
+4. Anything left over is still returned rather than swallowed: a cancellation
+   with nothing to explain it is worth seeing (ADR-0005).
+
+`stream.Classify` wraps that and additionally reports whether the run ended on
+a stop and which step requested it, so a caller cannot check one half and miss
+the other.
+
+**`@stop`** is the third built-in terminal, alongside `@discard` and
+`@response`. Routing a record into it ends the whole execution **as a
+success** — the usual shape is one arm of a router, "if this holds, we're
+done". The distinction from `@discard` is the point: `@discard` drops records
+and lets the stream run to its natural end; `@stop` terminates.
+
+It must not be modelled as an error, and the reason is concrete: an error would
+be **retried** by the hub — re-running a flow the author deliberately ended —
+and, once a default dead-letter handler exists, would be **dead-lettered**,
+alerting on a clean exit. So the sentinel is classified before any error
+classification runs, and the task ends `completed` with `stopped=true` plus the
+stopping step id, counted as `shift_flow_stops_total` (a **subset** of
+completed, not a peer — `completed + failed` still totals every terminal task).
+
+A `@stop` that is never reached costs nothing: its `Write` is simply never
+called.
+
+Honest limitation (ADR-0031 §5): branches are concurrent, so a stop **does not
+roll back sibling side effects already in flight**. It cancels contexts; it
+does not un-write a file or un-POST a request. Ordering across branches is
+explicit sequencing (a linear chain), never an implicit gate on a tee.
+
 ## Task lifecycle and admission (ADR-0005 in practice)
 
 ```

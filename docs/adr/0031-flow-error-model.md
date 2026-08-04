@@ -1,7 +1,18 @@
 # ADR-0031: Flow error model — canonical error, default dead-letter, and forced termination
 
 Date: 2026-07-29
-Status: **Designed (build deferred)**
+Status: **Partially implemented.** §1 (canonical single error) and §3 (`@stop`
+forced early termination) are built: `stream.Canonical`/`stream.Classify` +
+`ErrStopRequested` in `engine/stream/outcome.go`, the `@stop` reserved terminal
+in `pkg/flowdoc`, `stopSink` and outcome classification in the runner, a
+`stopped`/`stop_step` marker on the task and the hub execution report, and
+`shift_flow_stops_total`.
+
+§2 (flow-level default dead-letter, `Document.OnError`,
+`succeeded_with_dead_letters`) and the §4 retry-mapping change it keys — a
+**handled** error being terminal rather than retried — are **still designed
+only**. Until §2 lands, ADR-0013 behaviour is unchanged: an unhandled error
+fails the task, and a handled one fails it too (with `handled=true`).
 
 ## Context
 

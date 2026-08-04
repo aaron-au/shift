@@ -33,6 +33,7 @@ type Snapshot struct {
 	Submitted int64
 	Completed int64
 	Failed    int64
+	Stopped   int64
 	Waiting   int64
 	Running   int64
 	RecordsIn int64
@@ -74,6 +75,9 @@ func NewRunner(snapFn func() Snapshot, rejectedFn func() map[string]int64) (http
 	submitted := c("shift_runner_tasks_submitted_total", "Tasks accepted since start.")
 	completed := c("shift_runner_tasks_completed_total", "Tasks completed since start.")
 	failed := c("shift_runner_tasks_failed_total", "Tasks failed since start.")
+	// A subset of completed, not a peer: a deliberate @stop is a success
+	// (ADR-0031 §3), and this is what makes it visible as one.
+	stopped := c("shift_flow_stops_total", "Flows ended on a deliberate @stop terminal since start.")
 	recordsIn := c("shift_runner_records_in_total", "Records read from sources since start.")
 	connInUse := g("shift_runner_connector_in_use", "Connector processes in use, by connector.")
 	ratelimited := c("shift_runner_ratelimited_total", "Webhook requests rejected by the rate limiter, by class.")
@@ -92,6 +96,7 @@ func NewRunner(snapFn func() Snapshot, rejectedFn func() map[string]int64) (http
 		o.ObserveInt64(submitted, s.Submitted)
 		o.ObserveInt64(completed, s.Completed)
 		o.ObserveInt64(failed, s.Failed)
+		o.ObserveInt64(stopped, s.Stopped)
 		o.ObserveInt64(recordsIn, s.RecordsIn)
 		for _, cu := range s.Conns {
 			o.ObserveInt64(connInUse, cu.InUse, metric.WithAttributes(attribute.String("connector", cu.Name)))
@@ -102,7 +107,7 @@ func NewRunner(snapFn func() Snapshot, rejectedFn func() map[string]int64) (http
 			}
 		}
 		return nil
-	}, govBudget, govUsed, govPeak, maxByMem, running, waiting, submitted, completed, failed, recordsIn, connInUse, ratelimited)
+	}, govBudget, govUsed, govPeak, maxByMem, running, waiting, submitted, completed, failed, stopped, recordsIn, connInUse, ratelimited)
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: register callback: %w", err)
 	}

@@ -393,7 +393,7 @@ func (s *Step) validate() error {
 				if s.Type != "source" {
 					return fmt.Errorf("built-in connector %q is only valid as a source", s.Connector)
 				}
-			case DiscardSink, ResponseSink:
+			case DiscardSink, ResponseSink, StopSink:
 				if s.Type != "sink" {
 					return fmt.Errorf("built-in connector %q is only valid as a sink", s.Connector)
 				}

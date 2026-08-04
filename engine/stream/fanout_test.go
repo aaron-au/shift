@@ -237,3 +237,42 @@ func TestRouterBranchMutatesExclusive(t *testing.T) {
 }
 
 func equalStrings(a, b []string) bool { return slices.Equal(a, b) }
+
+// stoppingSink is the engine-side stand-in for the @stop terminal: the first
+// batch to reach it raises the deliberate-stop sentinel.
+type stoppingSink struct{}
+
+func (stoppingSink) Write(context.Context, *record.Batch) error { return ErrStopRequested }
+func (stoppingSink) Close() error                               { return nil }
+
+// A branch reaching @stop ends the whole topology as a SUCCESS. This is the
+// case the canonical-error rule exists for: the stop cancels the shared
+// context, so the sibling branch reports context.Canceled, and reporting that
+// would turn a deliberate stop into a failed — and therefore retried — task.
+func TestTeeStopEndsTheRunAsSuccess(t *testing.T) {
+	sibling := newCapture()
+	sibling.delay = time.Millisecond // still reading when the stop fires
+	rep, err := RunTee(context.Background(),
+		upstreamOf(`{"s":"1"}`, `{"s":"2"}`, `{"s":"3"}`, `{"s":"4"}`),
+		[]Branch{
+			passthrough(sibling, "keep", true),
+			{Name: "halt", Sink: stoppingSink{}, Shared: true,
+				Build: func(src Source) *Pipeline { return New(src, "halt") }},
+		},
+		FanoutOptions{QueueDepth: 1})
+	if err != nil {
+		t.Fatalf("err = %v, want nil — a stop is a success, not a failure", err)
+	}
+	if !rep.Stopped {
+		t.Fatal("report does not record the stop; the caller cannot tell a stop from a clean run")
+	}
+	if rep.StopStep != "halt" {
+		t.Fatalf("StopStep = %q, want the branch that stopped", rep.StopStep)
+	}
+}
+
+// (The "a stop beats a sibling's error" rule is pinned deterministically in
+// TestStopWinsOverAnErrorItCaused. Asserting it through RunTee would race: with
+// the context already cancelled and a queue slot free, the driver's select
+// picks between sending and giving up at random, so the stopping branch might
+// never receive a batch.)

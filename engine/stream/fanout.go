@@ -59,6 +59,13 @@ type Branch struct {
 // passed in.
 type FanoutReport struct {
 	Branches []Report
+	// Stopped reports that a branch reached a @stop terminal, ending the whole
+	// topology deliberately and successfully (ADR-0031 §3); StopStep names it.
+	// These ride the report rather than the error because a stop resolves the
+	// run's error to nil — without them the caller would see a clean success
+	// and could not tell that a stop is what produced it.
+	Stopped  bool
+	StopStep string
 }
 
 // FanoutOptions tune fan-out execution.
@@ -92,6 +99,11 @@ func RunRouter(ctx context.Context, upstream Source, branches []Branch, match fu
 }
 
 type fanoutExec struct {
+	// parent is the context handed to the executor; ctx is the one derived
+	// from it that the executor cancels on first error or on @stop. Keeping
+	// both is what lets Canonical tell a caller-initiated abort (parent done)
+	// from this executor's own teardown (only ctx done) — ADR-0031 §1.
+	parent   context.Context
 	ctx      context.Context
 	cancel   context.CancelFunc
 	branches []Branch
@@ -109,6 +121,7 @@ func newFanoutExec(ctx context.Context, branches []Branch, opts FanoutOptions) *
 	}
 	cctx, cancel := context.WithCancel(ctx)
 	e := &fanoutExec{
+		parent:   ctx,
 		ctx:      cctx,
 		cancel:   cancel,
 		branches: branches,
@@ -232,33 +245,20 @@ func (e *fanoutExec) finish(upstream Source, derr error) (FanoutReport, error) {
 
 	rep := FanoutReport{Branches: e.reports}
 	// A branch that failed cancels the shared ctx, which surfaces as
-	// context.Canceled in its innocent siblings (and in the driver). Report
-	// the real cause: prefer a non-cancellation branch error, then any branch
-	// error, then a real driver/upstream error.
-	if real := firstRealError(e.errs); real != nil {
-		return rep, real
-	}
-	for _, err := range e.errs {
-		if err != nil {
-			return rep, err
-		}
-	}
-	if derr != nil && !errors.Is(derr, context.Canceled) {
-		return rep, derr
-	}
-	return rep, nil
-}
-
-// firstRealError returns the first branch error that is not merely the shared
-// context cancellation triggered by another branch's failure — the actual
-// cause worth reporting.
-func firstRealError(errs []error) error {
-	for _, err := range errs {
-		if err != nil && !errors.Is(err, context.Canceled) {
-			return err
-		}
-	}
-	return nil
+	// context.Canceled in its innocent siblings (and in the driver), and a
+	// branch reaching @stop does the same thing deliberately. Canonical
+	// (ADR-0031 §1) resolves the one result worth reporting: a stop is a
+	// success, a real error beats the teardown noise it caused, and a
+	// cancellation is reported only when the PARENT context is what was
+	// cancelled — i.e. the caller aborted rather than this executor tearing
+	// itself down. e.parent is the context handed to the executor; e.ctx is
+	// the derived one it cancels itself.
+	errs := make([]error, 0, len(e.errs)+1)
+	errs = append(errs, e.errs...)
+	errs = append(errs, derr)
+	out := Classify(e.parent, errs...)
+	rep.Stopped, rep.StopStep = out.Stopped, out.StopStep
+	return rep, out.Err
 }
 
 // drainQueues releases any snapshots still queued for a branch that stopped
