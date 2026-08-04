@@ -83,8 +83,9 @@ it forever.
 - **Filtering**: IP/CIDR allowlists, required headers, body size caps,
   method and content-type constraints, and rate limiting — reusing the
   token-bucket already built for ADR-0021 rather than a second implementation.
-- **Routing**: path → flow → an available runner, using configuration the hub
-  supplies plus runner liveness and capacity.
+- **Routing**: path → flow → an available runner. Eligibility comes from
+  hub-pushed configuration; availability is whichever eligible runner is
+  currently holding a poll (§4).
 - **A streaming proxy** to the chosen runner. Bounded memory, never persisted.
 
 ### 2. What the gateway is explicitly NOT
@@ -122,54 +123,83 @@ it is **what an attacker gets when it falls**:
 | Hub | the control plane: DB, KEK, OIDC secrets, registry |
 | Runner | plaintext secrets and live payload |
 
-So the gateway holds, at rest: **its own hub credential, and an encrypted
-last-known-good copy of the configuration that credential fetched.** No
-database connection, no KEK, no user secrets, no durable payload, and — in
-every mode except the `file` escape hatch — **no plaintext TLS private key on
-disk** (§6). Everything else lives in memory and is re-fetched from the hub on
-start.
+So the gateway holds, at rest: **an identity bundle — its own certificate and
+key, and the CA that lets it verify the hub. Nothing else.** No database
+connection, no KEK, no user secrets, no durable payload, no routing table, and
+— in every mode except the `file` escape hatch — no plaintext TLS private key
+for a served domain (§6). Everything operational arrives pushed and lives only
+in memory.
 
-### 4. Reaching the runner
+It is also, per §4, holding no credential that would let it *reach* anything
+internal. An attacker who takes the gateway gets a proxy and traffic in flight,
+and no path onward.
 
-Runners bind to a **private interface only, in every deployment**. That is the
-security property this ADR exists to deliver, and it holds in all three
-topologies:
+### 4. Direction: nothing in the DMZ ever initiates inward
 
-| Topology | Data hop |
-|---|---|
-| Gateway in DMZ, runners internal | gateway → runner, one direction, specific hosts/port |
-| Gateway and runners on one private network | gateway → runner directly |
-| Runners with no inbound connectivity at all | runner long-polls the gateway; the gateway hands the request over |
+**The gateway never opens a connection into the internal network. It only
+answers.** Every connection crossing the DMZ boundary is initiated from the
+internal side (Aaron, 2026-08-04).
 
-DMZ→internal on a specific port to specific hosts is a normal, approvable
-firewall rule in a way that internet→internal is not.
+| Connection | Direction | Mechanism |
+|---|---|---|
+| Hub → gateway (configuration) | internal → DMZ | HTTP POST on change + periodic reconcile |
+| Runner → gateway (work delivery) | internal → DMZ | long-poll, the ADR-0009 pattern |
+| Runner ↔ hub | internal → internal | unchanged (pull/lease) |
+| Gateway → anywhere internal | **none** | — |
 
-The third row reuses the pattern already proven in this codebase — runners
-already long-poll `POST /lease` (ADR-0009) — rather than introducing
-long-lived WebSocket-style connections, which is the failure mode ADR-0009 was
-written to avoid. It also inherits a property for free: **the lease loop is
-capacity-gated**, so ingress delivery respects admission (ADR-0005) without
-needing its own backpressure mechanism.
+This is the security thesis of the whole component, and it is worth stating as
+a property rather than a configuration detail: **a compromised gateway cannot
+reach the internal network at all.** It holds no credential that opens an
+inbound path, because it has none to hold. Contrast the arrangement an earlier
+draft specified — gateway dialling the hub for config and dialling runners for
+work — which needed two DMZ→internal firewall rules and made the DMZ box a
+usable pivot.
 
-**Gateway → runner is encrypted and mutually authenticated.** The end state is
-mTLS with both sides holding hub-issued identities. The cheap correct start is
-TLS plus the runner credential the hub already issues (ADR-0009), with mTLS as
-the hardening step — recorded so it is a sequencing decision rather than an
-omission.
+Runner ↔ hub staying pull is deliberate: it is entirely internal, so the
+direction buys nothing there, and changing it would churn the proven lease
+model for no security gain.
+
+Neither push is a persistent connection. Configuration is a plain POST when it
+changes plus a periodic reconcile, so there is no long-lived socket to leak,
+mutate under lock, or reconnect — the failure mode ADR-0009 was written to
+avoid. Work delivery is the long-poll already proven in this codebase.
+
+**mTLS in both directions.** Hub, runners and gateways each hold an identity,
+so "who is the hub" and "who is a legitimate runner" are cryptographic
+questions rather than network-position assumptions — which matters precisely
+because a DMZ host cannot rely on being on a trusted network.
+
+#### The property this buys for free: availability is who is listening
+
+Because runners long-poll the gateway, **the set of runners currently polling
+IS the set of available runners.** The gateway does not maintain a liveness
+table, does not poll the hub for capacity, and cannot act on stale data: a
+runner that has died is a runner that is no longer holding a poll.
+
+And because the runner lease loop is already **capacity-gated** (ADR-0005), a
+runner only polls when it can actually accept work. Admission control and load
+balancing therefore fall out of the same mechanism, with no scheduler, no
+health-check loop, and no round trip to the hub on the request path.
+
+This is why the arrangement is not merely a firewall concession. It is
+structurally simpler than the one it replaces.
 
 ### 5. Routing and placement reuse ADR-0030
 
-The gateway picks a runner using **the placement model that already exists** —
-runner groups and labels (ADR-0030): `prod` vs `non-prod`, region, capability.
-A flow already declares its target group, and the scheduler already resolves
-placement that way. The gateway consumes the same data rather than growing a
-second targeting model, which would drift.
+*Which* runners may serve a given path still comes from the placement model
+that already exists — runner groups and labels (ADR-0030): `prod` vs
+`non-prod`, region, capability. A flow declares its target group and the
+scheduler already resolves placement that way; the gateway consumes the same
+data rather than growing a second targeting model that would drift.
 
-Within an eligible group, selection is by **liveness and capacity**, both of
-which the hub already tracks (registration, heartbeat, capacity-gated lease
-intake). Load balancing is therefore a query over data we already have, not a
-new subsystem — which is what makes the gateway a genuine replacement for a
-customer-supplied load balancer rather than an addition to one.
+The division is clean: **the hub decides eligibility, the poll set decides
+availability.** Group membership arrives with the pushed configuration (§6a);
+which eligible runner gets the next request is whichever is holding a poll. No
+capacity query on the request path.
+
+That is what makes the gateway a genuine replacement for a customer-supplied
+load balancer rather than an addition to one — and it is a load balancer that
+cannot route to a dead backend by construction.
 
 ### 6. The hub is the single source of configuration
 
@@ -225,36 +255,58 @@ peer.
 
 ### 6a. How configuration reaches the gateway
 
-Three constraints shape this, and they are in tension.
+Because the gateway never initiates inward (§4), the hub **pushes**
+configuration to it: an HTTP POST when it changes, plus a periodic reconcile so
+a missed push self-heals. Stateless, no long-lived socket.
 
-**Bootstrap.** The gateway cannot fetch its hub address and its own identity
-from the hub. Minimum local state is therefore a **hub URL plus a single-use
-registration token**, which mints a hashed bearer credential — precisely the
-runner registration flow (ADR-0009), reused rather than reinvented. That is the
-*only* configuration a gateway is deployed with.
+**Bootstrap inverts.** A gateway that cannot dial the hub cannot register with
+it either, so the runner flow (single-use token → bearer credential) does not
+transfer. Instead the admin **creates the gateway record in the hub** — name,
+address, group eligibility — and deploys the gateway with a small **identity
+bundle**: its own certificate and key, plus the CA that lets it verify the hub.
+The hub then dials it.
 
-**Pull, not push.** Aaron described the hub sending config to the gateway; the
-administrator experience is identical either way, and pull is the right
-mechanism here. The established hub↔spoke wire is HTTP/JSON long-poll
-(ADR-0009), deliberately not WebSockets and deliberately not the hub dialling
-out. Pull also means the hub never needs to know a gateway's address or hold
-open a connection into the DMZ — the connection direction stays outbound from
-the DMZ, which is what a firewall review will expect to see.
+That bundle is genuinely local material, and it is worth being straight about
+why it is acceptable where the config cache was not. It is **small, static and
+identity-only** — it authenticates the gateway and authenticates the hub to it,
+and it grants nothing else. It does not contain routes, TLS certificates for
+served domains, allowlists or any customer data, all of which arrive pushed and
+live only in memory. And unlike the config cache, it does not exist to make the
+gateway *keep working* while the hub is away; it exists so the two can identify
+each other at all. It is the same class of artefact as a Kubernetes service
+account token.
 
-**Restart availability.** Config held only in memory means a gateway that
-restarts while the hub is unreachable cannot serve — the public front door
-would inherit the control plane's availability. That is a real regression and
-the mitigation is deliberate: the gateway persists a **last-known-good config,
-encrypted**, unwrapped by a key it already holds locally (the same shape as the
-runner's `SHIFT_HUB_CRED_FILE`). Honestly stated, that is one small piece of
-local key material securing everything else — but it is one small piece rather
-than a full parallel config path, and it converts a hard dependency into a
-graceful one.
+**Restart needs no cache, and that is the right answer.** An earlier draft had
+the gateway persist an encrypted last-known-good configuration so it could
+serve through a hub outage. Aaron pushed back that bootstrap already covers
+restart, and following the failure through shows the cache was not merely
+unnecessary but harmful:
+
+> Request arrives → gateway routes it from cached config → runner receives it →
+> **the runner needs the hub to resolve secrets and connections for that
+> execution** (ADR-0035 §3) → the task fails.
+
+So the cache does not buy availability. It converts a clean **503 at the front
+door** into a **failed execution one hop later**, which is worse: a 503 tells
+the sender to retry, while a failed execution looks like genuine processing
+failure and may consume the attempt. **A 503 while the hub is unreachable is
+correct behaviour, not a degradation to paper over**, and dropping the cache
+removes the last piece of non-identity material from the DMZ.
+
+A gateway that restarts holds no configuration and serves 503 until the hub's
+next push. Its health endpoint reports "unconfigured" so the hub reconciles
+immediately rather than waiting out the interval.
+
+**A live duplicate fails loudly.** If a gateway presents an identity the hub
+already considers active elsewhere, the hub rejects it rather than
+silently serving two. A replacement for a *dead* gateway supersedes the old
+record; a second live one is someone having copied an identity bundle, which
+must never be quiet.
 
 **The hub validates before it distributes.** A certificate that does not parse,
 has expired, or does not match its declared domain; a malformed CIDR; a route
-naming a flow that does not exist — all are rejected at configuration time, not
-discovered when the public front door fails to start. This is the same posture
+naming a flow that does not exist — all rejected at configuration time, not
+discovered when the public front door fails to start. Same posture
 `pkg/flowdoc` already takes as the validation authority, and it matters more
 here because the blast radius of a bad config is "the internet cannot reach
 us".
@@ -314,8 +366,9 @@ decisions, and a reader should see it stated rather than infer it.
 - **Runners stay disposable (ADR-0002).** Scaling runners no longer touches
   DNS or load-balancer configuration; the gateway discovers capacity through
   the hub.
-- **No WebSockets in the control plane (ADR-0009).** The no-inbound topology
-  uses the existing long-poll pattern, not a persistent socket.
+- **No WebSockets in the control plane (ADR-0009).** Neither direction uses a
+  persistent socket: configuration is a POST on change plus a reconcile, and
+  work delivery is the long-poll already proven here.
 - **Resource-governed admission (ADR-0005).** Ingress delivery is
   capacity-gated by construction; overload is a 503, never a silent buffer.
 - **Encrypted by default (ADR-0010).** Gateway→runner is TLS with mutual
@@ -337,6 +390,12 @@ decisions, and a reader should see it stated rather than infer it.
 - **One authentication surface instead of two.** The gateway authenticates the
   caller; the runner authenticates the gateway. Webhook token handling moves
   out of the runner.
+- **Zero DMZ→internal firewall rules.** Every boundary-crossing connection is
+  initiated from the internal side (§4), so a compromised gateway has no path
+  onward — and a firewall review sees only outbound-to-DMZ rules, which is the
+  easy approval. It also removes the liveness-tracking the gateway would
+  otherwise need: the runners holding a poll are the available runners, and
+  they poll only when capacity-gated admission lets them.
 - **Latency cost is expected to be small and must be measured.** The trigger
   path's fixed cost is ~200µs today (`docs/dev/04-runner.md`), and a streaming
   proxy on a private network should add a few hundred µs plus sub-millisecond
