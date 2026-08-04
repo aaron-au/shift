@@ -34,6 +34,7 @@ type leaseHub struct {
 	failStatus      int // default 200
 	secretsStatus   int // default 200
 	secrets         map[string]string
+	connections     map[string]hubclient.Connection
 
 	// failStatusFirst limits failStatus to the first N fail calls (later ones
 	// answer 200), so a test can exercise the report RETRY path.
@@ -89,16 +90,21 @@ func newLeaseHub(t *testing.T) (*leaseHub, *hubclient.Client) {
 		h.mu.Unlock()
 		w.WriteHeader(orDefault(st, http.StatusOK))
 	})
-	mux.HandleFunc("POST /api/v1/secrets/resolve", func(w http.ResponseWriter, _ *http.Request) {
+	// The runner binds connections and secrets in ONE call (ADR-0035 §3),
+	// so the fake hub serves that endpoint. `connections` is served from
+	// the same struct field so a test can exercise ADR-0034 binding.
+	mux.HandleFunc("POST /api/v1/task-config/resolve", func(w http.ResponseWriter, _ *http.Request) {
 		h.mu.Lock()
-		st, secrets := h.secretsStatus, h.secrets
+		st, secrets, conns := h.secretsStatus, h.secrets, h.connections
 		h.mu.Unlock()
 		if st != 0 && st != http.StatusOK {
 			w.WriteHeader(st)
 			_, _ = w.Write([]byte(`{"error":"secret backend down"}`))
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"secrets": secrets})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"connections": conns, "secrets": secrets,
+		})
 	})
 
 	srv := httptest.NewServer(mux)
@@ -397,6 +403,58 @@ func TestSecretResolutionSuccess(t *testing.T) {
 	}
 	if strings.Contains(msg, "s3cr3t-value") {
 		t.Fatal("plaintext secret leaked into failure report")
+	}
+}
+
+// A leased task whose node references a Connection must have it merged
+// before execution, and the connection's OWN secret references resolved —
+// the runner cannot name those until the hub hands the connection over,
+// which is why both arrive in one call (ADR-0034, ADR-0035 §3).
+func TestConnectionBindingOnLeasedTask(t *testing.T) {
+	hub, client := newLeaseHub(t)
+	hub.connections = map[string]hubclient.Connection{"prod-http": {
+		Connector: "http",
+		Config:    json.RawMessage(`{"url":"https://example.invalid","token":{"$secret":"api_key"}}`),
+	}}
+	hub.secrets = map[string]string{"api_key": "s3cr3t-value"}
+	hub.task = &hubclient.LeasedTask{
+		ID: "conn-ok",
+		Document: json.RawMessage(`{"name":"c","source":{"connector":"http","action":"get",
+		  "connection":"prod-http"},"sink":{"connector":"gen","action":"discard"}}`),
+	}
+	svc := newService(t, t.TempDir(), 0)
+
+	l := newLoop(client, svc)
+	runLoop(t, l)
+
+	waitFor(t, 3*time.Second, func() bool { return len(hub.failMsgs()) == 1 })
+	msg := hub.failMsgs()[0]
+	// Binding succeeded: the task got as far as needing the connector.
+	if !strings.Contains(msg, "not installed") {
+		t.Fatalf("fail msg = %q, want connector-not-installed after binding", msg)
+	}
+	if strings.Contains(msg, "s3cr3t-value") {
+		t.Fatal("a connection's secret leaked into the failure report")
+	}
+}
+
+// A connection the hub does not return must fail the task, not run the node
+// with an unconfigured endpoint.
+func TestConnectionMissingFromHub(t *testing.T) {
+	hub, client := newLeaseHub(t)
+	hub.task = &hubclient.LeasedTask{
+		ID: "conn-missing",
+		Document: json.RawMessage(`{"name":"c","source":{"connector":"http","action":"get",
+		  "connection":"absent"},"sink":{"connector":"gen","action":"discard"}}`),
+	}
+	svc := newService(t, t.TempDir(), 0)
+
+	l := newLoop(client, svc)
+	runLoop(t, l)
+
+	waitFor(t, 3*time.Second, func() bool { return len(hub.failMsgs()) == 1 })
+	if msg := hub.failMsgs()[0]; !strings.Contains(msg, "absent") {
+		t.Fatalf("fail msg = %q, want it to name the missing connection", msg)
 	}
 }
 

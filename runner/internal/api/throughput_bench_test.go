@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/aaron-au/shift/runner/internal/auth"
-	"github.com/aaron-au/shift/runner/internal/secretref"
+	"github.com/aaron-au/shift/runner/internal/bind"
 	"github.com/aaron-au/shift/runner/internal/service"
 	"github.com/aaron-au/shift/runner/internal/task"
 	"github.com/aaron-au/shift/runner/internal/webhook"
@@ -80,7 +80,7 @@ func benchRunner(b *testing.B, report ExecReporter) (*httptest.Server, *service.
 	h := Handler(svc, Options{
 		RunnerName: "bench", Version: "0", Started: time.Now(),
 		Guard: auth.NewGuard(nil), Hooks: webhook.NewRegistry(),
-		Report: report, Secrets: secretref.New(nil),
+		Report: report, Binder: bind.New(nil),
 	})
 	srv := httptest.NewServer(h)
 	b.Cleanup(srv.Close)

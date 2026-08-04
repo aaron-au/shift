@@ -22,11 +22,11 @@ import (
 
 	"github.com/aaron-au/shift/runner/internal/api"
 	"github.com/aaron-au/shift/runner/internal/auth"
+	"github.com/aaron-au/shift/runner/internal/bind"
 	"github.com/aaron-au/shift/runner/internal/connstore"
 	"github.com/aaron-au/shift/runner/internal/hubclient"
 	"github.com/aaron-au/shift/runner/internal/leaseloop"
 	"github.com/aaron-au/shift/runner/internal/ratelimit"
-	"github.com/aaron-au/shift/runner/internal/secretref"
 	"github.com/aaron-au/shift/runner/internal/service"
 	"github.com/aaron-au/shift/runner/internal/task"
 	"github.com/aaron-au/shift/runner/internal/telemetry"
@@ -183,11 +183,13 @@ func main() {
 	// A standalone runner gets a resolver with no fetch: a document that
 	// references a secret then fails with a clear error instead of handing
 	// the connector a reference object (ADR-0010, ADR-0035).
-	var secretFetch secretref.Fetch
+	var taskFetch bind.Fetch
 	if client != nil {
-		secretFetch = client.ResolveSecrets
+		taskFetch = bind.FetchFrom(client.ResolveTaskConfig, func(hc hubclient.Connection) bind.Connection {
+			return bind.Connection{Connector: hc.Connector, Config: hc.Config}
+		})
 	}
-	secretResolver := secretref.New(secretFetch)
+	binder := bind.New(taskFetch)
 
 	// Webhook registry (ADR-0016). Hub-attached runners have it filled by a
 	// periodic sync (the hub is authoritative for config); standalone
@@ -232,7 +234,7 @@ func main() {
 		Handler: api.Handler(svc, api.Options{
 			RunnerName: *name, Version: version, Started: time.Now(),
 			HubStatus: hubStatus, Guard: guard, Report: report, Hooks: hooks,
-			MetricsHandler: metricsH, WebhookLimit: webhookLimit, Secrets: secretResolver,
+			MetricsHandler: metricsH, WebhookLimit: webhookLimit, Binder: binder,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

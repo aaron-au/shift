@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/aaron-au/shift/hub/internal/secrets"
 	"github.com/aaron-au/shift/hub/internal/store"
 	"github.com/aaron-au/shift/pkg/flowdoc"
 )
@@ -266,4 +267,102 @@ func missingConnections(want []string, got []store.Connection) []string {
 	}
 	sort.Strings(missing)
 	return missing
+}
+
+// resolveTaskConfig is the runner's single bootstrap call: it returns the
+// connections a task's flow references AND every secret needed to run it,
+// in one round trip.
+//
+// It exists because the naive sequence is two SEQUENTIAL calls — fetch
+// connections, then resolve the secrets those connections turn out to
+// reference. Against a hub one WAN hop away that doubles a latency the
+// runner-direct paths exist to avoid (ADR-0035 §3), on exactly the
+// request-reply and webhook paths where it is most visible.
+//
+// The hub can collapse it because it holds both: it collects the secret
+// references out of the connections it is about to return and folds them
+// into the set it resolves. Connection configs travel with their
+// {"$secret":...} references INTACT — substitution stays runner-side
+// (ADR-0010), so this adds no new place for plaintext to sit.
+func (a *api) resolveTaskConfig(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Connections []string `json:"connections"`
+		Secrets     []string `json:"secrets"`
+	}
+	if err := readBody(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if len(req.Connections) > 100 || len(req.Secrets) > 100 {
+		writeErr(w, http.StatusBadRequest, errors.New("connections and secrets are limited to 100 each"))
+		return
+	}
+
+	conns := map[string]store.Connection{}
+	if len(req.Connections) > 0 {
+		found, err := a.st.ConnectionsByName(r.Context(), req.Connections)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, errors.New("connection resolution failed"))
+			return
+		}
+		if missing := missingConnections(req.Connections, found); len(missing) > 0 {
+			writeErrCode(w, http.StatusNotFound, "connection_missing",
+				fmt.Errorf("unknown connection(s): %s", strings.Join(missing, ", ")))
+			return
+		}
+		for _, c := range found {
+			conns[c.Name] = c
+		}
+	}
+
+	// Fold in whatever the connections themselves reference: the runner
+	// cannot know these names until it has the connections, and making it
+	// ask again is the round trip this endpoint removes.
+	want := map[string]bool{}
+	for _, n := range req.Secrets {
+		want[n] = true
+	}
+	for _, c := range conns {
+		refs, err := flowdoc.ConfigSecretRefs(c.Config)
+		if err != nil {
+			writeErr(w, http.StatusUnprocessableEntity,
+				fmt.Errorf("connection %q: %w", c.Name, err))
+			return
+		}
+		for _, n := range refs {
+			want[n] = true
+		}
+	}
+
+	values := map[string]string{}
+	if len(want) > 0 {
+		if a.opts.Secrets == nil {
+			writeErr(w, http.StatusUnprocessableEntity,
+				errors.New("task references secrets but the hub has no secret store configured"))
+			return
+		}
+		names := make([]string, 0, len(want))
+		for n := range want {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		var err error
+		values, err = a.opts.Secrets.Resolve(r.Context(), names)
+		if missing, ok := errors.AsType[*secrets.MissingError](err); ok {
+			writeErr(w, http.StatusNotFound, missing)
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, errors.New("secret resolution failed"))
+			return
+		}
+		for _, n := range names {
+			_ = a.st.Audit(r.Context(), actor(r), "secret.access", n, nil)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"connections": conns,
+		"secrets":     values,
+	})
 }

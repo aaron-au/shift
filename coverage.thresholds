@@ -58,12 +58,13 @@ github.com/aaron-au/shift/runner/internal/connstore 95
 github.com/aaron-au/shift/runner/internal/flow 91
 github.com/aaron-au/shift/runner/internal/hubclient 84
 # Lowered 78 -> 76 on 2026-08-03: resolveSecrets (small, fully covered) moved
-# out to runner/internal/secretref, which lands at 100%. A denominator change
+# out to runner/internal/bind (then named secretref), which lands at 100%. A
+# denominator change
 # from a code move, not a test regression — module total rose 85.5% -> 85.6%.
 # What remains uncovered here is the heartbeat/poll loop, which is exercised
 # only by the connector-subprocess tests that SHIFT_COVERAGE skips.
 github.com/aaron-au/shift/runner/internal/leaseloop 76
-github.com/aaron-au/shift/runner/internal/secretref 90
+github.com/aaron-au/shift/runner/internal/bind 90
 github.com/aaron-au/shift/runner/internal/ratelimit 86
 github.com/aaron-au/shift/runner/internal/service 67
 github.com/aaron-au/shift/runner/internal/task 86

@@ -32,23 +32,44 @@ internal/connstore     M4b (ADR-0011): fetch signed connector artifacts from the
 
 ## M4b: secrets and signed connectors
 
-- **Secrets**: documents arrive carrying inert `{"$secret":"name"}` refs.
-  `internal/secretref` resolves them per task via the runner-realm
-  `POST /api/v1/secrets/resolve` (no cache — revocation is immediate, the
-  runner stays stateless) and substitutes into a copy of the document.
+- **Binding (`internal/bind`)**: documents arrive carrying inert
+  `{"$secret":"name"}` refs and, since ADR-0034, references to reusable
+  **Connections**. `bind.Binder.Apply` does both in one step — merge each
+  referenced connection into its node's config, then substitute every
+  secret reference — and returns a COPY; the caller's document is never
+  mutated (the webhook registry shares one parsed document across
+  concurrent invocations).
+
+  Order matters: connections merge **first**, because a connection's own
+  config can carry refs the document never did, and substituting before
+  merging leaves a live `{"$secret":…}` in the merged config.
+
+  **One hub round trip per task**, not one per secret and not one per
+  concern: `POST /api/v1/task-config/resolve` returns the connections AND
+  every secret needed, including the ones those connections reference —
+  which the runner cannot name until it has them. Two sequential calls
+  would double hub latency on exactly the request-reply and webhook paths
+  that exist to avoid it (ADR-0035 §3). No cache: revocation stays
+  immediate and the runner stays stateless.
+
   Resolution failures fail the task with **names only**; values never
   appear in logs or reports (e2e: `TestSecretsNeverAtRest`).
-  One round trip per task, not per secret — every ref goes in one
-  batched call.
-  Resolution runs on **all four execution paths**: the hub-queued lease
-  loop and the three runner-direct ones (`POST /hooks/{name}`,
-  `/api/flows/execute`, `/api/flows/run`). It lived only in the leaseloop
-  until 2026-08-03, so runner-direct triggers shipped the literal
-  reference object to the connector — a webhook flow using a credential
-  simply did not work. A runner with no hub attached fails such a
-  document with `ErrNoResolver` rather than passing the ref through,
+
+  Binding runs on **all four execution paths**: the hub-queued lease loop
+  and the three runner-direct ones (`POST /hooks/{name}`,
+  `/api/flows/execute`, `/api/flows/run`). Secret resolution lived only in
+  the leaseloop until 2026-08-03, so runner-direct triggers shipped the
+  literal reference object to the connector — a webhook flow using a
+  credential simply did not work. Keeping connections and secrets in ONE
+  call on ONE code path is deliberate: splitting them would recreate that
+  failure mode one step later. A runner with no hub attached fails such a
+  document with `ErrNoResolver` rather than passing references through,
   because the alternative error describes a bad password instead of a
   missing hub.
+
+  The connector-vs-connection mismatch check runs here as well as at
+  deploy: connections are not versioned (ADR-0034 open question 3), so a
+  connection can be re-pointed after a deploy passed.
 - **Signed connectors**: with `-hub` set, `connstore.Ensure` becomes the
   pool's locator. Order: operator `-connector-dir` first (local trust,
   unchanged dev workflow), registry second. `SHIFT_REQUIRE_SIGNED=1`

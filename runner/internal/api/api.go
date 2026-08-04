@@ -24,9 +24,9 @@ import (
 
 	"github.com/aaron-au/shift/pkg/httpsec"
 	"github.com/aaron-au/shift/runner/internal/auth"
+	"github.com/aaron-au/shift/runner/internal/bind"
 	"github.com/aaron-au/shift/runner/internal/flow"
 	"github.com/aaron-au/shift/runner/internal/ratelimit"
-	"github.com/aaron-au/shift/runner/internal/secretref"
 	"github.com/aaron-au/shift/runner/internal/service"
 	"github.com/aaron-au/shift/runner/internal/task"
 	"github.com/aaron-au/shift/runner/internal/webhook"
@@ -87,10 +87,10 @@ type Options struct {
 	MetricsHandler http.Handler
 	// WebhookLimit throttles public webhook ingress per {hook, IP} (M6c).
 	WebhookLimit *ratelimit.Limiter
-	// Secrets resolves {"$secret":…} refs on the runner-direct paths. A
-	// resolver with no fetch fails documents that reference secrets, which
-	// is the correct standalone-runner behaviour.
-	Secrets *secretref.Resolver
+	// Binder merges referenced Connections and resolves {"$secret":…} refs
+	// on the runner-direct paths. A binder with no fetch fails documents
+	// that need either, which is the correct standalone-runner behaviour.
+	Binder *bind.Binder
 }
 
 // Handler builds the runner's HTTP mux.
@@ -98,7 +98,7 @@ func Handler(svc *service.Service, o Options) http.Handler {
 	runnerName, version, started := o.RunnerName, o.Version, o.Started
 	hubStatus, guard, report := o.HubStatus, o.Guard, o.Report
 	hooks, metricsHandler, webhookLimit := o.Hooks, o.MetricsHandler, o.WebhookLimit
-	secrets := o.Secrets
+	binder := o.Binder
 	if hooks == nil {
 		hooks = webhook.NewRegistry()
 	}
@@ -147,7 +147,7 @@ func Handler(svc *service.Service, o Options) http.Handler {
 		// queued ones and must be resolved identically — passing a
 		// reference through would reach the connector as an object where
 		// a value belongs (ADR-0010).
-		doc, opts.SecretValues, err = secrets.Apply(r.Context(), doc)
+		doc, opts.SecretValues, err = binder.Apply(r.Context(), doc)
 		if err != nil {
 			writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf("secret resolution: %w", err))
 			return
@@ -173,7 +173,7 @@ func Handler(svc *service.Service, o Options) http.Handler {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		doc, secretValues, err := secrets.Apply(r.Context(), doc)
+		doc, secretValues, err := binder.Apply(r.Context(), doc)
 		if err != nil {
 			writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf("secret resolution: %w", err))
 			return
@@ -315,7 +315,7 @@ func Handler(svc *service.Service, o Options) http.Handler {
 				return
 			}
 		}
-		doc, secretValues, err := secrets.Apply(r.Context(), doc)
+		doc, secretValues, err := binder.Apply(r.Context(), doc)
 		if err != nil {
 			writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf("secret resolution: %w", err))
 			return
