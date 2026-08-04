@@ -36,6 +36,46 @@ Streaming RSS is **flat with input size** (22–24 MiB at 64 MiB, 256 MiB, and
 1 GiB inputs); the baseline grows linearly at ~7× input size, which is the
 scaling wall the platform exists to remove.
 
+## 10 GiB — ETL-sized loads (added 2026-08-04)
+
+Three points make a curve, not a law, so the exit-criteria run was repeated
+at 10× the data to see whether "flat with input size" survives an order of
+magnitude. Same machine, same binary, `-max-rss 100MiB` enforced:
+
+| Scenario (10 GiB input) | Peak RSS | RSS @ 1 GiB | Wall | Throughput | Spill |
+|---|---|---|---|---|---|
+| `transform` (48.5M records) | **24.30 MiB** | 24.3 MiB | 63.9 s | 160 MiB/s · 758k rec/s | 0 B |
+| `csv` (127.0M records) | **12.97 MiB** | 13.5 MiB | 88.3 s | 116 MiB/s · 1.44M rec/s | 0 B |
+
+**RSS is identical at 10× the input** — 24.30 vs 24.3 MiB; the CSV case is
+marginally *lower*. Zero spill in both. Memory is a function of the
+watermark and batch sizing, not of how much data flows through, which is
+the property that makes ETL-sized loads a scheduling question rather than a
+sizing question.
+
+Do **not** compare the throughput columns against the 1 GiB table above:
+those were measured in a different session and the machine state differs
+(see `docs/dev/04-runner.md` on between-session drift). RSS is the
+comparable figure — it is set by configuration, not by CPU.
+
+**Reading dominates.** The per-op breakdown says where the time goes:
+
+| | `transform` | `csv` |
+|---|---|---|
+| read (parse) | 40.2 s (63%) | 68.8 s (78%) |
+| all transforms | 19.4 s | 1.9 s |
+| write | 4.3 s | 17.6 s |
+
+Two thirds to three quarters of wall time is parsing input. Transform depth
+is close to free by comparison — the same conclusion the trigger-path shape
+sweep reaches from the other direction. For batch sizing, the source is the
+constraint.
+
+**Not yet proven at this scale:** multi-hour sustained runs, multi-TB
+volumes, and real warehouse targets. And there is no checkpoint/resume
+anywhere in the tree — a load that fails part-way restarts from zero, which
+is the actual gap between "handles ETL volumes" and "is an ETL tool".
+
 ## Micro-benchmarks (`go test -bench`)
 
 | | Result |
