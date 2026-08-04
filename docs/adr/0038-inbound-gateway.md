@@ -172,24 +172,37 @@ customer-supplied load balancer rather than an addition to one.
 
 ### 6. Certificates
 
-TLS terminates at the gateway, so certificate lifecycle belongs there.
+TLS terminates at the gateway, so certificate lifecycle belongs there — and
+"ACME" is not the whole answer. Plenty of enterprises buy certificates from a
+CA on a purchase order, and plenty terminate TLS before traffic ever reaches
+us. Four supported arrangements:
 
-**The gateway obtains and renews via ACME itself.** It is the endpoint an
-HTTP-01 or TLS-ALPN-01 challenge is served from; routing that through the hub
-would be backwards. It also keeps the private key on the host that uses it,
-rather than shipping keys from the control plane into the DMZ — which would
-re-create the exact credential-in-the-DMZ problem §3 exists to avoid.
+1. **Mounted files — the default, and the answer for purchased certificates.**
+   A cert/key pair on disk (a Kubernetes secret, a Docker volume, a config
+   management drop), watched for change and reloaded without a restart. The
+   private key never touches the control plane at all, which is the strongest
+   posture available and the one an enterprise PKI process already produces.
+2. **ACME, run by the gateway itself.** For self-managed public certificates.
+   The gateway *is* the endpoint an HTTP-01 or TLS-ALPN-01 challenge is served
+   from, so routing that through the hub would be backwards, and it keeps the
+   key on the host that uses it.
+3. **Hub-distributed, envelope-encrypted.** Only for **multiple gateway
+   replicas**, which need a shared view of one certificate — applies equally to
+   purchased and ACME certs. The hub stores the bundle encrypted like any other
+   secret (ADR-0010) and gateways fetch it. A single-gateway deployment skips
+   this entirely. Called out as a trade-off rather than a default, because it
+   is the one place this design lets key material onto the control plane.
+4. **No TLS at the gateway at all** — running **behind** a TLS-terminating
+   load balancer or WAF appliance (F5, ALB, Cloudflare), which is how a large
+   share of enterprise DMZs are already built. The gateway listens plain HTTP
+   on a private interface and honours `X-Forwarded-For` / `X-Forwarded-Proto`
+   **only from a configured trusted-proxy list** — never from an arbitrary
+   caller, since a spoofable forwarded header would defeat the IP allowlist in
+   §1.
 
-The hub's role is **configuration, not custody**: domains, ACME account, and
-DNS-01 provider credentials as `{"$secret":…}` references resolved through the
-existing envelope machinery (ADR-0010/0035).
-
-The one case where the hub holds key material is **multiple gateway replicas**,
-which need a shared view of the certificate. There the hub stores the bundle
-**envelope-encrypted like any other secret** and gateways fetch it. A
-single-gateway deployment skips that entirely. Stated as a trade-off rather
-than a default, because it is the one place this design lets key material onto
-the control plane.
+In every arrangement the hub's role is **configuration, not custody**: domains,
+ACME account, DNS-01 provider credentials as `{"$secret":…}` references
+(ADR-0010/0035), trusted-proxy CIDRs. Custody is arrangement 3 only.
 
 ### 7. Interaction with replay (ADR-0037)
 
@@ -209,6 +222,30 @@ request-reply. So replay-of-inbound is **opt-in per flow**, for a concrete
 measured reason rather than a vague one, and a flow that does not opt in simply
 cannot replay its inbound payload — which the API reports honestly rather than
 silently degrading.
+
+### 8. "Disposable" is a correctness contract, not a frequency prediction
+
+Aaron, 2026-08-04, on an unrealism running through several of these designs:
+runners are *designed* to be disposable, but in practice a healthy runner runs
+for **months** between restarts.
+
+Both are true and they answer different questions. "Nothing may be lost when a
+runner dies" stays absolute — it is what makes at-least-once dispatch, lease
+expiry and re-dispatch correct. But designing as though vanishing were *routine*
+over-weights a rare event, and that shows up as real cost:
+
+- **In-memory state is worth more than a strict reading suggests.** The
+  opt-in secret cache (ADR-0035 §2) and the warm connector pool pay back over
+  months, not seconds. Connector cold start (~6 ms) is a non-issue at that
+  lifetime, which is why it was correctly left unfixed.
+- **Resume's value shifts.** Less about routine crash recovery, more about the
+  six-hour ETL where a *single* restart in months still costs six hours.
+- **It argues against write-ahead as a default** (§7). Paying a round trip
+  before every inbound execution to protect against something that happens a
+  few times a year is a bad default, and reinforces opt-in.
+
+Recorded here because the assumption was doing silent work in several
+decisions, and a reader should see it stated rather than infer it.
 
 ## Doctrine held
 
