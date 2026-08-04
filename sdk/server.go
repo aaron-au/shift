@@ -199,6 +199,21 @@ func (s *server) Pull(req *connectorpb.PullRequest, stream grpc.ServerStreamingS
 	}
 	defer func() { _ = action.Close() }()
 
+	// Resume (ADR-0037) is an optional capability. A cursor sent to an action
+	// that cannot honour it is an error rather than a silent full replay: the
+	// runner asked to continue from a position, and starting over while
+	// reporting success would let it record progress that never happened.
+	resumable, _ := action.(ResumableSource)
+	if cur := req.GetResumeFrom(); len(cur) > 0 {
+		if resumable == nil {
+			return status.Errorf(codes.InvalidArgument,
+				"source action %q cannot resume: it does not implement ResumableSource", req.GetAction())
+		}
+		if err := resumable.Resume(ctx, cur); err != nil {
+			return status.Errorf(codes.FailedPrecondition, "resume %s: %v", req.GetAction(), err)
+		}
+	}
+
 	enc := newFrameEncoder()
 	for {
 		b, err := action.Next(ctx)
@@ -212,7 +227,14 @@ func (s *server) Pull(req *connectorpb.PullRequest, stream grpc.ServerStreamingS
 		if err != nil {
 			return status.Errorf(codes.Internal, "%v", err)
 		}
-		if err := stream.Send(&connectorpb.Frame{Payload: payload, Records: int64(b.Len())}); err != nil {
+		frame := &connectorpb.Frame{Payload: payload, Records: int64(b.Len())}
+		if resumable != nil {
+			// Reported per batch and cheap by contract; the runner decides
+			// what to persist and when, and only ever persists a position the
+			// terminal sink has confirmed.
+			frame.Checkpoint = resumable.Checkpoint()
+		}
+		if err := stream.Send(frame); err != nil {
 			return err
 		}
 	}

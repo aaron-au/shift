@@ -22,6 +22,11 @@ type getSource struct {
 	cfg    config
 	f      *os.File
 	reader recordReader
+	// Resumption state (ADR-0037, see resume.go). emitted counts the records
+	// handed downstream; skip is how many a resumed run must discard before
+	// emitting anything.
+	emitted int64
+	skip    int64
 }
 
 func (s *getSource) Open(_ context.Context, config []byte) error {
@@ -50,7 +55,27 @@ func (s *getSource) Open(_ context.Context, config []byte) error {
 }
 
 func (s *getSource) Next(ctx context.Context) (*record.Batch, error) {
-	return s.reader.Next(ctx)
+	for {
+		b, err := s.reader.Next(ctx)
+		if err != nil {
+			return nil, err
+		}
+		n := int64(b.Len())
+		// Discard the prefix a resumed run has already delivered. Whole
+		// batches first, then the remainder of the straddling one — batch
+		// boundaries are not stable across attempts, so the cursor counts
+		// records and the skip must be able to land inside a batch.
+		if s.skip >= n {
+			s.skip -= n
+			continue
+		}
+		if s.skip > 0 {
+			b.SetRecords(b.Records()[s.skip:])
+			s.skip = 0
+		}
+		s.emitted += int64(b.Len())
+		return b, nil
+	}
 }
 
 func (s *getSource) Close() error {
