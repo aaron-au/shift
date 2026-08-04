@@ -99,9 +99,21 @@ and varying distinct keys shows what it actually is:
 | 10,000 | 22.2 MiB | 112 MiB | 5.24 s |
 | 1,000 | 17.7 MiB | 0 B | 4.78 s |
 
-**Sizing rule: aggregate RSS ≈ 18 MiB + ~150 B per distinct key.** Spilling
-is close to free — the 2 MiB watermark spills 20% more than 64 MiB and runs
-marginally *faster*, so trading memory for scratch is a good trade.
+**Sizing rule: aggregate RSS ≈ 18 MiB + ~150 B per distinct key.**
+
+Spilling *appears* close to free — the 2 MiB watermark spills 20% more than
+64 MiB and runs marginally *faster*. **Do not generalise that.** These runs
+are on an Apple M4 Max's local NVMe, and ~400 MiB of sequential writes on a
+machine with plenty of free RAM is very likely absorbed by the page cache
+and never fsynced before the process exits. The figure may be measuring
+memory, not storage.
+
+The trade is genuinely good where scratch is local NVMe. It is unproven on
+throttled cloud block storage, a container overlay filesystem, or anything
+network-attached — precisely the environments a memory-constrained runner
+tends to live in. Re-measure with `-spill-dir` on the target volume before
+sizing a small runner around spilling, and treat "spill instead of RAM" as
+a hypothesis until then.
 
 Streaming-only flows (filter/project/flatten/map) never touch the governor
 and stay at ~24 MiB regardless of input size or runner size.
