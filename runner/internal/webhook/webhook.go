@@ -5,7 +5,11 @@
 // plane — it never reaches the hub.
 package webhook
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/aaron-au/shift/pkg/flowdoc"
+)
 
 // Hook is one registered webhook: an inbound POST to /hooks/{Name} runs Doc
 // with the request body as the flow's @webhook source. TokenHash, when set,
@@ -16,6 +20,26 @@ type Hook struct {
 	Name      string
 	Doc       []byte // raw, validated flow document
 	TokenHash string // hex sha256 of the token ("" = open)
+	// Parsed is Doc already decoded and validated. A hook's document is
+	// fixed at registration but its endpoint is the runner's hottest path,
+	// so parsing per request was pure waste — every inbound POST re-decoded
+	// and re-validated a document that had not changed. Build hooks with
+	// NewHook to populate it.
+	//
+	// Treated as IMMUTABLE once stored: one *Document is shared by every
+	// concurrent invocation of the hook. Nothing on the execution path
+	// mutates it — Plan() is pure and ResolveSecrets copies — and the race
+	// detector covers the sharing.
+	Parsed *flowdoc.Document
+}
+
+// NewHook validates doc once and returns a ready-to-serve Hook.
+func NewHook(name string, doc []byte, tokenHash string) (Hook, error) {
+	parsed, err := flowdoc.Parse(doc)
+	if err != nil {
+		return Hook{}, err
+	}
+	return Hook{Name: name, Doc: doc, TokenHash: tokenHash, Parsed: parsed}, nil
 }
 
 // Registry is a concurrency-safe map of hooks by name.

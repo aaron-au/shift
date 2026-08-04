@@ -224,14 +224,91 @@ before they were found:
 - **Measuring the instrument.** The async path must be closed-loop
   (bounded in flight) or `b.N` just measures how fast a queue fills. And
   completion must be read from the service's lifetime totals, not the
-  execution-report callback: `reportWhenDone` polls at 200 ms, so gating
-  on it capped the result at `in-flight ÷ 200 ms` — 140 tps for a path
-  that actually does ~7,500.
+  execution-report callback: the old `reportWhenDone` polled at 200 ms, so
+  gating on it capped the result at `in-flight ÷ 200 ms` — 140 tps for a
+  path that actually does ~7,500.
 
-That 200 ms poll is real overhead in production too, not just in the
-benchmark: every direct execution holds a goroutine waking five times a
-second until its task finishes. Replacing it with a completion
-notification is an open improvement.
+**Between-run drift is larger than it looks.** Five samples in one session
+land within ±5%, but the same benchmark measured in a different session
+moved ~20% on unchanged code. Any before/after claim has to A/B in ONE
+session (`git stash`, measure, pop, measure) or it is measuring the
+machine, not the change. Two plausible-looking wins evaporated under that
+test — see below.
+
+### Does tps change with integration complexity?
+
+`SyncRunThroughput` measures one record through source → sink, which is the
+cheapest flow that can exist — per-invocation **overhead** and nothing else.
+`shape_bench_test.go` sweeps the two axes separately (shapes mirror the
+tiers above, so invocations/sec sits beside the tiered records/sec figure
+for the same workload).
+
+**Operator depth barely matters.** At one record, passthrough → the
+four-operator "extreme" shape costs about 10%, which is barely outside
+run-to-run noise:
+
+| Shape @ 1 record | tps @ 4 cores |
+|---|---|
+| simple (passthrough) | ~5,200 |
+| standard (filter + coerce + project) | ~5,360 |
+| complex (flatten + aggregate) | ~4,910 |
+| extreme (filter + flatten + project + aggregate) | ~4,680 |
+
+**Records per invocation is the whole story:**
+
+| Records | standard | extreme |
+|---|---|---|
+| 1 | ~5,000 tps | ~4,310 tps |
+| 100 | ~3,450 tps | ~3,000 tps |
+| 1,000 | ~1,090 tps | ~1,080 tps |
+| 10,000 | ~271 tps | ~285 tps |
+
+Two things fall out of this.
+
+**A simple cost model fits both series**: roughly **200 µs fixed per
+invocation plus ~350 ns per record**, near enough independent of shape. The
+crossover — where payload starts costing more than the trigger machinery —
+lands around **500–600 records**. Below that you are measuring overhead;
+above it you are measuring the engine.
+
+**Standard and extreme converge as payload grows** (1,090 vs 1,080 at 1,000
+records; the heavier shape is even nominally *faster* at 10,000). Operators
+are close to free next to moving records across the connector boundary,
+which is the streaming thesis showing up as a measurement. The aggregate in
+the heavier shapes also *reduces* what reaches the sink, paying back some of
+its own cost.
+
+Practical reading: for trigger-rate sizing, payload size is the question to
+ask, not flow complexity. Even 10,000-record invocations sustain ~275/sec on
+four cores.
+
+### What the execution-report rewrite did and did not buy
+
+`reportWhenDone`'s 200 ms poller is gone, replaced by
+`service.SubmitOpts.OnDone` — a completion callback the service invokes
+once the task is terminal. Likewise the webhook trigger no longer re-parses
+its flow document per request (`webhook.Hook.Parsed`, built by
+`webhook.NewHook` at registration / sync).
+
+Measured honestly, neither changes **throughput**:
+
+- Report latency drops from ~200 ms to immediate. That is the real win, and
+  it is asserted by `TestDirectExecutionReportsWithoutPolling`, whose bound
+  is deliberately set to fail against the old implementation (it measured
+  201 ms).
+- A goroutine per in-flight direct execution, sleeping on a 200 ms ticker
+  for the task's whole life, is gone. Resource churn, not throughput —
+  a sleeping goroutine costs little CPU.
+- Re-parsing cost is negligible for the small documents these benchmarks
+  use. It matters in proportion to document size, which is where real
+  flows differ from the fixture.
+
+A benchmark that pairs the webhook path with a reporter appears to make the
+NEW code ~11% slower. It does not: the old poller deferred its report work
+past the 200 ms tick and therefore outside the measured window, while the
+callback does it inside. The comparison is invalid across versions, which
+is why no such benchmark is committed — the latency assertion is the honest
+guard.
 
 ## Test-mode data capture (M5c, ADR-0014)
 

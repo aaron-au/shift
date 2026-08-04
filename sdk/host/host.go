@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
@@ -45,6 +46,15 @@ type Process struct {
 	client connectorpb.ConnectorClient
 	token  string
 	info   Info
+	// exited records that cmd.Wait() returned — the process is gone —
+	// with exitErr carrying why (nil for a clean exit, which is STILL a
+	// failure to serve: /usr/bin/true exits 0 and never binds a socket).
+	// waitCh delivers once, so whichever of waitForSocket/connect reads it
+	// must hand the fact to the other, or the launch reports a handshake
+	// timeout instead of the real cause. Track the fact separately from the
+	// error precisely because the error is legitimately nil.
+	exited  bool
+	exitErr error
 }
 
 // LaunchOptions tune connector spawning.
@@ -99,6 +109,11 @@ func Launch(ctx context.Context, binary string, opts LaunchOptions) (*Process, e
 	go func() { waitCh <- cmd.Wait() }()
 
 	p := &Process{cmd: cmd, waitCh: waitCh, dir: dir, token: token}
+	// Wait for the connector to bind its socket BEFORE the first RPC.
+	// grpc.NewClient dials lazily, so without this the first Handshake
+	// races the child's bind, loses, and then sits out gRPC's reconnect
+	// backoff — one full second of doing nothing on every launch.
+	p.waitForSocket(ctx, socket, opts.HandshakeTimeout)
 	if err := p.connect(ctx, socket, opts.HandshakeTimeout); err != nil {
 		_ = p.kill()
 		_ = os.RemoveAll(dir)
@@ -120,6 +135,37 @@ func Attach(ctx context.Context, socket, token string, timeout time.Duration) (*
 	return p, nil
 }
 
+// waitForSocket blocks until the connector's UDS appears, the process dies,
+// the deadline passes, or ctx ends. It is an optimisation, not a
+// correctness gate: connect still retries, so a miss here only costs what
+// it used to cost. Polling is 200us because the child binds within a
+// millisecond or two and the whole point is not to round that up.
+func (p *Process) waitForSocket(ctx context.Context, socket string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(socket); err == nil {
+			return
+		}
+		if p.waitCh != nil {
+			select {
+			case werr := <-p.waitCh:
+				// Died before binding. waitCh delivers once, so record it
+				// for connect rather than swallowing it — dropping it here
+				// turns "connector exited" into "handshake timed out".
+				p.waitCh = nil
+				p.exited, p.exitErr = true, werr
+				return
+			default:
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(200 * time.Microsecond):
+		}
+	}
+}
+
 func newToken() (string, error) {
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -131,6 +177,18 @@ func newToken() (string, error) {
 func (p *Process) connect(ctx context.Context, socket string, timeout time.Duration) error {
 	conn, err := grpc.NewClient("unix://"+socket,
 		grpc.WithTransportCredentials(insecure.NewCredentials()), // UDS in a 0700 dir + token auth (ADR-0007)
+		// gRPC's default reconnect BaseDelay is one second. On a local UDS
+		// that is absurd — if the first dial loses the race with the child's
+		// bind, the retry should follow in microseconds, not seconds.
+		grpc.WithConnectParams(grpc.ConnectParams{
+			Backoff: backoff.Config{
+				BaseDelay:  200 * time.Microsecond,
+				Multiplier: 1.6,
+				Jitter:     0.2,
+				MaxDelay:   50 * time.Millisecond,
+			},
+			MinConnectTimeout: time.Second,
+		}),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(maxFrameBytes),
 			grpc.MaxCallSendMsgSize(maxFrameBytes),
@@ -167,9 +225,18 @@ func (p *Process) connect(ctx context.Context, socket string, timeout time.Durat
 			select {
 			case werr := <-p.waitCh:
 				p.waitCh = nil // consumed; Close must not wait again
-				return fmt.Errorf("host: connector exited before handshake (%w): %w", werr, lastErr)
+				p.exited, p.exitErr = true, werr
 			default:
 			}
+		}
+		if p.exited {
+			if p.exitErr != nil {
+				return fmt.Errorf("host: connector exited before handshake (%w): %w", p.exitErr, lastErr)
+			}
+			// Exited 0 without ever serving: almost always "this binary is
+			// not a connector", which is worth saying rather than reporting
+			// a bare handshake failure.
+			return fmt.Errorf("host: process exited cleanly without serving a connector socket: %w", lastErr)
 		}
 		select {
 		case <-ctx.Done():

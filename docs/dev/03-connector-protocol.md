@@ -167,3 +167,33 @@ so a pipeline can't tell remote from local. `.Health(ctx)` probes
 liveness; `.Close()` does Shutdown-RPC → 5 s grace → SIGKILL → reap +
 socket-dir removal. Pooling/idle-reap/restart-backoff live in the
 **runner's** connector pool (04-runner.md), not in `host`.
+
+### Cold start: ~6 ms, and why it was ~1,025 ms
+
+`Launch` **waits for the connector's socket to appear before the first
+RPC** (`waitForSocket`), and configures gRPC's reconnect backoff for a
+local UDS (`WithConnectParams`, 200 µs base) rather than the WAN default.
+
+Without those, cold start was ~1.02 seconds — and constant to the
+millisecond across runs, which is the tell that it was a fixed delay rather
+than work. `grpc.NewClient` dials lazily, so the first `Handshake`
+triggered the connection; the child had not yet bound its socket; that dial
+failed; and **gRPC's default reconnect `BaseDelay` is one second**. Every
+connector launch sat out a full second of backoff before a handshake that
+takes microseconds. Measured 1,025 ms → ~6 ms.
+
+Nothing was broken, which is why it survived: connectors worked, just
+slowly. `TestColdStartIsNotGRPCBackoff` asserts a ceiling far below the old
+figure so a reintroduced backoff fails the build.
+
+Two subtleties worth preserving if this code is touched, both of which the
+existing tests caught within minutes of being broken:
+
+- `waitCh` delivers `cmd.Wait()` **once**. Both `waitForSocket` and
+  `connect` watch it, so whichever reads it first must record it for the
+  other. Swallowing it turns "connector exited before handshake" into a
+  handshake timeout.
+- Track the **fact** of exit (`Process.exited`) separately from its error
+  (`exitErr`). A clean exit is still a failure to serve — `/usr/bin/true`
+  exits 0 and never binds a socket — so branching on `exitErr != nil`
+  silently reintroduces the hang for exactly that case.
