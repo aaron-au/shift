@@ -234,6 +234,47 @@ studio, `b64utf8`).
 
 ## Future milestones (post-M6, not yet scheduled)
 
+- **The inbound gateway (ADR-0038) — a third application, `shift-gateway`.**
+  Aaron's call (2026-08-04), and it reverses the ingress half of ADR-0016.
+  Runners host a public authenticated surface today; that is backwards, because
+  the runner is the highest-value target in the system (plaintext secrets, live
+  payload, connector subprocesses) while the hub holds ciphertext and metadata.
+  The gateway becomes the **sole publicly reachable component**: TLS
+  termination, caller authentication (token / mTLS / provider HMAC), filtering
+  (IP allowlists, required headers, size caps, the ADR-0021 rate limiter), and
+  routing to an available runner using the ADR-0030 group/label placement the
+  scheduler already resolves. It holds no DB connection, no KEK, no user
+  secrets and no durable payload — which is what makes it **DMZ-approvable**,
+  where the hub categorically is not.
+
+  Deliberately **not** a WAF (detection belongs to products that carry the
+  insurance for getting it wrong — put Cloudflare/ModSecurity in front), not a
+  plugin host (a plugin ABI here is the Go-`plugin` mistake in a new costume;
+  WASM-via-wazero is the deferred shape if extensibility is ever wanted), not a
+  queue (no runner ⇒ 503, never buffer), and **not required** — a pull-only
+  deployment never deploys it and carries zero inbound attack surface.
+
+  Net effect: **runners bind privately in every topology**, and a customer
+  without Kubernetes gets a load balancer they do not have to build. Cost: a
+  third binary to version and ship, and a latency hop that must be *measured* —
+  estimated well under 1 ms on a LAN from the ~200 µs trigger-path fixed cost,
+  which is what decides whether synchronous request-reply survives it.
+
+- **Replay and resume (ADR-0037) — restart without a payload lake.** Three
+  distinct properties the category conflates: **chunk** (ADR-0036: N tasks, no
+  state), **resume** (an opaque source cursor — control metadata, on the hub
+  task row, so any replacement runner picks it up), **replay** (the input
+  itself). Only replay needs payload, and only for ephemeral push input — a
+  file, object, query or paginated API is still where it came from, so replay
+  there is a new task over the same range and stores nothing. For the ephemeral
+  case the archive is a **destination the customer already owns** (S3, a DB, an
+  SFTP target), written runner-side, envelope-encrypted, with the hub holding a
+  reference only. Replay runs under `replay:<task_id>` — deliberately NOT the
+  original key, because reusing it would make replay a no-op at every
+  idempotent sink. Started: the cursor SDK contract + `fs get` as the reference
+  resumable source.
+
+
 - **Hub RBAC (issue #16) — milestone-sized, BLOCKED on the central identity/
   account platform.** The hub is **open access** today: a minimal `users.role
   ∈ {admin,viewer}` model exists but JIT-provisions every OIDC user as `admin`
