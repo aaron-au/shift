@@ -96,6 +96,69 @@ values — also reused as the connector wire framing (ADR-0007).
 Accumulators today: count (int64), sum/min/max (float64). Known limits are
 tracked as GitHub issues (#3 merge accounting, #4 float sum precision).
 
+## Multi-path execution — fan-out and fan-in (ADR-0029)
+
+Everything above describes one pull chain. Flow model v3 makes the data path
+a DAG, and the pull model is preserved *within* each linear segment — a
+maximal one-in/one-out run of operators is exactly the fused `Pipeline`
+above. The new machinery lives only at the seams between segments.
+
+### Fan-out: `engine/stream/fanout.go`
+
+One goroutine drives the upstream segment (a single producer — the source is
+never pulled twice), and each branch runs as its own consumer goroutine
+reading a **bounded queue** of batches.
+
+The hard part is the batch-lifetime contract: a batch is valid only until the
+next `Next`. Handing the same batch to two branches that pull at different
+rates violates it immediately. The resolution is ownership, not aliasing:
+
+- A branch marked `Shared` reads the snapshot with **no copy**, under a
+  refcount; the arena returns to the pool when the last branch releases it.
+  The caller sets `Shared` only where the branch provably never mutates — a
+  tee straight to a sink, or a router branch that already owns its batch
+  exclusively.
+- Every other branch **copy-on-writes**: it copies the snapshot into its own
+  batch and releases the shared one, so its operators may mutate freely.
+  `Shared` is opt-in and `false` (⇒ COW) is always the safe default.
+
+A `router` never copies at all — each record goes to exactly one branch, so
+it *partitions* the input batch into per-branch batches (moves, not copies).
+
+**Backpressure** is the bounded queues themselves. When a branch's queue is
+full the driver blocks on that branch; it never skips ahead and never grows
+the queue. The tee therefore runs at the pace of its slowest branch, and at
+most `depth × branches` batches are ever in flight. Spill under sustained
+backpressure (ADR-0029 §2) is deliberately **not** built: blocking is already
+memory-bounded and correct, so spill would only decouple a slow branch — an
+optimization, not a correctness fix.
+
+A branch error becomes an `OpError` tagged with the branch's step id, cancels
+the shared context, and tears down its siblings; `Close` joins every branch
+goroutine before the node reports done, so no goroutine outlives the task.
+
+### Fan-in: `engine/stream/merge.go`, `join.go`
+
+- **`concat`** — a fair multiplex: forward batches from whichever input has
+  one ready, under the same bounded-queue backpressure. Fully streaming,
+  O(batch) memory, records **moved** not copied, interleaved order.
+- **`join`** — a keyed equi-join, and the engine's second blocking operator.
+  It reuses the aggregate's spill machinery exactly: the **build** (right)
+  input is consumed fully into a hash table keyed by the encoded join value,
+  each row `TryReserve`ing its cost and the table **grace-hash spilling
+  partitions** on watermark. The **probe** (left) input then streams one
+  batch at a time, loading the relevant spilled partition on demand — so
+  merge memory is bounded by the largest partition, not total cardinality.
+  Build rows are `record.CopyValue`'d in (they must outlive their source
+  batch); probe rows are read within their batch and emitted immediately.
+
+  Blocking on the build side only means the common enrichment shape — large
+  left, small right — stays memory-bounded by the right input's table.
+
+The runner compiles a v3 `Plan` onto these primitives in
+`runner/internal/service/service_multipath.go`; see `docs/dev/04-runner.md`
+for which topologies it currently supports (issue #59).
+
 ## Formats (`engine/format/...`)
 
 - `ndjson`: hand-rolled within-line recursive-descent parser building

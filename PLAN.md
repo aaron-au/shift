@@ -284,8 +284,33 @@ studio, `b64utf8`).
     (no whole-body buffering). The source picks NDJSON vs JSON by response
     `Content-Type`. Proven live: `http get https://jsonplaceholder.typicode.com/
     comments → @response` returns all 500 records (±a project op).
-  - Next candidates: filesystem, DB source/CDC + upsert sink, S3, SMTP,
-    message queues. XML/EDI is adjacent engine-format work (M1.5).
+  - **Connector fleet ✅** — the candidates above landed: `fs`, `db`
+    (PostgreSQL query/upsert/exec), `s3`, `azureblob`, `smtp`, `ftp`, `redis`,
+    `amqp`, `soap`, alongside `http`/`sftp`/`gen`. XML/EDI remains adjacent
+    engine-format work (M1.5).
+
+- **Flow model v3 — the executable DAG (ADR-0029) ✅ 2026-07-29.** The engine
+  centerpiece, and the largest engine change since M1. Model (`pkg/flowdoc/
+  dag.go`): `tee` (unconditional fan-out), `router` (ordered-predicate switch,
+  reusing the filter grammar — no new expression language), `merge` (fan-in,
+  `concat` or keyed `join`), plus DAG validation (acyclicity, resolvable edges,
+  join-key presence). Engine: bounded-queue tee with refcount + copy-on-write
+  so the batch-lifetime contract holds per branch, streaming concat, and a
+  build/probe hash join that **grace-hash spills** to the single `spill.Store`
+  above the watermark — bounded by the largest partition, not total
+  cardinality. Runner executes it; the studio draws it. v2/linear documents are
+  the degenerate single-chain DAG and run byte-identically. Open gaps carried
+  as issues: nested/mixed topologies (#59), test-mode capture on DAG flows
+  (#60), per-branch idempotency keys (#61).
+
+- **Connections — reusable connector configuration (ADR-0034), in progress.**
+  Endpoint + credentials authored once per account, referenced by name from any
+  verb node, so SFTP `get` then `delete` on the same server stops meaning two
+  copies of the same host and secret. Model layer + hub store/API/deploy checks
+  + runner merge-then-resolve are in (#50, #52, #58); the studio picker is the
+  remaining piece. A node may not restate a key its connection supplies — that
+  is a 422, not a silent override. Connection configs travel with
+  `{"$secret":…}` intact; substitution stays runner-side.
 
 ### M7 — Testing & benchmark hardening (ADR-0022) ✅ 2026-07-20
 
