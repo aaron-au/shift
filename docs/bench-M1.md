@@ -118,6 +118,48 @@ a hypothesis until then.
 Streaming-only flows (filter/project/flatten/map) never touch the governor
 and stay at ~24 MiB regardless of input size or runner size.
 
+### Storage: what actually needs a fast disk
+
+The intuitive split is "real-time needs no disk, batch needs NVMe". That is
+the wrong axis, and following it would over-provision most deployments while
+under-provisioning the one case that matters.
+
+Two independent questions decide it.
+
+**1. Does the flow spill at all?** Only *blocking* operators (aggregate,
+join) hold state; streaming operators (filter, project, map, flatten,
+coerce) hold none. A streaming-only flow writes **zero bytes of scratch at
+any volume** — the 10 GiB transform above spilled 0 B, same as the 1 GiB
+run. Volume is irrelevant; operator shape decides. A blocking operator whose
+state fits under the watermark also never spills (1,000 groups: 0 B).
+
+**2. If it spills, does the spill exceed free RAM?** The spill store
+(`engine/spill`) writes through a 256 KiB `bufio.Writer` and **never
+fsyncs** — deliberately, since durability is meaningless for scratch. The
+file is also `os.Remove`d the instant it is created, so it exists only via
+its fd. Spill that fits in free page cache may therefore never reach the
+platter at all: the extent is released when the fd closes.
+
+| Workload | Spills? | Storage needs |
+|---|---|---|
+| Any volume, streaming operators only | Never | Irrelevant — HDD is fine |
+| Blocking operator, state under watermark | Never | Irrelevant |
+| Blocking operator, spill fits free RAM | To page cache | Modest — HDD likely fine |
+| Blocking operator, spill exceeds free RAM | To the device | NVMe/SSD earns its cost |
+
+So the recommendation is per **flow shape**, not per workload type. A
+real-time webhook flow doing high-cardinality dedup spills; a nightly
+filter-and-load of 500 GB does not. Most integration work — map, filter,
+route, load — never touches scratch at any size.
+
+Note the interaction with chunked loads (ADR-0036): chunking reduces
+per-task state, so it can move a job from the bottom row to the top one.
+Splitting a load is a storage-sizing lever as well as a restartability one.
+
+Only the last row is unverified — see the page-cache caveat above. Whether
+it spills is measured directly (0 B vs 408 MiB); what spilling *costs* on
+non-NVMe storage is not.
+
 ### The admission-accounting gap (risk, not yet fixed)
 
 Admission (ADR-0005) charges every task `TaskWatermark + TaskOverhead`
