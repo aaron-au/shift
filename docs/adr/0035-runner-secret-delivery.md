@@ -2,7 +2,11 @@
 
 Date: 2026-08-03
 
-Status: **Designed**
+Status: **Partially implemented.** §3 (one round trip for connections and every
+secret they reference) shipped as `POST /api/v1/task-config/resolve` +
+`runner/internal/bind` (#58). §1 (sealed resolve — X25519+HKDF over the
+runner's registration key) and §2 (opt-in TTL cache, default 0, revocation
+epoch on the lease poll) are designed, build deferred.
 
 ## Context
 

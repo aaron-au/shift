@@ -2,7 +2,12 @@
 
 Date: 2026-08-03
 
-Status: **Designed**
+Status: **Implemented, less the studio picker.** Model layer
+(`pkg/flowdoc/connectionconfig.go`, #50), hub store + CRUD API + deploy-time
+reference checks (#52), runner merge-then-resolve (`runner/internal/bind`,
+#58). Remaining: the studio connection picker — a dropdown on the node, the
+connection name on the node body, and the config form filtered to operation
+fields only.
 
 ## Context
 

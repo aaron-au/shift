@@ -2,7 +2,10 @@
 
 Date: 2026-07-28
 Status: **Designed (build deferred)** — sequenced after the Discover RPC
-(ADR-0025 connector introspection) and the base connector fleet
+(ADR-0025 connector introspection) and the base connector fleet. One
+prerequisite has shipped ahead of the framework: the **declarative mapper**
+(restructure + const + concat + coerce, `engine/stream` + `pkg/flowdoc`, #42),
+which is how an app connector's canonical shape is mapped without custom code.
 
 ## Context
 

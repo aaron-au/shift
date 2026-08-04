@@ -1,7 +1,11 @@
 # ADR-0032: Process import from external iPaaS platforms (Boomi first)
 
 Date: 2026-07-29
-Status: **Designed (build deferred)**
+Status: **Designed; importer build deferred.** The **export analyzer** shipped
+first (`pkg/boomi`, #47) — it measures migration coverage against a real
+account export so the importer is built against measured shape frequency, not
+guesses. Customer designs never enter this repo: every `pkg/boomi/testdata/`
+fixture is hand-authored.
 
 ## Context
 

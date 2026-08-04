@@ -123,8 +123,39 @@ handler. The handler is fed **one payload-free error record** `{flow,
 step, error, at}` and the task ends failed with `handled=true`; with no
 handler the task fails exactly as before. Any resolved secret value is
 redacted from the error text before it reaches `task.Error` or the handler
-record (ADR-0010). DAG data-branching (parallel fan-out/merge, multi-sink)
-is deferred to a later M5 chunk.
+record (ADR-0010).
+
+**Flow model v3 — the executable DAG (ADR-0029).** v2's outcome edges route
+on a step's *terminal result*; v3 adds **data** edges that carry the record
+stream itself to more than one place. Three step types:
+
+- `tee` — `branches: [a, b, …]`, every record to every branch.
+- `router` — ordered `routes: [{when, to}, …]` + optional `default`, each
+  record to the **first** match only. Predicates reuse the filter grammar
+  above; there is no second expression language.
+- `merge` — `inputs: [a, b, …]` with `mode: concat` (unordered union) or
+  `mode: join` (keyed, `on: {left, right}`, `type: inner|left`, matched
+  build record nested under `as` so field names never collide).
+
+`Document.Plan()` returns `Multi: true` with `Nodes`/`Data`/`Sources`/`Sinks`
+populated and `Main` nil. Linear and v2 documents leave those zero-valued and
+execute through `Main` exactly as before — **v2 is the degenerate DAG**, same
+zero-copy, zero-goroutine happy path. The engine primitives are described in
+`docs/dev/02-engine.md`.
+
+`Service.executeMulti` (`internal/service/service_multipath.go`) compiles the
+plan. It supports two topology families end to end:
+
+```
+fan-out:  source → ops → (tee|router) → { ops → sink } × N
+fan-in:   { source → ops } × N → merge(concat|join) → ops → sink
+```
+
+Graphs that nest or mix them — more than one fan-out, or a fan-out and a
+fan-in together — are valid at the hub and drawable on the canvas but **not
+yet executable**; they fail with an explicit error rather than mis-running
+(issue #59). Two further gaps are tracked: test-mode capture is dropped on
+DAG flows (#60) and per-branch idempotency keys are not derived (#61).
 
 ## Task lifecycle and admission (ADR-0005 in practice)
 
