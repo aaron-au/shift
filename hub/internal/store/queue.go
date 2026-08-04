@@ -32,6 +32,16 @@ type Task struct {
 	Finished       *time.Time      `json:"finished_at,omitempty"`
 	Error          string          `json:"error,omitempty"`
 	Result         json.RawMessage `json:"result,omitempty"`
+
+	// Checkpoint is the resume position the previous attempt's sink confirmed
+	// (ADR-0037), with the connector and version that produced it. Opaque to
+	// the hub. Delivered on lease so a re-dispatched task -- typically on a
+	// different runner -- restarts where the last attempt reached, and pinned
+	// so it is never handed to a build that could read it as a different
+	// position.
+	Checkpoint          []byte `json:"checkpoint,omitempty"`
+	CheckpointConnector string `json:"checkpoint_connector,omitempty"`
+	CheckpointVersion   string `json:"checkpoint_version,omitempty"`
 }
 
 // TaskAttempt is one lease of a task.
@@ -138,10 +148,12 @@ func (s *Store) Claim(ctx context.Context, runnerID string, leaseTTL time.Durati
 		   FOR UPDATE SKIP LOCKED
 		   LIMIT 1)
 		 RETURNING id, flow_name, flow_version, document,
-		           COALESCE(idempotency_key, ''), attempt, max_attempts, enqueued_at`,
+		           COALESCE(idempotency_key, ''), attempt, max_attempts, enqueued_at,
+		           checkpoint, COALESCE(checkpoint_connector, ''), COALESCE(checkpoint_version, '')`,
 		runnerID, leaseTTL.Seconds(), accountID(ctx)).Scan(
 		&t.ID, &t.FlowName, &t.FlowVersion, &t.Document,
-		&t.IdempotencyKey, &t.Attempt, &t.MaxAttempts, &t.Enqueued)
+		&t.IdempotencyKey, &t.Attempt, &t.MaxAttempts, &t.Enqueued,
+		&t.Checkpoint, &t.CheckpointConnector, &t.CheckpointVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -224,10 +236,34 @@ func collectExpired(rows pgx.Rows) ([]expiredLease, error) {
 // Heartbeat extends a held lease. An expired or reassigned lease cannot
 // be resurrected — the runner gets ErrLeaseLost and must abandon the task.
 func (s *Store) Heartbeat(ctx context.Context, taskID, runnerID string, leaseTTL time.Duration) error {
+	return s.HeartbeatWithCheckpoint(ctx, taskID, runnerID, leaseTTL, Checkpoint{})
+}
+
+// Checkpoint is a resume position and the connector build that produced it.
+// A zero value means "no position to record" and leaves any stored one alone.
+type Checkpoint struct {
+	Cursor    []byte
+	Connector string
+	Version   string
+}
+
+// HeartbeatWithCheckpoint extends the lease and, when cur carries a position,
+// records it (ADR-0037).
+//
+// It rides the heartbeat because that is the control-plane call that already
+// exists at the right cadence, and because it must be gated by exactly the
+// same lease check: a runner whose lease expired has been superseded, and
+// letting it write a cursor would let a zombie rewind the attempt that
+// replaced it. Same WHERE clause, same 409 -- deliberately not a separate
+// endpoint that could drift from it.
+func (s *Store) HeartbeatWithCheckpoint(ctx context.Context, taskID, runnerID string, leaseTTL time.Duration, cur Checkpoint) error {
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE tasks SET lease_expires_at = now() + make_interval(secs => $3)
+		`UPDATE tasks SET lease_expires_at = now() + make_interval(secs => $3),
+		        checkpoint = COALESCE($4, checkpoint),
+		        checkpoint_connector = COALESCE(NULLIF($5, ''), checkpoint_connector),
+		        checkpoint_version = COALESCE(NULLIF($6, ''), checkpoint_version)
 		 WHERE id = $1 AND leased_by = $2 AND state = 'leased' AND lease_expires_at > now()`,
-		taskID, runnerID, leaseTTL.Seconds())
+		taskID, runnerID, leaseTTL.Seconds(), nilIfEmpty(cur.Cursor), cur.Connector, cur.Version)
 	if err != nil {
 		return err
 	}
@@ -395,4 +431,13 @@ func (s *Store) Tasks(ctx context.Context, limit int) ([]Task, error) {
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// nilIfEmpty maps an empty cursor to SQL NULL so COALESCE keeps the stored
+// value: a heartbeat with nothing new to say must not erase real progress.
+func nilIfEmpty(b []byte) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
 }

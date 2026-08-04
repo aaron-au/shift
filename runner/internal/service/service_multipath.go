@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/aaron-au/shift/engine/format/ndjson"
 	"github.com/aaron-au/shift/engine/mem"
@@ -12,6 +13,7 @@ import (
 	"github.com/aaron-au/shift/engine/stream"
 	"github.com/aaron-au/shift/pkg/flowdoc"
 	"github.com/aaron-au/shift/runner/internal/flow"
+	"github.com/aaron-au/shift/sdk/host"
 )
 
 // This file compiles a v3 multi-path Plan (ADR-0029) onto the engine's
@@ -30,17 +32,42 @@ import (
 // pooled process (a no-op for @webhook). Pool lifetime is the pool's ctx, not
 // the task's (a task's cancel must not kill a process a sibling shares).
 func (s *Service) bindSource(step *flow.Step, o SubmitOpts) (stream.Source, func(), error) {
+	src, cleanup, _, err := s.bindSourceInfo(step, o)
+	return src, cleanup, err
+}
+
+// bindSourceInfo is bindSource plus the identity of the connector build behind
+// the source. A resume cursor is only meaningful to the build that produced it
+// (ADR-0037), so the caller pins both to the checkpoint it records — a
+// replacement runner may hold a different version, and an older cursor read
+// under a newer one could resolve to a different position, silently.
+func (s *Service) bindSourceInfo(step *flow.Step, o SubmitOpts) (stream.Source, func(), host.Info, error) {
 	if step.Connector == flowdoc.WebhookSource {
 		if o.WebhookBody == nil {
-			return nil, nil, errors.New("service: @webhook flow requires a request body")
+			return nil, nil, host.Info{}, errors.New("service: @webhook flow requires a request body")
 		}
-		return ndjson.NewReader(bytes.NewReader(o.WebhookBody), ndjson.ReaderOptions{}), func() {}, nil
+		return ndjson.NewReader(bytes.NewReader(o.WebhookBody), ndjson.ReaderOptions{}), func() {}, host.Info{}, nil
 	}
 	proc, err := s.pool.Get(s.baseCtx, step.Connector)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, host.Info{}, err
 	}
-	return proc.Source(step.Action, step.Config), func() { s.pool.Put(step.Connector) }, nil
+	src := proc.Source(step.Action, step.Config)
+	// A resume cursor is opaque and belongs to the connector that produced it
+	// (ADR-0037). Passing an empty one is a no-op, so the caller forwards
+	// whatever the hub returned without inspecting it. A cursor handed to a
+	// source that cannot honour it fails the stream rather than silently
+	// starting over — that failure is deliberate, and the runner falls back to
+	// a full replay.
+	if len(o.ResumeFrom) > 0 {
+		if resumeAllowed(o, proc.Info()) {
+			src.ResumeFrom(o.ResumeFrom)
+		} else {
+			log.Printf("service: ignoring resume cursor from %s %s: this runner has %s %s; replaying from the start",
+				o.ResumeConnector, o.ResumeVersion, proc.Info().Name, proc.Info().Version)
+		}
+	}
+	return src, func() { s.pool.Put(step.Connector) }, proc.Info(), nil
 }
 
 // bindSink binds a sink step: a built-in terminal (@discard / @response) or a
@@ -388,4 +415,20 @@ func joinType(t string) stream.JoinType {
 		return stream.JoinTypeLeft
 	}
 	return stream.JoinTypeInner
+}
+
+// resumeAllowed reports whether a stored cursor may be handed to the connector
+// build now bound (ADR-0037).
+//
+// A cursor carries no self-description — it is opaque bytes only its producer
+// understands — so the only defence against reading a v0.3 cursor under v0.4
+// is to refuse. That matters because runners are replaceable by design: the
+// build that recorded a position is frequently NOT the build that resumes it.
+// An empty recorded identity means the cursor predates this pinning and is
+// treated as untrusted for the same reason.
+func resumeAllowed(o SubmitOpts, info host.Info) bool {
+	if o.ResumeConnector == "" || o.ResumeVersion == "" {
+		return false
+	}
+	return o.ResumeConnector == info.Name && o.ResumeVersion == info.Version
 }

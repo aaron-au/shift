@@ -42,8 +42,14 @@ type leaseHub struct {
 
 	leaseCalls int
 	heartbeats int
-	completes  []hubclient.Result
-	fails      []string
+	// checkpoints records the resume cursors heartbeats carried (ADR-0037),
+	// so a test can assert what actually reached the hub rather than what the
+	// runner believed it sent.
+	checkpoints [][]byte
+	cpConnector string
+	cpVersion   string
+	completes   []hubclient.Result
+	fails       []string
 }
 
 func TestMain(m *testing.M) {
@@ -60,9 +66,19 @@ func newLeaseHub(t *testing.T) (*leaseHub, *hubclient.Client) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/lease", h.handleLease)
-	mux.HandleFunc("POST /api/v1/tasks/{id}/heartbeat", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /api/v1/tasks/{id}/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Checkpoint          []byte `json:"checkpoint"`
+			CheckpointConnector string `json:"checkpoint_connector"`
+			CheckpointVersion   string `json:"checkpoint_version"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		h.mu.Lock()
 		h.heartbeats++
+		if len(body.Checkpoint) > 0 {
+			h.checkpoints = append(h.checkpoints, body.Checkpoint)
+			h.cpConnector, h.cpVersion = body.CheckpointConnector, body.CheckpointVersion
+		}
 		st := h.heartbeatStatus
 		h.mu.Unlock()
 		w.WriteHeader(orDefault(st, http.StatusNoContent))

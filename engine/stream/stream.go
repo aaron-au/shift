@@ -74,17 +74,66 @@ type Sampler interface {
 // Pipeline chains a source through operators into a sink.
 type Pipeline struct {
 	src     Source
+	origin  Source // the source as handed to New, before instrumentation
 	stats   []*OpStats
 	err     error
 	sampler Sampler
+	onCheck func([]byte)
 }
 
 // New starts a pipeline from src; name labels the source in the report.
 func New(src Source, name string) *Pipeline {
-	p := &Pipeline{}
+	p := &Pipeline{origin: src}
 	st := &OpStats{Name: name}
 	p.stats = append(p.stats, st)
 	p.src = &measuredSource{up: src, stats: st}
+	return p
+}
+
+// reportCheckpoint hands the source's current resume position to the
+// registered callback, if there is one and the source has a position to give.
+// A nil position is skipped rather than reported: sources return nil when no
+// safe point exists yet (mid-page, mid-transaction), and forwarding that would
+// clear a good position the caller already holds.
+func (p *Pipeline) reportCheckpoint() {
+	if p.onCheck == nil || p.origin == nil {
+		return
+	}
+	cp, ok := p.origin.(Checkpointer)
+	if !ok {
+		return
+	}
+	if cur := cp.Checkpoint(); len(cur) > 0 {
+		p.onCheck(cur)
+	}
+}
+
+// Checkpointer is an OPTIONAL capability on a Source: reporting an opaque
+// position that is safe to restart from, once everything it covers has been
+// processed (ADR-0037). Returning nil means "no safe position yet".
+type Checkpointer interface {
+	Checkpoint() []byte
+}
+
+// WithCheckpoint registers fn to receive the source's resume position each
+// time the SINK has confirmed the batch that position covers. It is a no-op
+// unless the source implements Checkpointer.
+//
+// The confirm point is the whole safety property. A position recorded when
+// the source produced a batch would, on resume, skip records that were read
+// but never written — silent data loss, and strictly worse than the duplicate
+// work resume exists to avoid. Because the pipeline is pull-based with one
+// batch in flight, a returned sink.Write means every record up to that point
+// has reached the sink, which is exactly when a position becomes safe.
+//
+// CALLER CONTRACT: do not use this on a pipeline containing a BLOCKING
+// operator (aggregate, join). Those consume their whole input before emitting,
+// so the first confirmed write already reports end-of-input while most output
+// is still pending — and resuming a partially-consumed aggregate would produce
+// wrong results regardless, having lost the state for the skipped prefix.
+// The runner enforces this; it is stated here because the engine cannot.
+func (p *Pipeline) WithCheckpoint(fn func(cur []byte)) *Pipeline {
+	p.onCheck = fn
 	return p
 }
 
@@ -178,6 +227,10 @@ func (p *Pipeline) Run(ctx context.Context, sink Sink, sinkName string) (Report,
 		sinkStats.RecordsIn += n
 		sinkStats.RecordsOut += n
 		out += n
+		// Confirmed: the sink accepted this batch, so the source's current
+		// position is safe to resume from (ADR-0037). Read AFTER the write
+		// and before the next pull, which is the only moment the two agree.
+		p.reportCheckpoint()
 	}
 	if err := p.src.Close(); err != nil && runErr == nil {
 		runErr = err

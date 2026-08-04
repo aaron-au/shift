@@ -596,7 +596,23 @@ func (a *api) lease(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) heartbeat(w http.ResponseWriter, r *http.Request) {
-	err := a.st.Heartbeat(r.Context(), r.PathValue("id"), runnerID(r), a.opts.LeaseTTL)
+	// A heartbeat may carry a resume position (ADR-0037). Opaque bytes; the
+	// hub stores them and never parses them. An absent or empty cursor leaves
+	// any stored one untouched, so a runner heartbeats identically whether or
+	// not its source can resume.
+	var req struct {
+		Checkpoint          []byte `json:"checkpoint,omitempty"`
+		CheckpointConnector string `json:"checkpoint_connector,omitempty"`
+		CheckpointVersion   string `json:"checkpoint_version,omitempty"`
+	}
+	if r.ContentLength > 0 {
+		if err := readBody(r, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	err := a.st.HeartbeatWithCheckpoint(r.Context(), r.PathValue("id"), runnerID(r), a.opts.LeaseTTL,
+		store.Checkpoint{Cursor: req.Checkpoint, Connector: req.CheckpointConnector, Version: req.CheckpointVersion})
 	if errors.Is(err, store.ErrLeaseLost) {
 		writeErrCode(w, http.StatusConflict, "lease_lost", err)
 		return

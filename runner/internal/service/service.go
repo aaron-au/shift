@@ -142,6 +142,25 @@ type SubmitOpts struct {
 	// hub. It runs on its own goroutine, so a slow report cannot hold the
 	// task's goroutine (and therefore cannot delay drain).
 	OnDone func(t task.Task)
+	// ResumeFrom is the opaque source position a re-dispatched task restarts
+	// at (ADR-0037). Empty means "from the beginning" — the behaviour of every
+	// first attempt and of every non-resumable source.
+	ResumeFrom []byte
+	// ResumeConnector and ResumeVersion identify the connector build that
+	// produced ResumeFrom. The runner refuses to resume when they do not match
+	// the build it is about to use: a cursor is opaque, so an older one read
+	// under a newer build could resolve to a DIFFERENT position and resume at
+	// the wrong place with nothing downstream able to notice. A refusal costs
+	// a full replay, which is slower and correct.
+	ResumeConnector string
+	ResumeVersion   string
+	// OnCheckpoint, when set, receives a resume position each time the
+	// terminal sink CONFIRMS the batch it covers, along with the connector
+	// build that produced it. The runner forwards all three to the hub, which
+	// is where they become durable and where a replacement runner reads them.
+	// The identity travels with the cursor because a cursor is only meaningful
+	// to the build that emitted it.
+	OnCheckpoint func(cur []byte, connector, version string)
 	// Response, when set, is where the built-in @response sink streams the
 	// flow's terminal output (NDJSON) to return it to the caller of a
 	// synchronous direct execution (ADR-0016; payload never touches the hub).
@@ -307,6 +326,10 @@ func (s *Service) run(id string, doc *flow.Document, o SubmitOpts) {
 			t.Handled = res.handled
 			t.HandlerStep = res.handlerStep
 			t.HandlerError = res.handlerErr
+			// Recorded on FAILURE above all: this is the path the hub
+			// re-dispatches, and the cursor is the whole point of having
+			// taken it (ADR-0037).
+			t.Checkpoint = res.checkpoint
 			return
 		}
 		t.State = task.StateCompleted
@@ -340,7 +363,10 @@ type execResult struct {
 	handlerErr  string
 	stopped     bool
 	stopStep    string
-	captured    []task.StepCapture
+	// checkpoint is the latest sink-confirmed resume position (ADR-0037), or
+	// nil when the flow is not resume-eligible or the source reported none.
+	checkpoint []byte
+	captured   []task.StepCapture
 }
 
 // classify resolves an execution's terminal result (ADR-0031 §1) and folds a
@@ -389,7 +415,7 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 	srcStep := plan.Main[0]
 	sinkStep := plan.Main[len(plan.Main)-1]
 
-	src, srcCleanup, err := s.bindSource(srcStep, o)
+	src, srcCleanup, srcInfo, err := s.bindSourceInfo(srcStep, o)
 	if err != nil {
 		return execResult{}, err
 	}
@@ -406,12 +432,27 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 	if sampler != nil {
 		base = base.WithSampler(sampler) // wire before ops are appended
 	}
+	// Resume positions are recorded only for plans where a position is
+	// MEANINGFUL (ADR-0037). flow.Resumable rejects blocking operators, whose
+	// first confirmed write already reports end-of-input while most output is
+	// still pending, and whose partial state cannot be rebuilt from a suffix.
+	// A resumable plan over a non-resumable source costs nothing: the source
+	// reports no position and nothing is recorded.
+	var checkpoint []byte
+	if flow.Resumable(plan) {
+		base = base.WithCheckpoint(func(cur []byte) {
+			checkpoint = cur
+			if o.OnCheckpoint != nil {
+				o.OnCheckpoint(cur, srcInfo.Name, srcInfo.Version)
+			}
+		})
+	}
 	p, err := flow.Apply(doc, base, flow.CompileOptions{Gov: taskGov, SpillDir: s.opts.SpillDir})
 	if err != nil {
 		return execResult{}, err
 	}
 	rep, runErr := p.Run(ctx, sink, sinkStep.ID)
-	res := execResult{rep: rep, confirmed: confirmed()}
+	res := execResult{rep: rep, confirmed: confirmed(), checkpoint: checkpoint}
 	if sampler != nil {
 		res.captured = sampler.result()
 	}
