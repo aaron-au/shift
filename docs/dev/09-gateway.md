@@ -96,6 +96,52 @@ property rather than a style preference**: this is the one component in a DMZ,
 so what it can import decides what code — and eventually what credentials —
 can end up there.
 
+## High availability
+
+Each gateway's poll registry is **its own, in memory**. A runner parked on
+gateway 1 is invisible to gateway 2 — and that is deliberate, because the
+alternative is shared state between DMZ hosts.
+
+So **a runner polls every gateway eligible to send it work**, and the **hub
+computes that list** (it already holds the gateway records and the runner
+labels) and hands it over on the config sync that already exists. Adding a
+gateway reconfigures nothing.
+
+The cost is small: 100 runners across 5 gateways is 100 parked connections per
+gateway (~8 KB of goroutine stack each) and roughly 3 poll requests/sec per
+gateway at a 30-second window.
+
+**Runners must address each gateway individually, never a load-balancer VIP.**
+A multi-gateway deployment will have an LB in front for *inbound* traffic, but
+a poll parked on gateway 3 is only usable by gateway 3 — connecting through the
+VIP would strand most of the fleet behind whichever backend the balancer picked.
+
+A runner parked on several gateways can be handed several tasks at once, since
+capacity is checked when it decides to poll rather than when work lands. It
+drops its remaining polls on accepting, and anything still in flight waits on
+the existing ADR-0005 admission — the same path hub-leased tasks take.
+
+## Identity: strip, then stamp
+
+The gateway authenticates the caller so the runner does not have to, and it
+passes on **who called** rather than **the credential**. That is what lets a
+certificate-authenticated caller work without the runner touching any PKI.
+
+A statically coded set of headers — not configurable, not per-route:
+
+```
+X-Shift-Principal   who was authenticated
+X-Shift-Route       the route that matched
+X-Shift-Request-Id  correlates gateway, runner and hub records
+X-Shift-Client-Ip   the caller, trusted-proxy aware
+```
+
+**Every inbound header matching `x-shift-*` (case-insensitive) is stripped
+before stamping, unconditionally.** This is the whole property: if a caller
+could send `X-Shift-Principal: admin` and have it survive, the gateway would
+be an authentication bypass *with an audit trail that lies about it* — worse
+than no identity propagation at all.
+
 ## Not built yet
 
 - mTLS control listener + identity bundle (ADR-0038 §6a): bootstrap inverts,
