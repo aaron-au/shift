@@ -1,6 +1,9 @@
 package ingress
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -56,24 +59,68 @@ type pollRequest struct {
 type DispatchHandler struct {
 	reg *runners.Registry
 	log *slog.Logger
+	// tokenSHA256 is the hex SHA-256 of the shared secret a runner must
+	// present. Empty means the endpoints are UNAUTHENTICATED, which is only
+	// tenable on a loopback bind — see RequireAuth.
+	tokenSHA256 string
 }
 
-// NewDispatch returns the runner-facing handler.
-func NewDispatch(reg *runners.Registry, log *slog.Logger) *DispatchHandler {
+// NewDispatch returns the runner-facing handler. token is the shared secret
+// runners must present; "" leaves the endpoints unauthenticated.
+func NewDispatch(reg *runners.Registry, log *slog.Logger, token string) *DispatchHandler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &DispatchHandler{reg: reg, log: log}
+	d := &DispatchHandler{reg: reg, log: log}
+	if token != "" {
+		sum := sha256.Sum256([]byte(token))
+		// Only the digest is retained. The plaintext is never stored, never
+		// logged, and never comparable by anything that reads this struct.
+		d.tokenSHA256 = hex.EncodeToString(sum[:])
+	}
+	return d
 }
 
-// Routes registers the runner-facing endpoints on mux.
+// Authenticated reports whether a shared secret is configured.
+func (d *DispatchHandler) Authenticated() bool { return d.tokenSHA256 != "" }
+
+// Routes registers the runner-facing endpoints on mux, behind authentication.
 //
-// These belong on the gateway's CONTROL listener (mutually authenticated),
-// never on the public one: an unauthenticated caller able to reach /poll
-// would be able to intercept inbound payloads by impersonating a runner.
+// These belong on the gateway's CONTROL listener, never on the public one. A
+// caller who reaches /poll unauthenticated can park a fake runner and be
+// handed real inbound payloads, and can deliver forged responses to real
+// callers — interception and response-forgery from one open port.
+//
+// The shared secret here is an INTERIM measure. ADR-0038 §6a specifies mutual
+// TLS with a per-gateway identity bundle, which additionally authenticates the
+// gateway TO the runner and removes the shared-secret distribution problem.
+// This exists so that the window before that lands is not "an open port".
 func (d *DispatchHandler) Routes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/v1/gw/poll", d.poll)
-	mux.HandleFunc("POST /api/v1/gw/deliver/{id}", d.deliver)
+	mux.HandleFunc("POST /api/v1/gw/poll", d.authed(d.poll))
+	mux.HandleFunc("POST /api/v1/gw/deliver/{id}", d.authed(d.deliver))
+}
+
+// authed wraps a runner-facing handler with bearer-token verification.
+func (d *DispatchHandler) authed(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.tokenSHA256 != "" && !d.validToken(r) {
+			// No detail: an unauthenticated caller learns only that it failed,
+			// not whether the endpoint exists or what shape a token takes.
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (d *DispatchHandler) validToken(r *http.Request) bool {
+	tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return false
+	}
+	sum := sha256.Sum256([]byte(tok))
+	got := hex.EncodeToString(sum[:])
+	return subtle.ConstantTimeCompare([]byte(got), []byte(d.tokenSHA256)) == 1
 }
 
 func (d *DispatchHandler) poll(w http.ResponseWriter, r *http.Request) {

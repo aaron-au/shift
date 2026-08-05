@@ -81,6 +81,17 @@ kubectl --context minikube -n shift-dmz port-forward pod/shift-gateway-1 18445:8
 TOKEN=demo-token
 ```
 
+### 0. An unauthenticated caller cannot impersonate a runner
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  http://127.0.0.1:18444/api/v1/gw/poll -d '{"wait_seconds":1}'
+# 401
+```
+
+Without that, anyone who reached the control port would be handed real inbound
+payloads and could deliver forged responses to real callers.
+
 ### 1. The runner parked itself on both gateways
 
 ```sh
@@ -194,14 +205,21 @@ which is one extra RTT.
 
 ## What this bundle is NOT
 
-- **Not production manifests.** No TLS, no mTLS on the control listener, no
-  hub, no Postgres, no secrets. The control listener binds `:8444` here and is
-  kept internal by NetworkPolicy alone; ADR-0038 §6a gives it mutual TLS and an
-  identity bundle, and that is not built yet.
+- **Not production manifests.** No TLS on the public listener, no mTLS on the
+  control listener, no hub, no Postgres. The control listener binds `:8444`
+  and is guarded by a **shared secret plus NetworkPolicy** — gatewayd refuses
+  to start on a non-loopback control bind with no secret, because an
+  unauthenticated `/poll` lets anyone park a fake runner and be handed real
+  payloads. ADR-0038 §6a replaces that with mutual TLS and a per-gateway
+  identity bundle; not built yet.
+- **The shared secret is duplicated across namespaces** (`shift-gateway-control`
+  exists in both), because a Secret cannot be mounted across one. That is an
+  honest cost of shared secrets and part of why mTLS supersedes it.
 - **Not the configuration story.** The gateway's routes come from a ConfigMap
   and the runner's flow from a mounted file. In a real deployment **all** of it
   comes from the hub (ADR-0038 §6) — these files stand in for a push that is
   not built yet.
-- The demo bearer token (`demo-token`) and its digest are in
-  `20-gateway.yaml` in plain sight, deliberately: it is a non-secret dev
-  default, exactly like everything in `compose.yml`.
+- The demo bearer token (`demo-token`), its digest, and the control secret are
+  in the manifests in plain sight, deliberately: they are non-secret dev
+  defaults, exactly like everything in `compose.yml`. Generate real ones per
+  deployment with `openssl rand -hex 32`.

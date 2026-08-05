@@ -20,9 +20,11 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -49,6 +51,28 @@ func run() error {
 		debug       = flag.Bool("debug", false, "verbose logging")
 	)
 	flag.Parse()
+
+	// Env, never a flag: a flag would put the shared secret into every process
+	// listing on the host (same rule as the runner's hub registration token).
+	controlToken := os.Getenv("SHIFT_GATEWAY_CONTROL_TOKEN")
+	if controlToken == "" {
+		if p := os.Getenv("SHIFT_GATEWAY_CONTROL_TOKEN_FILE"); p != "" {
+			raw, err := os.ReadFile(p) //nolint:gosec // G304: operator-configured token file (env)
+			if err != nil {
+				return fmt.Errorf("SHIFT_GATEWAY_CONTROL_TOKEN_FILE: %w", err)
+			}
+			controlToken = strings.TrimSpace(string(raw))
+		}
+	}
+	// FAIL CLOSED. An unauthenticated /poll reachable off-host lets anyone park
+	// a fake runner: they receive real inbound payloads and can deliver forged
+	// responses to real callers. That is interception plus response forgery
+	// from one open port, so the combination is refused outright rather than
+	// warned about — a warning is something a deployment scrolls past.
+	if controlToken == "" && !loopbackOnly(*controlAddr) {
+		return fmt.Errorf("control listener %q is not loopback and no shared secret is set: "+
+			"export SHIFT_GATEWAY_CONTROL_TOKEN (or _FILE), or bind -control to 127.0.0.1", *controlAddr)
+	}
 
 	lvl := slog.LevelInfo
 	if *debug {
@@ -83,7 +107,8 @@ func run() error {
 	// caller able to reach /poll could intercept inbound payloads by
 	// impersonating a runner. It defaults to loopback for that reason.
 	ctrlMux := http.NewServeMux()
-	ingress.NewDispatch(reg, log).Routes(ctrlMux)
+	dispatch := ingress.NewDispatch(reg, log, controlToken)
+	dispatch.Routes(ctrlMux)
 	ctrlMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -126,7 +151,8 @@ func run() error {
 	// serves 503 until the hub pushes a configuration, and its health endpoint
 	// says so, so an ungreeted gateway is visible from the hub.
 	log.Info("gateway listening",
-		"public", *publicAddr, "control", *controlAddr, "configured", h.Configured())
+		"public", *publicAddr, "control", *controlAddr,
+		"control_authenticated", dispatch.Authenticated(), "configured", h.Configured())
 
 	// Either listener failing is fatal: a gateway serving the public port with
 	// no control listener can never be handed a runner, and would answer 503
@@ -135,6 +161,26 @@ func run() error {
 		return err
 	}
 	return <-errc
+}
+
+// loopbackOnly reports whether addr binds only the loopback interface.
+//
+// A bare port (":8444") or an empty host binds EVERY interface, so those are
+// deliberately not loopback — that is the shape a container ships with, and
+// the shape that must carry a secret.
+func loopbackOnly(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false // unparseable: assume the worst
+	}
+	if host == "" {
+		return false // ":8444" — all interfaces
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func serve(s *http.Server) error {

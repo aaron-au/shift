@@ -142,6 +142,20 @@ could send `X-Shift-Principal: admin` and have it survive, the gateway would
 be an authentication bypass *with an audit trail that lies about it* — worse
 than no identity propagation at all.
 
+### A note on header case
+
+The strip is case-insensitive because it has to be, and forcing lowercase
+internally would be wrong. RFC 9110 makes HTTP/1.1 field names
+**case-insensitive** with no preferred spelling; RFC 9113/9114 make them
+**MUST-be-lowercase on the wire** for HTTP/2 and HTTP/3. Go satisfies both
+already — `http.Header` keys are canonical MIME form and the h2 transport
+lowercases when it serialises — so a hand-lowercased map key would simply be
+invisible to `Get`, which canonicalises what it looks up.
+
+Everything therefore canonicalises **before** comparing, and stores under the
+canonical key. One comparison covers `x-shift-principal`,
+`X-SHIFT-PRINCIPAL` and every other spelling a caller might try.
+
 ## Placement: label selectors, not a group name
 
 A route names the runners eligible to serve it by **label set**
@@ -164,14 +178,29 @@ cost more to maintain than the scan saves.
 | `-public` (`:8443`) | the internet | caller requests |
 | `-control` (`127.0.0.1:8444`) | the internal network only | runner poll/deliver, hub config push |
 
-**The control listener must never be published.** An unauthenticated caller
-able to reach `/poll` could intercept inbound payloads by impersonating a
-runner, so it binds to loopback by default and gets mutual TLS before it binds
-anywhere else.
+**The control listener is the runner-impersonation surface.** A caller who
+reaches `/poll` can park a fake runner: it is handed real inbound payloads, and
+it can deliver forged responses to real callers. Interception and response
+forgery, from one open port.
+
+Two things guard it today:
+
+1. **A shared secret** (`SHIFT_GATEWAY_CONTROL_TOKEN`, env not flag — a flag
+   would put it in every process listing). Stored as SHA-256 only, compared in
+   constant time, sent by the runner as `SHIFT_GATEWAY_TOKEN`.
+2. **A fail-closed start-up rule.** gatewayd REFUSES TO START when the control
+   listener is non-loopback and no secret is set. Refused rather than warned:
+   a warning is something a deployment scrolls past, and the failure mode here
+   is silent payload interception.
+
+Both are **interim**. ADR-0038 §6a specifies mutual TLS with a per-gateway
+identity bundle, which also authenticates the gateway TO the runner — this
+direction only proves a runner is entitled to receive work, not that the work
+it receives is genuine.
 
 ```
-POST /api/v1/gw/poll              park until work arrives (long-poll)
-POST /api/v1/gw/deliver/{id}      hand the response back
+POST /api/v1/gw/poll              park until work arrives (long-poll)   [authed]
+POST /api/v1/gw/deliver/{id}      hand the response back                [authed]
 GET  /healthz                     configured?, config version, runners parked
 ```
 
@@ -200,7 +229,9 @@ caller round trip runs **~0.5 ms p50** (see the walkthrough in
 
 - mTLS control listener + identity bundle (ADR-0038 §6a): bootstrap inverts,
   since a gateway that cannot dial the hub cannot register with it. Until then
-  the control listener is loopback-bound and `-config` loads a local file.
+  the control listener carries a shared secret and `-config` loads a local
+  file. The shared secret is one-directional — it does not let a runner verify
+  the gateway, which mTLS will.
 - Hub side: gateway records, config push, certificate lifecycle, and the
   per-runner gateway address list. **Identity renewal must be pushed before
   expiry** — a lapsed certificate strands a gateway permanently, because

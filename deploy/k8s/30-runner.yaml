@@ -21,6 +21,17 @@ data:
       }
     }
 ---
+# The runner's copy of the gateway control secret. A Secret cannot be mounted
+# across namespaces, so the value appears in both — which is honest about what
+# a shared secret costs, and part of why ADR-0038 §6a moves to mTLS.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shift-gateway-control
+  namespace: shift-internal
+stringData:
+  token: dev-control-secret-not-for-production
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -62,6 +73,15 @@ spec:
             # Stands in for the hub's webhook sync, which is what supplies
             # flows in a real deployment.
             - -flows-dir=/etc/shift/flows
+          env:
+            # The same shared secret the gateway requires. Mirrored here rather
+            # than shared via a common Secret because the two live in different
+            # namespaces — and in a real deployment the hub distributes it.
+            - name: SHIFT_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: shift-gateway-control
+                  key: token
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

@@ -240,6 +240,7 @@ func main() {
 			Bind: func(ctx context.Context, doc *flowdoc.Document) (*flowdoc.Document, []string, error) {
 				return binder.Apply(ctx, doc)
 			},
+			Token:  os.Getenv("SHIFT_GATEWAY_TOKEN"),
 			Log:    slog.Default(),
 			OnDone: gatewayOnDone(report),
 		})

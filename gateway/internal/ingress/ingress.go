@@ -243,7 +243,16 @@ func forwardable(h http.Header) http.Header {
 		if strings.HasPrefix(ck, shiftPrefix) {
 			continue
 		}
-		out[k] = vs
+		// Store under the CANONICAL key, not the one the caller sent. Header
+		// values are looked up with Get, which canonicalises what it is asked
+		// for — so a key written raw would be invisible to every reader.
+		//
+		// Go's server canonicalises on parse, so this cannot currently differ
+		// for a real request. It differs the moment anything builds a Header
+		// by direct map assignment, which is exactly how the strip above is
+		// tested, and a rule that holds only for well-formed input is not a
+		// rule worth relying on.
+		out[ck] = vs
 	}
 	return out
 }

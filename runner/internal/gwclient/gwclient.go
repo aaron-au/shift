@@ -78,6 +78,14 @@ type Options struct {
 	// without it a flow that uses a credential fails with a clear error
 	// rather than handing a connector a reference object.
 	Bind func(ctx context.Context, doc *flowdoc.Document) (*flowdoc.Document, []string, error)
+	// Token is the shared secret the gateway's control listener requires. It
+	// is sent as a bearer credential on both calls. Empty is valid only
+	// against an unauthenticated (loopback-bound) gateway.
+	//
+	// Interim: ADR-0038 §6a replaces this with mutual TLS, which also
+	// authenticates the GATEWAY to the runner — this direction only proves the
+	// runner is entitled to receive work, not that the work is genuine.
+	Token string
 	// PollWait is the long-poll window (default 30s).
 	PollWait time.Duration
 	// Client is the HTTP client used for both calls. Optional.
@@ -178,6 +186,7 @@ func (l *Loop) poll(ctx context.Context, addr string) (*inbound, error) {
 		return nil, err
 	}
 	hreq.Header.Set("Content-Type", "application/json")
+	l.auth(hreq)
 	resp, err := l.cl.Do(hreq)
 	if err != nil {
 		return nil, err
@@ -188,6 +197,11 @@ func (l *Loop) poll(ctx context.Context, addr string) (*inbound, error) {
 	case http.StatusNoContent:
 		return nil, nil // nothing arrived; normal
 	case http.StatusOK:
+	case http.StatusUnauthorized:
+		// Worth its own arm: a wrong or missing shared secret otherwise reads
+		// as a generic poll failure and gets retried forever at the backoff
+		// ceiling, with nothing in the log saying why.
+		return nil, errors.New("poll: unauthorized — gateway rejected the control credential (SHIFT_GATEWAY_TOKEN)")
 	default:
 		return nil, fmt.Errorf("poll: status %d", resp.StatusCode)
 	}
@@ -282,6 +296,7 @@ func (l *Loop) deliver(ctx context.Context, addr, id string, status int, ctype s
 	}
 	req.Header.Set("Content-Type", ctype)
 	req.Header.Set(hdrStatus, strconv.Itoa(status))
+	l.auth(req)
 	resp, err := l.cl.Do(req)
 	if err != nil {
 		return err
@@ -298,6 +313,13 @@ func (l *Loop) deliver(ctx context.Context, addr, id string, status int, ctype s
 		return nil
 	default:
 		return fmt.Errorf("deliver: status %d", resp.StatusCode)
+	}
+}
+
+// auth attaches the control-listener credential, when one is configured.
+func (l *Loop) auth(r *http.Request) {
+	if l.opts.Token != "" {
+		r.Header.Set("Authorization", "Bearer "+l.opts.Token)
 	}
 }
 

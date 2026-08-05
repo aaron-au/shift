@@ -3,6 +3,24 @@
 # Its configuration comes from a ConfigMap here because the hub's config push
 # is not built yet (ADR-0038 §6a). In a real deployment the hub owns all of
 # this and the gateway holds nothing on disk.
+---
+# The control-listener shared secret. gatewayd REFUSES TO START if the control
+# listener is non-loopback (as it is here) and this is unset — an
+# unauthenticated /poll on a routable address lets anyone park a fake runner
+# and be handed real inbound payloads.
+#
+# Interim measure: ADR-0038 §6a replaces it with mutual TLS and a per-gateway
+# identity bundle, which also authenticates the gateway TO the runner.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shift-gateway-control
+  namespace: shift-dmz
+stringData:
+  # A non-secret dev default, like everything in deploy/compose.yml. Generate a
+  # real one per deployment: openssl rand -hex 32
+  token: dev-control-secret-not-for-production
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -73,6 +91,14 @@ spec:
             # in production this listener gets mutual TLS as well (not built).
             - -control=:8444
             - -config=/etc/shift/gateway.json
+          env:
+            # Env rather than a flag: a flag puts the secret into every process
+            # listing on the host.
+            - name: SHIFT_GATEWAY_CONTROL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: shift-gateway-control
+                  key: token
           ports:
             - name: public
               containerPort: 8443

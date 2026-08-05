@@ -32,7 +32,7 @@ func TestEndToEndPollThenDeliver(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	ingress.NewDispatch(reg, nil).Routes(mux)
+	ingress.NewDispatch(reg, nil, "").Routes(mux)
 	ctrl := httptest.NewServer(mux)
 	defer ctrl.Close()
 	public := httptest.NewServer(pub)
@@ -139,7 +139,7 @@ func post(t *testing.T, url string, body io.Reader) (*http.Response, error) {
 // silently succeed: the runner is streaming, and it needs to stop.
 func TestDeliverToUnknownRequestIsRejected(t *testing.T) {
 	mux := http.NewServeMux()
-	ingress.NewDispatch(runners.New(), nil).Routes(mux)
+	ingress.NewDispatch(runners.New(), nil, "").Routes(mux)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -157,7 +157,7 @@ func TestDeliverToUnknownRequestIsRejected(t *testing.T) {
 // treated it as a failure would back off exactly when it should re-poll.
 func TestEmptyPollWindowReturns204(t *testing.T) {
 	mux := http.NewServeMux()
-	ingress.NewDispatch(runners.New(), nil).Routes(mux)
+	ingress.NewDispatch(runners.New(), nil, "").Routes(mux)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -176,7 +176,7 @@ func TestEmptyPollWindowReturns204(t *testing.T) {
 // response: a nonsense code would be written straight to the caller.
 func TestDeliverRejectsAnImpossibleStatus(t *testing.T) {
 	mux := http.NewServeMux()
-	ingress.NewDispatch(runners.New(), nil).Routes(mux)
+	ingress.NewDispatch(runners.New(), nil, "").Routes(mux)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -203,7 +203,7 @@ func TestDeliverRejectsAnImpossibleStatus(t *testing.T) {
 func TestMalformedPollIsRejected(t *testing.T) {
 	reg := runners.New()
 	mux := http.NewServeMux()
-	ingress.NewDispatch(reg, nil).Routes(mux)
+	ingress.NewDispatch(reg, nil, "").Routes(mux)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
