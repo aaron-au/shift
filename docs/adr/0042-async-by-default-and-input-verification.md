@@ -218,11 +218,111 @@ operating on `record.Value` and compiled once at plan build — never a
 per-request tree walk over `map[string]interface{}`, which would violate the
 engine contract in the one place payload is hottest.
 
+"Subset" describes **which keywords are implemented**, not how strictly they are
+enforced. For a supported keyword the semantics are the spec's, and the way we
+know that is the oracle below — not a claim.
+
 Supported keywords are a deliberate, closed set: `type`, `required`,
 `properties`, `items`, `enum`, `const`, `minimum`/`maximum`,
 `minLength`/`maxLength`, `pattern`, `minItems`/`maxItems`, `additionalProperties`
-(boolean form), and `format` for a fixed list (`date-time`, `date`, `email`,
-`uuid`).
+(boolean form), `format` for a fixed list (`date-time`, `date`, `email`,
+`uuid`), and **`$defs` with local `$ref`**.
+
+**Local `$ref` is not optional in practice.** Every schema produced by an
+OpenAPI toolchain refers to `#/$defs/...` or `#/components/schemas/...`, so a
+validator without it rejects the schemas customers already have — which makes
+the feature theoretical. References are resolved **at compile time**: the target
+is inlined, cycles are detected and rejected (a recursive schema has no bounded
+compiled form here), and nothing is resolved per request.
+
+#### 4c-i. How the keyword set is known to be correct
+
+A keyword is enabled only if it passes its section of the **official
+JSON-Schema-Test-Suite** — the specification's own conformance corpus. A
+keyword that fails any case is not implemented "mostly"; it is left out of the
+allowed set and schemas using it are rejected.
+
+This is the same technique the `ndjson` tokenizer uses against `encoding/json`
+(differential testing against an authoritative oracle), and it produces a
+stronger claim than importing a library would: most JSON Schema libraries are
+partially conformant and do not tell you which parts.
+
+#### 4c-ii. Remote `$ref` is refused, and an opt-in flag is the wrong fix
+
+A remote `$ref` means something fetches a URL chosen by whoever wrote the
+schema. At request time that is an SSRF primitive on the runner — the component
+holding decrypted secrets — plus an availability dependency (the far end is
+down, so inbound requests fail) and a supply-chain one (the schema changes
+underneath a published flow without a version bump).
+
+An "I accept the risk" toggle was considered and rejected, because the risk is
+not the operator's to accept: the person clicking it is not the person whose
+payload gets exfiltrated by a redirected fetch.
+
+If remote references are ever wanted, the shape that works is **resolution at
+publish time, pinned**: the hub fetches the referenced schema once, inlines it
+into the stored document, and records its digest — the same model as connector
+artifacts (ADR-0011). That converts a runtime SSRF into a design-time fetch with
+an audit trail, keeps the runner offline-capable, and makes the schema a flow
+version rather than a moving target. Not built; recorded here so the option is
+not re-litigated as a flag.
+
+#### 4c-iii. What the subset does not cover
+
+Stated rather than discovered: `oneOf`/`anyOf`/`allOf`, `if`/`then`/`else`,
+`unevaluatedProperties`/`unevaluatedItems`, and remote references. Each is
+rejected at authoring time with a message naming the keyword, so the failure is
+a 422 in the studio rather than a schema that quietly checks less than it
+claims. Composition can be added later behind the same conformance rule if real
+schemas demand it.
+
+#### 4d. The validator sits behind the parser, so JSON-first is not JSON-only
+
+It operates on `record.Value`, not on JSON text. That is a deliberate
+consequence of the engine's model and it decides the roadmap: any format the
+engine can already parse into records can be validated by the **same** compiled
+validator, with no second validation engine.
+
+| Format | Parser | Verification path |
+|---|---|---|
+| JSON / NDJSON | `engine/format/ndjson` (+ `JSONReader`) | **this ADR** |
+| CSV / TSV / PSV / fixed-width | `engine/format/csvf` | same validator once parsed; needs column-level vocabulary (widths, positional fields) that JSON Schema cannot express |
+| XML | `engine/format/xmlf` | same validator for shape; **XSD is a different engine** and a separate decision |
+| EDI | not built | segment/element rules are their own vocabulary; likely a connector rather than a schema |
+
+So "JSON for the moment" is a sequencing choice about *parsers and vocabularies*,
+not an architectural one about validation. The expensive part — a compiled,
+allocation-free evaluator over the record model — is written once.
+
+#### 4e. YAML: two different questions, two different answers
+
+**As a payload format: not accepted, and this is not an oversight.** YAML is a
+configuration language, not an integration wire format; callers post JSON, XML,
+CSV or EDI. It also fights two things this platform holds. It has no useful
+streaming form — nesting means the whole document must be parsed before anything
+is known, so `scope: records` cannot exist for it. And YAML parsers carry a
+genuinely bad security record: anchor/alias expansion bombs, implicit type
+coercion (`no` → `false`, unquoted versions → numbers), duplicate-key ambiguity,
+and custom tags that in several ecosystems reach arbitrary deserialization.
+Accepting YAML on the public edge would mean putting that parser in front of
+untrusted input for a format nobody is actually sending.
+
+If it is ever wanted, the answer is a bounded, strict-subset conversion to the
+record model at the edge — no custom tags, no aliases beyond a hard expansion
+limit, duplicate keys rejected, size-capped — after which validation is
+identical, because the validator is behind the parser (§4d).
+
+**As an authoring format: worth doing, and cheaper than it looks.** Writing a
+flow document or a connector configuration in YAML gets comments, less
+punctuation, and a shape both humans and models produce more reliably than
+nested JSON — which is squarely the "developer- and AI-friendly" goal. The
+conversion belongs at the **hub/CLI boundary**: YAML in, canonical JSON stored,
+signed and served. Payload never meets a YAML parser, the runner never gains the
+dependency, and `pkg/flowdoc` stays the single authority on validity.
+
+TOML is not proposed for either. It is a configuration format with no
+integration presence, and it models nested collections poorly enough that flow
+documents would read worse than the JSON they replace.
 
 **Unknown keywords are rejected at flow validation time, not ignored.** JSON
 Schema's own rule is that an unrecognised keyword is an annotation and passes
@@ -367,3 +467,13 @@ integration platforms feel opaque to the teams that depend on them.
    contract; tightening one breaks callers. The hub knows both versions at
    publish time and could refuse a narrowing change to a published route, which
    is a compatibility policy (ADR-0023) rather than an edge concern.
+5. **Flat-file and XML vocabularies** (§4d). Column widths, positional fields
+   and XSD say things JSON Schema cannot. Whether that is an extension to this
+   schema model or a second `validate` step type is undecided, and should be
+   decided when the first real flat-file contract exists rather than in advance.
+6. **EDI verification** is not a schema problem at all — segment and element
+   rules, code lists, and trading-partner variance point at a connector. Named
+   here so it is not assumed to fall out of this work.
+7. **YAML authoring** (§4e). Cheap and valuable, but it touches `pkg/flowdoc`,
+   the CLI, and the studio's save path, and canonicalisation matters because
+   flow documents are signed. Its own small ADR, not a footnote to this one.
