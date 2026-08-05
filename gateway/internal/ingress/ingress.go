@@ -121,7 +121,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Body: http.MaxBytesReader(w, r.Body, maxBody),
 	}
 
-	resp, err := h.reg.Dispatch(r.Context(), route.Selector, req)
+	resp, release, err := h.reg.Dispatch(r.Context(), route.Selector, req)
+	// The response body is a live stream off the runner's request; releasing
+	// tells the runner it may close. Deferred here so every path below is
+	// covered, and it MUST NOT run before the copy at the end of this function
+	// or the caller gets a truncated body (see runners.Dispatch).
+	defer release()
 	switch {
 	case errors.Is(err, runners.ErrNoRunner):
 		// 503, never a queue. Retry-After tells a well-behaved sender to come

@@ -54,6 +54,7 @@ func main() {
 		hubURL        = flag.String("hub", os.Getenv("SHIFT_HUB_URL"), "hub base URL; enables the lease intake (M3b)")
 		gatewayAddrs  = flag.String("gateways", os.Getenv("SHIFT_GATEWAYS"), "comma-separated gateway control-listener URLs to poll for inbound work (ADR-0038); empty = no gateway intake")
 		flowsDir      = flag.String("flows-dir", os.Getenv("SHIFT_FLOWS_DIR"), "directory of {\"document\":<flow>} JSON files to register as webhooks at start-up (the hub is authoritative when attached)")
+		gatewayPolls  = flag.Int("gateway-polls", envInt("SHIFT_GATEWAY_POLLS", 16), "parked polls per gateway; bounds concurrent inbound requests from one gateway (the resource governor is still the real ceiling)")
 		runnerLabels  = flag.String("labels", os.Getenv("SHIFT_RUNNER_LABELS"), "placement labels \"k=v,k=v\" matched against gateway route selectors (ADR-0030)")
 		hubCA         = flag.String("hub-ca", os.Getenv("SHIFT_HUB_CA_FILE"), "extra CA certificate for the hub (self-signed bundles)")
 		credFile      = flag.String("cred-file", os.Getenv("SHIFT_HUB_CRED_FILE"), "persist/reuse the runner's hub identity here (reg tokens are single-use)")
@@ -240,9 +241,10 @@ func main() {
 			Bind: func(ctx context.Context, doc *flowdoc.Document) (*flowdoc.Document, []string, error) {
 				return binder.Apply(ctx, doc)
 			},
-			Token:  os.Getenv("SHIFT_GATEWAY_TOKEN"),
-			Log:    slog.Default(),
-			OnDone: gatewayOnDone(report),
+			PollConcurrency: *gatewayPolls,
+			Token:           os.Getenv("SHIFT_GATEWAY_TOKEN"),
+			Log:             slog.Default(),
+			OnDone:          gatewayOnDone(report),
 		})
 		go gw.Run(loopCtx)
 		log.Printf("runnerd: gateway intake polling %d gateway(s) with %d label(s)", len(addrs), len(parseLabels(*runnerLabels)))
@@ -416,6 +418,15 @@ func parseLabels(s string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
 }
 
 func envOr(key, def string) string {

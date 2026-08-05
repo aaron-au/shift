@@ -46,14 +46,23 @@ func TestDispatchHandsWorkToAParkedRunnerAndReturnsItsResponse(t *testing.T) {
 	// Let the runner park before dispatching.
 	waitFor(t, func() bool { return r.Available(prodSel) == 1 })
 
-	resp, err := r.Dispatch(t.Context(), prodSel, req("r1"))
+	resp, release, err := r.Dispatch(t.Context(), prodSel, req("r1"))
 	if err != nil {
+		release()
 		t.Fatalf("dispatch: %v", err)
 	}
-	if resp.Status != 200 {
-		t.Fatalf("status = %d, want 200", resp.Status)
-	}
+	status := resp.Status
+
+	// Release BEFORE joining the runner, not in a defer. Deliver deliberately
+	// blocks until the caller is finished with the body — that is what keeps
+	// the body alive — so a deferred release here would wait for the runner
+	// while the runner waits for the release.
+	release()
 	wg.Wait()
+
+	if status != 200 {
+		t.Fatalf("status = %d, want 200", status)
+	}
 }
 
 // No runner waiting is a 503, never a queue. A gateway that buffers is a
@@ -61,7 +70,8 @@ func TestDispatchHandsWorkToAParkedRunnerAndReturnsItsResponse(t *testing.T) {
 func TestDispatchWithNoRunnerFailsImmediately(t *testing.T) {
 	r := New()
 	start := time.Now()
-	_, err := r.Dispatch(t.Context(), prodSel, req("r1"))
+	_, release, err := r.Dispatch(t.Context(), prodSel, req("r1"))
+	defer release()
 	if !errors.Is(err, ErrNoRunner) {
 		t.Fatalf("err = %v, want ErrNoRunner", err)
 	}
@@ -77,7 +87,9 @@ func TestDispatchNeverCrossesSelectors(t *testing.T) {
 	go r.Poll(t.Context(), stagingLabels, 500*time.Millisecond)
 	waitFor(t, func() bool { return r.Available(stagingSel) == 1 })
 
-	if _, err := r.Dispatch(t.Context(), prodSel, req("r1")); !errors.Is(err, ErrNoRunner) {
+	_, release, err := r.Dispatch(t.Context(), prodSel, req("r1"))
+	release()
+	if !errors.Is(err, ErrNoRunner) {
 		t.Fatalf("err = %v; a non-prod runner was eligible for prod work", err)
 	}
 }
@@ -108,7 +120,8 @@ func TestWorkHandedOverAtTheInstantOfTimeoutIsNotLost(t *testing.T) {
 		// Dispatch racing the 1ms poll timeout: either it finds no runner, or
 		// it finds one — and if it finds one, that runner MUST see the work.
 		go func() {
-			resp, err := r.Dispatch(t.Context(), prodSel, req("r1"))
+			resp, release, err := r.Dispatch(t.Context(), prodSel, req("r1"))
+			defer release()
 			_, _ = resp, err
 		}()
 
@@ -130,7 +143,8 @@ func TestDispatchTimesOutWhenTheRunnerNeverDelivers(t *testing.T) {
 	go r.Poll(t.Context(), prodLabels, time.Second) // takes the work, never delivers
 	waitFor(t, func() bool { return r.Available(prodSel) == 1 })
 
-	_, err := r.Dispatch(t.Context(), prodSel, req("r1"))
+	_, release, err := r.Dispatch(t.Context(), prodSel, req("r1"))
+	defer release()
 	if !errors.Is(err, ErrDeliveryTimeout) {
 		t.Fatalf("err = %v, want ErrDeliveryTimeout", err)
 	}
@@ -161,7 +175,9 @@ func TestDispatchIsFIFOAcrossParkedRunners(t *testing.T) {
 		waitFor(t, func() bool { return r.Available(prodSel) == i+1 })
 	}
 
-	if _, err := r.Dispatch(t.Context(), prodSel, req("r1")); err != nil {
+	_, release, err := r.Dispatch(t.Context(), prodSel, req("r1"))
+	release()
+	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	select {
@@ -242,7 +258,9 @@ func TestSecondDeliveryForTheSameRequestIsRejected(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if _, err := r.Dispatch(t.Context(), prodSel, req("r1")); err != nil {
+		_, release, err := r.Dispatch(t.Context(), prodSel, req("r1"))
+		release()
+		if err != nil {
 			t.Errorf("dispatch: %v", err)
 		}
 	}()
@@ -273,7 +291,7 @@ func TestDeliverStopsWaitingWhenTheRunnerGivesUp(t *testing.T) {
 	waitFor(t, func() bool { return r.Available(prodSel) == 1 })
 
 	// Dispatch, but never read the response: the caller is slow/absent.
-	go func() { _, _ = r.Dispatch(t.Context(), prodSel, req("r1")) }()
+	go func() { _, release, _ := r.Dispatch(t.Context(), prodSel, req("r1")); release() }()
 	got := <-parked
 	if got == nil {
 		t.Fatal("runner received nothing")

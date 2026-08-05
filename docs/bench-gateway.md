@@ -84,9 +84,69 @@ nothing to mis-estimate. **0.26 ms p50, 0.47 ms p99, single caller.**
 | Added cost vs a real 20 ms backend | ≤ 5 ms | ≤ 1 ms | **0.46 ms** | stretch met |
 | Errors under sustained load | 0 | 0 | **0** | met |
 
-For scale: a single gateway sustaining ~26,800 req/s is **268× the 100 tps**
-that already counts as a very large integration deployment. Throughput is not
-the constraint this design will hit first.
+Those targets are for the **gateway machinery**, measured against stub runners.
+For what a real runner serves end to end, see the next section — the two are
+different questions and the numbers differ by ~3×.
+
+For scale: ~9,300 real executions/sec on a single runner is **93× the 100 tps**
+that already counts as a very large integration deployment, and the gateway
+itself absorbs nearly three times that again. Throughput is not the constraint
+this design will hit first.
+
+## The real end-to-end figure: a whole runner, not a stub
+
+Everything above isolates the gateway. This section is the other question —
+**what does one real runner actually serve**, with `gatewayd`, `runnerd`, the
+engine, and a `@webhook → @response` flow, over real HTTP.
+
+Same host (so the load generator, gateway and runner share 14 cores — a real
+deployment separates them), one runner, 16 parked polls:
+
+| Concurrent callers | ok/s | 503s | p50 | p95 | p99 |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 4,069 | 0 | 0.25 ms | 0.38 ms | 0.45 ms |
+| 4 | 6,950 | 0 | 0.57 ms | 0.92 ms | 1.09 ms |
+| 8 | **9,285** | 8 | 0.80 ms | 1.62 ms | 2.09 ms |
+| 16 | 8,234 | 70,087 | 1.36 ms | 3.12 ms | 4.14 ms |
+| 64 | 6,896 | 267,734 | 1.97 ms | 4.62 ms | 6.11 ms |
+
+**~9,300 executions/sec on ONE runner**, at the point where offered load
+matches capacity. Past that the excess is shed as immediate 503s — working as
+designed, and the signal to add a runner rather than to queue.
+
+Raising the parked-poll count (`-gateway-polls`) does not lift the ceiling
+much (16 → 128 moved 4,080 → 5,216 ok/s at 64 callers): poll slots were not the
+constraint once the connection pool was fixed. The gateway itself absorbs
+~50,000 req/s total in that state, most of them 503s.
+
+**Do not read the 26,852 figure as executions.** That is the gateway's dispatch
+machinery against *stub* runners doing no work. The end-to-end number is this
+one.
+
+## Two bugs this benchmark found
+
+Neither was visible to the unit tests, and both needed load to surface.
+
+1. **Ephemeral port exhaustion on the runner.** `gwclient` used a default
+   `http.Client`, and `http.DefaultTransport` keeps **2** idle connections per
+   host. With 16 parked polls plus deliveries against one gateway, everything
+   above that was torn down into `TIME_WAIT` until the port range ran out:
+   `dial tcp: connect: can't assign requested address`, every poll failing, and
+   callers waiting out the full 60-second delivery timeout for responses the
+   runner could not send. A 6-second run took 63 seconds. The pool is now sized
+   to the poll concurrency.
+
+2. **Silent response truncation.** The registry closed the exchange in
+   `Dispatch`'s defer — which runs when Dispatch *returns*, before the ingress
+   handler has copied the body. That let `Deliver` return, which let the
+   runner's HTTP handler return, which closed the body mid-copy. Callers got a
+   correct status and an empty or partial body, intermittently. Responsibility
+   for closing now transfers to `Response.Release`, called after the copy.
+   Regression test: `TestResponseBodyIsNotTruncated`.
+
+The second one is the reason to distrust a benchmark that only reports
+aggregates: it produced no errors, no log lines, and a 200. Only a test that
+compared the bytes caught it.
 
 ## Known limits, stated rather than buried
 

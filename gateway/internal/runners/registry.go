@@ -50,6 +50,10 @@ type Request struct {
 
 // Response is what a runner sends back. Body streams straight through to the
 // original caller.
+//
+// Body is a LIVE STREAM off the runner's own HTTP request, not a buffer. It
+// stays readable only until Dispatch's release function is called, so a caller
+// must finish reading Body first and release after.
 type Response struct {
 	Status  int
 	Headers http.Header
@@ -162,7 +166,13 @@ func (r *Registry) remove(w *waiter) {
 // It returns ErrNoRunner immediately when nobody eligible is waiting. That is
 // a 503, deliberately: the alternative is holding the request until a runner
 // appears, which is a queue, which is durable state in the DMZ.
-func (r *Registry) Dispatch(ctx context.Context, sel config.Selector, req *Request) (*Response, error) {
+// The returned release function MUST be called when the caller has finished
+// with Response.Body — it is what lets the runner's delivery request return
+// and its body close. It is returned explicitly rather than hung off Response
+// so a call site cannot quietly omit it (the same reason context.WithCancel
+// returns its cancel), and it is always non-nil and safe to call more than
+// once, including on the error paths.
+func (r *Registry) Dispatch(ctx context.Context, sel config.Selector, req *Request) (*Response, func(), error) {
 	ex := &exchange{resp: make(chan *Response, 1), done: make(chan struct{})}
 
 	r.mu.Lock()
@@ -178,31 +188,64 @@ func (r *Registry) Dispatch(ctx context.Context, sel config.Selector, req *Reque
 	}
 	if idx < 0 {
 		r.mu.Unlock()
-		return nil, ErrNoRunner
+		return nil, func() {}, ErrNoRunner
 	}
 	w := r.waiting[idx]
 	r.waiting = append(r.waiting[:idx], r.waiting[idx+1:]...)
 	r.inflight[req.ID] = ex
+
+	// The hand-off happens UNDER the lock, closing a narrow window that
+	// sending after the unlock would leave open: a poll timing out in that
+	// instant finds itself already off the queue, re-checks its channel, sees
+	// nothing (the send has not happened yet) and leaves — putting the request
+	// into a buffer with no reader, so the caller waits out the whole delivery
+	// timeout for a 504.
+	//
+	// Honest provenance: this is reasoning, not an observed failure. A stress
+	// test driving 344k dispatches against constantly-expiring polls has never
+	// reproduced it (see race_test.go), and the 60-second hangs that prompted
+	// the look turned out to be ephemeral-port exhaustion on the RUNNER side
+	// entirely. Kept because the interleaving is genuinely possible and the
+	// send is free here.
+	//
+	// The send cannot block: the channel is buffered, and a waiter is removed
+	// from the queue when it is chosen, so it is never chosen twice and its
+	// buffer is always empty at this point.
+	w.ch <- req
 	r.mu.Unlock()
 
+	// handedOff transfers responsibility for closing ex.done to the caller.
+	//
+	// Closing it here on the success path was a REAL BUG: the defer runs when
+	// Dispatch RETURNS, which is before the ingress handler has copied the
+	// response body — and closing it lets Deliver return, which lets the
+	// runner's HTTP handler return, which closes the very body being copied.
+	// The caller received a correct status and a TRUNCATED (usually empty)
+	// body, intermittently, under concurrency.
+	//
+	// So on success the exchange stays open until Response.Release; only the
+	// failure paths close it here.
+	var handedOff bool
 	defer func() {
-		close(ex.done)
+		if !handedOff {
+			close(ex.done)
+		}
 		r.mu.Lock()
 		delete(r.inflight, req.ID)
 		r.mu.Unlock()
 	}()
 
-	w.ch <- req // buffered: never blocks
-
 	timer := time.NewTimer(r.deliveryTimeout())
 	defer timer.Stop()
 	select {
 	case resp := <-ex.resp:
-		return resp, nil
+		handedOff = true
+		var once sync.Once
+		return resp, func() { once.Do(func() { close(ex.done) }) }, nil
 	case <-timer.C:
-		return nil, ErrDeliveryTimeout
+		return nil, func() {}, ErrDeliveryTimeout
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, func() {}, ctx.Err()
 	}
 }
 

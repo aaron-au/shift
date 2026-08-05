@@ -88,6 +88,18 @@ type Options struct {
 	Token string
 	// PollWait is the long-poll window (default 30s).
 	PollWait time.Duration
+	// PollConcurrency is how many polls this runner parks PER GATEWAY
+	// (default 16). It bounds how many inbound requests it can have in flight
+	// from one gateway; the real ceiling remains the resource governor, which
+	// every poll re-checks before parking.
+	//
+	// It is a parked-connection count, not a task cap: an idle poll costs a
+	// goroutine stack and a socket, so this can be generous. One is not — see
+	// Run.
+	PollConcurrency int
+	// HeadroomPoll is how often a poll re-checks capacity while the runner is
+	// full (default 250ms), matching the hub lease loop.
+	HeadroomPoll time.Duration
 	// Client is the HTTP client used for both calls. Optional.
 	Client *http.Client
 	// Log receives operational events. Optional.
@@ -110,35 +122,83 @@ func New(opts Options) *Loop {
 	if opts.PollWait <= 0 {
 		opts.PollWait = 30 * time.Second
 	}
+	if opts.PollConcurrency <= 0 {
+		opts.PollConcurrency = 16
+	}
+	if opts.HeadroomPoll <= 0 {
+		opts.HeadroomPoll = 250 * time.Millisecond
+	}
 	log := opts.Log
 	if log == nil {
 		log = slog.Default()
 	}
 	cl := opts.Client
 	if cl == nil {
-		// No client-side timeout: a poll legitimately blocks for the whole
-		// window and an execution may legitimately take longer still. The
-		// request context bounds both, which is the honest place for it —
-		// a blanket Timeout here would abort long-running work as if it had
-		// failed.
-		cl = &http.Client{}
+		// The connection pool MUST be sized to the poll concurrency.
+		//
+		// http.DefaultTransport keeps 2 idle connections per host. With N
+		// parked polls plus their deliveries against one gateway, everything
+		// above that is torn down after each request and lands in TIME_WAIT —
+		// and on a busy runner that exhausts the ephemeral port range
+		// outright: "dial tcp: connect: can't assign requested address",
+		// every poll failing, and callers waiting out the full delivery
+		// timeout for responses the runner cannot send.
+		//
+		// Observed at 16 polls against a single gateway. Two connections per
+		// poll slot (one parked, one delivering) plus headroom.
+		perHost := opts.PollConcurrency*2 + 8
+		cl = &http.Client{
+			// No client-side timeout: a poll legitimately blocks for the whole
+			// window and an execution may legitimately take longer still. The
+			// request context bounds both, which is the honest place for it —
+			// a blanket Timeout here would abort long-running work as if it
+			// had failed.
+			Transport: &http.Transport{
+				Proxy:               http.ProxyFromEnvironment,
+				MaxIdleConnsPerHost: perHost,
+				MaxConnsPerHost:     0, // unbounded: the poll count is the real bound
+				MaxIdleConns:        perHost * max(len(opts.Addrs), 1),
+				IdleConnTimeout:     90 * time.Second,
+			},
+		}
 	}
 	return &Loop{opts: opts, log: log, cl: cl}
 }
 
 // Run polls every configured gateway until ctx ends.
+//
+// Concurrency matters more here than it looks. A runner holding ONE poll per
+// gateway can serve exactly ONE inbound request at a time — while it executes,
+// it is not parked, so every other caller gets a 503 from a runner that had
+// ample capacity. Measured at 1 poll: ~800 req/s and an 82% error rate at 8
+// concurrent callers, against a governor sized for far more.
+//
+// So each gateway gets several parked polls, and the real limit stays the
+// resource governor (ADR-0005) rather than this number: a poll only re-parks
+// while there is admission headroom, so the fleet self-regulates exactly as
+// the hub lease loop does.
 func (l *Loop) Run(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, addr := range l.opts.Addrs {
-		wg.Go(func() { l.pollLoop(ctx, strings.TrimSuffix(addr, "/")) })
+		for range l.opts.PollConcurrency {
+			wg.Go(func() { l.pollLoop(ctx, strings.TrimSuffix(addr, "/")) })
+		}
 	}
 	wg.Wait()
 }
 
-// pollLoop holds one gateway's long-poll, re-parking after every outcome.
+// pollLoop holds one of a gateway's long-polls, re-parking after every outcome.
 func (l *Loop) pollLoop(ctx context.Context, addr string) {
 	backoff := time.Second
 	for ctx.Err() == nil {
+		// Capacity-gated, exactly like the hub lease loop: parking without
+		// headroom would accept work this runner cannot start, converting a
+		// clean 503 (which another runner can answer) into a queued request
+		// stuck behind admission on this one.
+		if !l.headroom() {
+			sleep(ctx, l.headroomPoll())
+			continue
+		}
 		req, err := l.poll(ctx, addr)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -159,6 +219,22 @@ func (l *Loop) pollLoop(ctx context.Context, addr string) {
 		l.serve(ctx, addr, req)
 	}
 }
+
+// headroom reports whether the governor can admit another task. Polling past
+// it would accept work this runner cannot start — turning a 503 that another
+// runner could have answered into a request queued behind admission here.
+//
+// A nil Service means no gating (the wire-level tests construct one that way);
+// a runner built by runnerd always has one.
+func (l *Loop) headroom() bool {
+	if l.opts.Service == nil {
+		return true
+	}
+	st := l.opts.Service.Status()
+	return st.Governor.Used+st.TaskCost <= st.Governor.Budget
+}
+
+func (l *Loop) headroomPoll() time.Duration { return l.opts.HeadroomPoll }
 
 // inbound is one request handed over by a gateway.
 type inbound struct {
