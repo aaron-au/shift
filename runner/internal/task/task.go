@@ -75,6 +75,13 @@ type Task struct {
 	Stopped  bool   `json:"stopped,omitempty"`
 	StopStep string `json:"stop_step,omitempty"`
 
+	// Checkpoint is the latest source position the terminal sink CONFIRMED
+	// (ADR-0037), opaque to the runner and the hub alike. It exists so a
+	// re-dispatched task — very possibly on a different runner — restarts
+	// from where this attempt got to rather than from the beginning. Empty
+	// when the flow is not resume-eligible or its source cannot resume.
+	Checkpoint []byte `json:"checkpoint,omitempty"`
+
 	// Captured holds per-step INPUT/OUTPUT samples when capture is enabled
 	// (test mode). Runner-only, redacted, ephemeral (evicted with the task).
 	Captured []StepCapture `json:"captured,omitempty"`

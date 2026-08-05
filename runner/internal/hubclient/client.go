@@ -82,6 +82,14 @@ type LeasedTask struct {
 	IdempotencyKey string          `json:"idempotency_key"`
 	Attempt        int             `json:"attempt"`
 	MaxAttempts    int             `json:"max_attempts"`
+
+	// Checkpoint is the resume position the previous attempt's sink confirmed
+	// (ADR-0037), with the connector build that produced it. Opaque here — the
+	// runner forwards it to the connector and never parses it. Empty on a
+	// first attempt and for every non-resumable source.
+	Checkpoint          []byte `json:"checkpoint,omitempty"`
+	CheckpointConnector string `json:"checkpoint_connector,omitempty"`
+	CheckpointVersion   string `json:"checkpoint_version,omitempty"`
 }
 
 // Lease long-polls for work. Returns (nil, nil) when the queue stayed
@@ -112,7 +120,30 @@ func (c *Client) Lease(ctx context.Context, wait time.Duration) (*LeasedTask, ti
 
 // Heartbeat extends the lease on a running task.
 func (c *Client) Heartbeat(ctx context.Context, taskID string) error {
-	resp, err := c.do(ctx, http.MethodPost, "/api/v1/tasks/"+taskID+"/heartbeat", "")
+	return c.HeartbeatWithCheckpoint(ctx, taskID, nil, "", "")
+}
+
+// HeartbeatWithCheckpoint extends the lease and, when cur is non-empty,
+// records the resume position with it (ADR-0037).
+//
+// It rides the heartbeat rather than a dedicated call so the position is
+// gated by the same lease check that guards every other write: a runner whose
+// lease expired has been superseded, and letting it record a cursor would let
+// a zombie rewind the attempt that replaced it.
+func (c *Client) HeartbeatWithCheckpoint(ctx context.Context, taskID string, cur []byte, connector, version string) error {
+	body := ""
+	if len(cur) > 0 {
+		b, err := json.Marshal(struct {
+			Checkpoint          []byte `json:"checkpoint"`
+			CheckpointConnector string `json:"checkpoint_connector,omitempty"`
+			CheckpointVersion   string `json:"checkpoint_version,omitempty"`
+		}{cur, connector, version})
+		if err != nil {
+			return fmt.Errorf("hubclient: heartbeat checkpoint: %w", err)
+		}
+		body = string(b)
+	}
+	resp, err := c.do(ctx, http.MethodPost, "/api/v1/tasks/"+taskID+"/heartbeat", body)
 	if err != nil {
 		return err
 	}

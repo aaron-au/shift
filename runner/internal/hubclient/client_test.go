@@ -558,3 +558,59 @@ func TestReadErrPlainBody(t *testing.T) {
 		t.Fatalf("err = %v, want plain 502 body", err)
 	}
 }
+
+// The cursor must reach the hub in the shape the hub parses (ADR-0037): a
+// silent mismatch here would degrade every resume to a full replay with
+// nothing reporting that it had.
+func TestHeartbeatWithCheckpointSendsTheCursorAndItsIdentity(t *testing.T) {
+	var body struct {
+		Checkpoint          []byte `json:"checkpoint"`
+		CheckpointConnector string `json:"checkpoint_connector"`
+		CheckpointVersion   string `json:"checkpoint_version"`
+	}
+	var gotBody bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/tasks/{id}/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > 0 {
+			gotBody = true
+			_ = json.NewDecoder(r.Body).Decode(&body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	c := newClient(t, mux)
+
+	cur := []byte(`{"v":1,"n":42}`)
+	if err := c.HeartbeatWithCheckpoint(t.Context(), "t1", cur, "fs", "0.2.0"); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if !gotBody {
+		t.Fatal("no body sent; the cursor never reached the hub")
+	}
+	if string(body.Checkpoint) != string(cur) {
+		t.Fatalf("checkpoint = %q, want %q", body.Checkpoint, cur)
+	}
+	// The identity travels with the cursor because a cursor is only readable
+	// by the build that produced it.
+	if body.CheckpointConnector != "fs" || body.CheckpointVersion != "0.2.0" {
+		t.Fatalf("identity = %q/%q, want fs/0.2.0", body.CheckpointConnector, body.CheckpointVersion)
+	}
+}
+
+// A heartbeat with no cursor must send no body at all, so a source that
+// cannot resume heartbeats exactly as it did before this feature existed —
+// and so the hub's COALESCE leaves stored progress alone.
+func TestHeartbeatWithoutCursorSendsNoBody(t *testing.T) {
+	var length int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/tasks/{id}/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		length = r.ContentLength
+		w.WriteHeader(http.StatusNoContent)
+	})
+	c := newClient(t, mux)
+	if err := c.HeartbeatWithCheckpoint(t.Context(), "t1", nil, "fs", "0.2.0"); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	if length > 0 {
+		t.Fatalf("sent %d bytes for an empty cursor, want none", length)
+	}
+}

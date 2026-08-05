@@ -202,6 +202,42 @@ roll back sibling side effects already in flight**. It cancels contexts; it
 does not un-write a file or un-POST a request. Ordering across branches is
 explicit sequencing (a linear chain), never an implicit gate on a tee.
 
+### Resume: a cursor is control metadata (ADR-0037)
+
+A re-dispatched task restarts from where the previous attempt's sink got to,
+rather than from the beginning — and, because runners are replaceable by
+design, usually on a *different* runner. Three pieces:
+
+1. **The source reports a position.** Optional connector capability
+   (`sdk.ResumableSource`); see `docs/dev/03-connector-protocol.md`. A source
+   that does not implement it reports nothing and nothing is recorded.
+2. **The engine reports it only when the sink confirms.**
+   `Pipeline.WithCheckpoint` fires after each successful `sink.Write`, which
+   is the only moment the source's position and "everything delivered" agree.
+   A position taken on *source* progress would, on resume, skip records that
+   were read but never written — silent data loss, strictly worse than the
+   duplicate work resume exists to avoid.
+3. **The hub stores it.** Sent on the heartbeat, gated by the same lease check
+   as the heartbeat itself — a runner whose lease expired has been superseded,
+   and letting it write a cursor would let a zombie rewind the attempt that
+   replaced it. Returned on the next `Claim`.
+
+**Eligibility is a property of the plan** (`flow.Resumable`), decided before
+execution, and it is a correctness constraint rather than an optimisation:
+
+| Plan | Resumable | Why |
+|---|---|---|
+| source → filter/project/coerce/flatten → sink | yes | streaming; each confirmed write covers a known prefix |
+| any plan containing `aggregate` or a `merge` join | **no** | blocking: the whole input is drained before anything is emitted, so the first confirmed write already reports end-of-input — and rebuilding from a suffix loses the state for the skipped prefix, making the output quietly *wrong* |
+| multi-path (v3 DAG) | **no** | several sources with independent positions and a per-branch confirm point; there is no single cursor to record |
+
+**The cursor is pinned to the connector build that produced it.** A cursor is
+opaque bytes only its producer understands, so a v0.3 cursor read under v0.4
+could resolve to a *different* position and resume at the wrong place with
+nothing downstream able to notice. The runner refuses to resume on a mismatch
+(and on a cursor with no recorded identity) and replays from the start
+instead — slower, and correct.
+
 ## Task lifecycle and admission (ADR-0005 in practice)
 
 ```

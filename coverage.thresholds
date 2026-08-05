@@ -63,7 +63,13 @@ github.com/aaron-au/shift/runner/internal/hubclient 84
 # from a code move, not a test regression — module total rose 85.5% -> 85.6%.
 # What remains uncovered here is the heartbeat/poll loop, which is exercised
 # only by the connector-subprocess tests that SHIFT_COVERAGE skips.
-github.com/aaron-au/shift/runner/internal/leaseloop 76
+# 74: resume checkpoint plumbing (ADR-0037) added lines that are only
+# reachable by EXECUTING a flow, and every leaseloop test that executes one
+# spawns a connector subprocess — which SHIFT_COVERAGE deliberately skips to
+# keep the gate deterministic (ADR-0022). The wire format those lines produce
+# is covered where it IS reachable, in hubclient (HeartbeatWithCheckpoint), and
+# the behaviour is covered end to end in hub/internal/store.
+github.com/aaron-au/shift/runner/internal/leaseloop 74
 github.com/aaron-au/shift/runner/internal/bind 90
 github.com/aaron-au/shift/runner/internal/ratelimit 86
 github.com/aaron-au/shift/runner/internal/service 67

@@ -155,9 +155,29 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 		return
 	}
 
+	// checkpoint holds the latest sink-confirmed resume position (ADR-0037).
+	// The engine callback runs on the task goroutine and the heartbeat reads
+	// it from this one, so it needs a mutex — a torn cursor would be handed
+	// to a connector as a position it never emitted.
+	var cpMu sync.Mutex
+	var checkpoint []byte
+	var cpConnector, cpVersion string
+
 	// SecretValues let the service redact any secret that leaks into an
 	// error string or error-handler record; they are never stored.
-	localID, err := l.opts.Service.SubmitWith(doc, service.SubmitOpts{SecretValues: secretValues})
+	// ResumeFrom restarts a re-dispatched task where the last attempt's sink
+	// got to, rather than from the beginning; empty on a first attempt.
+	localID, err := l.opts.Service.SubmitWith(doc, service.SubmitOpts{
+		SecretValues:    secretValues,
+		ResumeFrom:      t.Checkpoint,
+		ResumeConnector: t.CheckpointConnector,
+		ResumeVersion:   t.CheckpointVersion,
+		OnCheckpoint: func(cur []byte, connector, version string) {
+			cpMu.Lock()
+			checkpoint, cpConnector, cpVersion = cur, connector, version
+			cpMu.Unlock()
+		},
+	})
 	if err != nil {
 		l.report(t.ID, func(ctx context.Context) error {
 			return l.opts.Client.Fail(ctx, t.ID, err.Error())
@@ -178,8 +198,15 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 			if !leaseHeld {
 				continue
 			}
+			// Send the latest confirmed position with the heartbeat. Sending
+			// the same cursor twice is harmless (the hub overwrites), and
+			// sending none leaves the stored one untouched — so a source that
+			// cannot resume heartbeats exactly as before.
+			cpMu.Lock()
+			cur, srcConnector, srcVersion := checkpoint, cpConnector, cpVersion
+			cpMu.Unlock()
 			hctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			err := l.opts.Client.Heartbeat(hctx, t.ID)
+			err := l.opts.Client.HeartbeatWithCheckpoint(hctx, t.ID, cur, srcConnector, srcVersion)
 			cancel()
 			if errors.Is(err, hubclient.ErrLeaseLost) {
 				// The hub re-dispatched (we were presumed dead). Keep the
