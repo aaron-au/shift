@@ -296,6 +296,14 @@ allocation-free evaluator over the record model — is written once.
 
 #### 4e. YAML: two different questions, two different answers
 
+> **Revised by ADR-0043 (2026-08-05).** The reasoning below stands except for
+> the parser-security claim, which was overstated: modern parsers already bound
+> alias expansion and reject duplicate keys, so the residual problem is
+> *ambiguous meaning* (1.1 vs 1.2 scalar typing), not memory. ADR-0043 turns
+> that around — a **strict YAML 1.2 subset**, where pinning the dialect is the
+> product rather than the risk — and accepts YAML for both payload validation
+> and flow authoring on those terms.
+
 **As a payload format: not accepted, and this is not an oversight.** YAML is a
 configuration language, not an integration wire format; callers post JSON, XML,
 CSV or EDI. It also fights two things this platform holds. It has no useful
