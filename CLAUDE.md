@@ -87,9 +87,13 @@ gateway/    gatewayd (ADR-0038, in progress — see docs/dev/09-gateway.md): the
                                       listener (poll/deliver), label-selector placement, strip-then-
                                       stamp identity, and the runner side (runner/internal/gwclient).
                                       Proven end to end: deploy/k8s runs the gateway under a deny-ALL
-                                      -egress NetworkPolicy and it still serves. ~0.5ms p50 caller→
-                                      gateway→runner→engine→caller. Not yet: mTLS control listener +
-                                      identity bundle, hub push side, proxy routes (ADR-0040 draft).
+                                      -egress NetworkPolicy and it still serves. Benchmarked
+                                      (docs/bench-gateway.md): 0.26ms p50 overhead, 26.8k req/s on one
+                                      gateway, 0 errors. Control listener carries a shared secret and
+                                      FAILS CLOSED if bound non-loopback without one (runner
+                                      impersonation = payload interception). Not yet: mTLS control
+                                      listener + identity bundle, hub push side, proxy routes
+                                      (ADR-0040 draft).
 runner/     runnerd (M3a+M3b+M4b, done — see docs/dev/04-runner.md): flow docs → engine pipelines,
   internal/{flow,connpool,task,service,api}   resource-governed admission (ADR-0005), connector pool,
   internal/gwclient                           gateway intake (ADR-0038): polls each gateway OUTBOUND,

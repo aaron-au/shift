@@ -221,9 +221,15 @@ runner is inside the trust boundary, but its answer goes to the public
 internet, and "everything minus what we remembered to remove" is the shape that
 leaks an internal header the day someone adds one.
 
-Measured on a loopback dev box, a full caller → gateway → runner → engine →
-caller round trip runs **~0.5 ms p50** (see the walkthrough in
-`deploy/k8s/README.md`).
+**Measured** (`docs/bench-gateway.md`): platform overhead **0.26 ms p50 /
+0.47 ms p99**, and **26,852 req/s** on one gateway at 64 concurrent callers
+with zero errors — 268× the 100 tps that already counts as a very large
+integration deployment. Against a simulated 20 ms REST backend the platform
+adds **0.46 ms** at load.
+
+The benchmark models connectors as service-time *distributions* with jitter and
+a 1–3% spike arm, because a zero-latency stub measures Go's scheduler rather
+than this system.
 
 ## Not built yet
 
