@@ -19,6 +19,7 @@ import (
 	"github.com/aaron-au/shift/runner/internal/bind"
 	"github.com/aaron-au/shift/runner/internal/hubclient"
 	"github.com/aaron-au/shift/runner/internal/service"
+	"github.com/aaron-au/shift/runner/internal/task"
 )
 
 // Options configure the loop.
@@ -230,18 +231,7 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 			switch lt.State {
 			case "completed":
 				if leaseHeld {
-					res := hubclient.Result{
-						RecordsIn:     lt.RecordsIn,
-						RecordsOut:    lt.RecordsOut,
-						SinkConfirmed: lt.SinkConfirmed,
-						RunnerTaskID:  localID,
-						Stopped:       lt.Stopped,
-						StopStep:      lt.StopStep,
-					}
-					for _, op := range lt.Ops {
-						res.Ops = append(res.Ops, hubclient.OpStat(op))
-					}
-					res.Phases = hubclient.Phases(lt.Phases)
+					res := resultOf(lt, localID)
 					l.report(t.ID, func(ctx context.Context) error {
 						return l.opts.Client.Complete(ctx, t.ID, res)
 					})
@@ -272,6 +262,31 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 			done = nil
 		}
 	}
+}
+
+// resultOf converts a completed runner task into the hub's execution report.
+//
+// It is a free function rather than inline in the loop so it is testable
+// WITHOUT executing a flow: the surrounding loop only reaches that branch by
+// spawning a real connector subprocess, and those tests are deliberately
+// skipped under SHIFT_COVERAGE for being timing-dependent (scripts/coverage.sh).
+// The conversion is exactly the part worth pinning — a field silently dropped
+// here is a metric that never reaches the hub, and nothing downstream would
+// report its absence.
+func resultOf(lt task.Task, localID string) hubclient.Result {
+	res := hubclient.Result{
+		RecordsIn:     lt.RecordsIn,
+		RecordsOut:    lt.RecordsOut,
+		SinkConfirmed: lt.SinkConfirmed,
+		RunnerTaskID:  localID,
+		Stopped:       lt.Stopped,
+		StopStep:      lt.StopStep,
+		Phases:        hubclient.Phases(lt.Phases),
+	}
+	for _, op := range lt.Ops {
+		res.Ops = append(res.Ops, hubclient.OpStat(op))
+	}
+	return res
 }
 
 // report delivers a terminal state with retries — losing the race to a
