@@ -55,6 +55,9 @@ spec:
             # runner labels.
             - -gateways=http://shift-gateway-0.shift-gateway-control.shift-dmz.svc.cluster.local:8444,http://shift-gateway-1.shift-gateway-control.shift-dmz.svc.cluster.local:8444
             # What this runner IS. Gateway route selectors match against these.
+            # NOTE: this is args[2]; the README patches it by index to
+            # demonstrate placement, so inserting an argument above it will
+            # silently break that step.
             - -labels=environment=production,workload=api
             # Stands in for the hub's webhook sync, which is what supplies
             # flows in a real deployment.

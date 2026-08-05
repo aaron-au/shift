@@ -241,7 +241,7 @@ func main() {
 				return binder.Apply(ctx, doc)
 			},
 			Log:    slog.Default(),
-			OnDone: func(t task.Task) { report(t, "gateway") },
+			OnDone: gatewayOnDone(report),
 		})
 		go gw.Run(loopCtx)
 		log.Printf("runnerd: gateway intake polling %d gateway(s) with %d label(s)", len(addrs), len(parseLabels(*runnerLabels)))
@@ -371,6 +371,20 @@ func hashToken(tok string) string {
 	}
 	sum := sha256.Sum256([]byte(tok))
 	return hex.EncodeToString(sum[:])
+}
+
+// gatewayOnDone adapts the hub reporter to the gateway intake's completion
+// hook, and returns NIL when there is nothing to report to.
+//
+// The nil matters more than it looks. OnDone runs on its own goroutine, so a
+// closure that called a nil reporter would panic THERE — and a panic in a
+// goroutine takes the whole process down, on the first request a caller makes.
+// A hub-less runner would serve exactly one gateway request and die.
+func gatewayOnDone(report api.ExecReporter) func(task.Task) {
+	if report == nil {
+		return nil
+	}
+	return func(t task.Task) { report(t, "gateway") }
 }
 
 // splitList parses a comma-separated list, dropping empties so a trailing
