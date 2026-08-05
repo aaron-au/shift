@@ -241,6 +241,7 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 					for _, op := range lt.Ops {
 						res.Ops = append(res.Ops, hubclient.OpStat(op))
 					}
+					res.Phases = hubclient.Phases(lt.Phases)
 					l.report(t.ID, func(ctx context.Context) error {
 						return l.opts.Client.Complete(ctx, t.ID, res)
 					})

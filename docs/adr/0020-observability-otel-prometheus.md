@@ -4,6 +4,12 @@ Date: 2026-07-20
 Status: Accepted. Metrics implemented (M6a stage 1). **Tracing deferred**
 (2026-07-20) — see "Tracing" below.
 
+**Extended by ADR-0039** (execution observability): tracing is no longer
+deferred in principle, and ADR-0039 settles what this ADR left open — what is
+STORED (per-execution phases + per-step counters, bounded by task count) versus
+what is EMITTED (spans and per-batch detail, bounded by data volume, exported
+via OTel and never stored by us).
+
 ## Context
 
 M6 (enterprise hardening) opens with observability: it is the foundation the

@@ -174,6 +174,17 @@ type Result struct {
 	// indistinguishable from a flow that ran to its natural end.
 	Stopped  bool   `json:"stopped,omitempty"`
 	StopStep string `json:"stop_step,omitempty"`
+
+	// Phases is the fixed-width "where did the time go" record (ADR-0020).
+	Phases Phases `json:"phases,omitempty"`
+}
+
+// Phases mirrors task.Phases in API form.
+type Phases struct {
+	AdmissionMS float64 `json:"admission_ms,omitempty"`
+	BindMS      float64 `json:"bind_ms,omitempty"`
+	RunMS       float64 `json:"run_ms,omitempty"`
+	TotalMS     float64 `json:"total_ms,omitempty"`
 }
 
 // OpStat mirrors the runner's per-operator stats. Field layout matches
@@ -184,6 +195,14 @@ type OpStat struct {
 	RecordsIn  int64   `json:"records_in"`
 	RecordsOut int64   `json:"records_out"`
 	Seconds    float64 `json:"seconds"`
+	// Batches, WallSeconds and Bytes carry the diagnostic detail a customer
+	// needs to find a bottleneck: batching gone wrong, time spent waiting
+	// rather than working, and the data scale that record counts hide.
+	// Field layout must stay identical to task.OpStat — the lease loop
+	// converts between them directly.
+	Batches     int64   `json:"batches,omitempty"`
+	WallSeconds float64 `json:"wall_seconds,omitempty"`
+	Bytes       int64   `json:"bytes,omitempty"`
 }
 
 // Complete reports success.

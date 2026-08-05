@@ -41,6 +41,35 @@ type OpStat struct {
 	RecordsIn  int64   `json:"records_in"`
 	RecordsOut int64   `json:"records_out"`
 	Seconds    float64 `json:"seconds"`
+	// Batches is how many batches passed through. A step whose batch count
+	// approaches its record count is paying per-record overhead — the
+	// clearest sign that batching has gone wrong. The engine already measured
+	// this; it was being dropped in this conversion.
+	Batches int64 `json:"batches,omitempty"`
+	// WallSeconds is INCLUSIVE of every upstream step; Seconds is this step's
+	// own work. WallSeconds minus Seconds is time spent waiting, which is
+	// frequently the real bottleneck and is invisible from Seconds alone.
+	WallSeconds float64 `json:"wall_seconds,omitempty"`
+	// Bytes is the approximate payload size at this step. Exact at the source;
+	// approximate downstream, because operators share the flowing batch's
+	// arena, so a step that rebuilds records also counts bytes written
+	// upstream. Read the source's figure as the flow's true input size.
+	Bytes int64 `json:"bytes,omitempty"`
+}
+
+// Phases are the wall-clock spans of one execution OUTSIDE the pipeline —
+// the "where did the time actually go" record (ADR-0020).
+//
+// Fixed width: a handful of numbers per task, so it rides the execution
+// report at any throughput rather than needing a log pipeline. AdmissionMS is
+// the one that answers a question nothing else can — a task held on resource
+// capacity (ADR-0005) is invisible in every other measurement, so a runner at
+// its memory ceiling just looks "slow" without it.
+type Phases struct {
+	AdmissionMS float64 `json:"admission_ms,omitempty"` // queued on capacity before running
+	BindMS      float64 `json:"bind_ms,omitempty"`      // connector checkout/spawn + pipeline build
+	RunMS       float64 `json:"run_ms,omitempty"`       // the pipeline itself
+	TotalMS     float64 `json:"total_ms,omitempty"`     // submit to terminal state
 }
 
 // Task is one flow execution.
@@ -81,6 +110,9 @@ type Task struct {
 	// from where this attempt got to rather than from the beginning. Empty
 	// when the flow is not resume-eligible or its source cannot resume.
 	Checkpoint []byte `json:"checkpoint,omitempty"`
+
+	// Phases records where the execution's wall time went (ADR-0020).
+	Phases Phases `json:"phases,omitempty"`
 
 	// Captured holds per-step INPUT/OUTPUT samples when capture is enabled
 	// (test mode). Runner-only, redacted, ephemeral (evicted with the task).
