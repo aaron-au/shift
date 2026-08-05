@@ -55,7 +55,6 @@ func main() {
 		gatewayAddrs  = flag.String("gateways", os.Getenv("SHIFT_GATEWAYS"), "comma-separated gateway control-listener URLs to poll for inbound work (ADR-0038); empty = no gateway intake")
 		flowsDir      = flag.String("flows-dir", os.Getenv("SHIFT_FLOWS_DIR"), "directory of {\"document\":<flow>} JSON files to register as webhooks at start-up (the hub is authoritative when attached)")
 		gatewayPolls  = flag.Int("gateway-polls", envInt("SHIFT_GATEWAY_POLLS", 16), "parked polls per gateway; bounds concurrent inbound requests from one gateway (the resource governor is still the real ceiling)")
-		runnerLabels  = flag.String("labels", os.Getenv("SHIFT_RUNNER_LABELS"), "placement labels \"k=v,k=v\" matched against gateway route selectors (ADR-0030)")
 		hubCA         = flag.String("hub-ca", os.Getenv("SHIFT_HUB_CA_FILE"), "extra CA certificate for the hub (self-signed bundles)")
 		credFile      = flag.String("cred-file", os.Getenv("SHIFT_HUB_CRED_FILE"), "persist/reuse the runner's hub identity here (reg tokens are single-use)")
 		connCache     = flag.String("connector-cache", envOr("SHIFT_CONNECTOR_CACHE", ""), "cache dir for registry-fetched connectors (default <spill-dir or temp>/shift-connectors)")
@@ -229,7 +228,6 @@ func main() {
 	if addrs := splitList(*gatewayAddrs); len(addrs) > 0 {
 		gw := gwclient.New(gwclient.Options{
 			Addrs:   addrs,
-			Labels:  parseLabels(*runnerLabels),
 			Service: svc,
 			Lookup: func(name string) (*flowdoc.Document, bool) {
 				h, ok := hooks.Get(name)
@@ -247,7 +245,7 @@ func main() {
 			OnDone:          gatewayOnDone(report),
 		})
 		go gw.Run(loopCtx)
-		log.Printf("runnerd: gateway intake polling %d gateway(s) with %d label(s)", len(addrs), len(parseLabels(*runnerLabels)))
+		log.Printf("runnerd: gateway intake polling %d gateway(s) (placement labels come from the hub, ADR-0041)", len(addrs))
 	}
 
 	// Webhook ingress rate limit (M6c, ADR-0021), keyed {hook, source IP}.
@@ -398,24 +396,6 @@ func splitList(s string) []string {
 		if p := strings.TrimSpace(part); p != "" {
 			out = append(out, p)
 		}
-	}
-	return out
-}
-
-// parseLabels reads "k=v,k=v" placement labels. A malformed pair is SKIPPED
-// rather than fatal: labels widen what a runner is eligible for, never what it
-// is permitted to do, so a typo costing eligibility is the safe direction —
-// the runner simply never gets matched.
-func parseLabels(s string) map[string]string {
-	out := map[string]string{}
-	for _, pair := range splitList(s) {
-		k, v, ok := strings.Cut(pair, "=")
-		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
-		if !ok || k == "" {
-			log.Printf("runnerd: ignoring malformed label %q (want k=v)", pair)
-			continue
-		}
-		out[k] = v
 	}
 	return out
 }

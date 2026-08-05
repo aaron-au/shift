@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/aaron-au/shift/gateway/internal/config"
+	"github.com/aaron-au/shift/gateway/internal/identity"
 	"github.com/aaron-au/shift/gateway/internal/ingress"
 	"github.com/aaron-au/shift/gateway/internal/runners"
 )
@@ -47,6 +48,7 @@ func run() error {
 	var (
 		publicAddr  = flag.String("public", ":8443", "public listener (inbound requests)")
 		controlAddr = flag.String("control", "127.0.0.1:8444", "control listener (runner poll/deliver, hub config push)")
+		identityDir = flag.String("identity", os.Getenv("SHIFT_GATEWAY_IDENTITY"), "directory holding the hub-issued identity bundle (ADR-0041); enables mTLS on the control listener")
 		configFile  = flag.String("config", "", "bootstrap configuration file (development only; the hub is the source of truth)")
 		debug       = flag.Bool("debug", false, "verbose logging")
 	)
@@ -64,14 +66,29 @@ func run() error {
 			controlToken = strings.TrimSpace(string(raw))
 		}
 	}
+	// Load the identity bundle first: it decides whether the control listener
+	// can be mutually authenticated, which decides whether the weaker
+	// alternatives below are even considered.
+	var bundle *identity.Bundle
+	if *identityDir != "" {
+		b, err := identity.Load(*identityDir)
+		if err != nil {
+			return err
+		}
+		bundle = b
+	}
+
 	// FAIL CLOSED. An unauthenticated /poll reachable off-host lets anyone park
 	// a fake runner: they receive real inbound payloads and can deliver forged
 	// responses to real callers. That is interception plus response forgery
 	// from one open port, so the combination is refused outright rather than
 	// warned about — a warning is something a deployment scrolls past.
-	if controlToken == "" && !loopbackOnly(*controlAddr) {
-		return fmt.Errorf("control listener %q is not loopback and no shared secret is set: "+
-			"export SHIFT_GATEWAY_CONTROL_TOKEN (or _FILE), or bind -control to 127.0.0.1", *controlAddr)
+	//
+	// mTLS satisfies this outright: it authenticates every runner individually
+	// AND lets the runner verify the gateway, which a shared secret cannot.
+	if bundle == nil && controlToken == "" && !loopbackOnly(*controlAddr) {
+		return fmt.Errorf("control listener %q is not loopback and has no identity bundle: "+
+			"set -identity (ADR-0041), or export SHIFT_GATEWAY_CONTROL_TOKEN, or bind -control to 127.0.0.1", *controlAddr)
 	}
 
 	lvl := slog.LevelInfo
@@ -108,6 +125,20 @@ func run() error {
 	// impersonating a runner. It defaults to loopback for that reason.
 	ctrlMux := http.NewServeMux()
 	dispatch := ingress.NewDispatch(reg, log, controlToken)
+	if bundle != nil {
+		// Placement is asserted by the hub, keyed by the identity each runner
+		// proves with its client certificate (ADR-0041 §3). Without a bundle
+		// there is no proven identity, so the roster cannot be consulted and
+		// runners park labelled only by whatever the (absent) roster says —
+		// which is why the roster is wired ONLY in the mTLS case.
+		dispatch = dispatch.WithLabels(func(id string) (map[string]string, bool) {
+			c := h.Config()
+			if c == nil {
+				return nil, false
+			}
+			return c.LabelsFor(id)
+		})
+	}
 	dispatch.Routes(ctrlMux)
 	ctrlMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -131,6 +162,9 @@ func run() error {
 		Handler:           ctrlMux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	if bundle != nil {
+		ctrl.TLSConfig = bundle.ServerTLS()
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -144,15 +178,26 @@ func run() error {
 	}()
 
 	errc := make(chan error, 2)
-	go func() { errc <- serve(ctrl) }()
+	go func() { errc <- serveControl(ctrl, bundle != nil) }()
 	go func() { errc <- serve(srv) }()
 
 	// Unconfigured is the correct starting state, not a fault: the gateway
 	// serves 503 until the hub pushes a configuration, and its health endpoint
 	// says so, so an ungreeted gateway is visible from the hub.
-	log.Info("gateway listening",
-		"public", *publicAddr, "control", *controlAddr,
-		"control_authenticated", dispatch.Authenticated(), "configured", h.Configured())
+	logArgs := []any{
+		"public", *publicAddr, "control", *controlAddr, "configured", h.Configured(),
+	}
+	if bundle != nil {
+		// cert_expires is operationally load-bearing: a lapsed certificate
+		// strands this gateway permanently, because renewing it would mean
+		// dialling the hub. Renewal is the hub's job to PUSH (ADR-0041 §4).
+		logArgs = append(logArgs, "identity", bundle.ID, "control_mtls", true,
+			"cert_expires", bundle.NotAfter.UTC().Format(time.RFC3339))
+	} else {
+		logArgs = append(logArgs, "control_mtls", false,
+			"control_shared_secret", dispatch.Authenticated())
+	}
+	log.Info("gateway listening", logArgs...)
 
 	// Either listener failing is fatal: a gateway serving the public port with
 	// no control listener can never be handed a runner, and would answer 503
@@ -181,6 +226,22 @@ func loopbackOnly(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// serveControl starts the control listener, with TLS when an identity bundle
+// is present. ListenAndServeTLS with empty paths uses the certificates already
+// on TLSConfig.
+func serveControl(s *http.Server, tls bool) error {
+	var err error
+	if tls {
+		err = s.ListenAndServeTLS("", "")
+	} else {
+		err = s.ListenAndServe()
+	}
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
 func serve(s *http.Server) error {

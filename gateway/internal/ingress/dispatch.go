@@ -48,17 +48,36 @@ const defaultPollWait = 30 * time.Second
 // indistinguishable from a leaked goroutine.
 const maxPollWait = 5 * time.Minute
 
-// pollRequest is what a runner sends to park itself. Labels are what the
-// runner IS; the gateway matches route selectors against them (ADR-0030).
+// pollRequest is what a runner sends to park itself.
+//
+// It carries NO labels. It used to (ADR-0038 §5 as first built), and that was
+// a runner asserting its own placement — so a compromised or misconfigured one
+// could claim `environment: production` and be handed production traffic, with
+// nothing in the system to disagree. Labels now come from the hub's roster,
+// keyed by the identity the runner PROVED with its client certificate
+// (ADR-0041 §3).
+//
+// Anything a DMZ component accepts from inside the network is surface; this
+// message is now a wait hint and nothing else.
 type pollRequest struct {
-	Labels      map[string]string `json:"labels,omitempty"`
-	WaitSeconds float64           `json:"wait_seconds,omitempty"`
+	WaitSeconds float64 `json:"wait_seconds,omitempty"`
 }
+
+// LabelSource supplies the hub-asserted labels for a proven runner id, and
+// reports whether the roster knows that runner at all.
+type LabelSource func(runnerID string) (map[string]string, bool)
 
 // DispatchHandler serves the runner-facing endpoints.
 type DispatchHandler struct {
 	reg *runners.Registry
 	log *slog.Logger
+	// labels resolves a runner id to its hub-asserted labels. nil means the
+	// roster is not in use yet (pre-ADR-0041 deployments), in which case a
+	// runner parks with no labels and can serve only unrestricted routes.
+	labels LabelSource
+	// peerID extracts the proven runner id from a request. Injectable so the
+	// wire tests need no TLS.
+	peerID func(*http.Request) string
 	// tokenSHA256 is the hex SHA-256 of the shared secret a runner must
 	// present. Empty means the endpoints are UNAUTHENTICATED, which is only
 	// tenable on a loopback bind — see RequireAuth.
@@ -71,7 +90,7 @@ func NewDispatch(reg *runners.Registry, log *slog.Logger, token string) *Dispatc
 	if log == nil {
 		log = slog.Default()
 	}
-	d := &DispatchHandler{reg: reg, log: log}
+	d := &DispatchHandler{reg: reg, log: log, peerID: tlsPeerID}
 	if token != "" {
 		sum := sha256.Sum256([]byte(token))
 		// Only the digest is retained. The plaintext is never stored, never
@@ -79,6 +98,30 @@ func NewDispatch(reg *runners.Registry, log *slog.Logger, token string) *Dispatc
 		d.tokenSHA256 = hex.EncodeToString(sum[:])
 	}
 	return d
+}
+
+// WithLabels wires the hub-pushed roster in. Once set, a runner whose proven
+// identity is absent from the roster is REFUSED rather than treated as
+// label-less: label-less satisfies every empty selector, so an unvouched
+// runner would receive precisely the traffic nobody restricted.
+func (d *DispatchHandler) WithLabels(src LabelSource) *DispatchHandler {
+	d.labels = src
+	return d
+}
+
+// WithPeerID overrides how a proven runner id is read from a request.
+func (d *DispatchHandler) WithPeerID(fn func(*http.Request) string) *DispatchHandler {
+	d.peerID = fn
+	return d
+}
+
+// tlsPeerID reads the runner id from the client certificate subject. Empty
+// when the connection is not mutually authenticated.
+func tlsPeerID(r *http.Request) string {
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		return ""
+	}
+	return r.TLS.PeerCertificates[0].Subject.CommonName
 }
 
 // Authenticated reports whether a shared secret is configured.
@@ -137,7 +180,24 @@ func (d *DispatchHandler) poll(w http.ResponseWriter, r *http.Request) {
 		wait = maxPollWait
 	}
 
-	req := d.reg.Poll(r.Context(), pr.Labels, wait)
+	// Labels are ASSERTED BY THE HUB, never taken from the request. The runner
+	// proves who it is; the roster says what it is.
+	var labels map[string]string
+	if d.labels != nil {
+		id := d.peerID(r)
+		got, known := d.labels(id)
+		if !known {
+			// Fail closed. A runner the hub has not vouched for may be new
+			// (the roster push is seconds behind) or may not belong here at
+			// all, and the two are indistinguishable from this side.
+			d.log.Warn("poll from a runner absent from the roster", "runner", id)
+			http.Error(w, "runner not in roster", http.StatusForbidden)
+			return
+		}
+		labels = got
+	}
+
+	req := d.reg.Poll(r.Context(), labels, wait)
 	if req == nil {
 		// Nothing arrived in the window. 204 rather than an error: an empty
 		// poll is the NORMAL outcome, and a runner that treated it as a

@@ -40,23 +40,6 @@ func TestGatewayOnDoneReportsWithAHub(t *testing.T) {
 	}
 }
 
-// parseLabels feeds placement. A malformed pair must be skipped rather than
-// fatal: labels widen what a runner is ELIGIBLE for, never what it may do, so
-// a typo costing eligibility is the safe direction.
-func TestParseLabels(t *testing.T) {
-	got := parseLabels("environment=production, workload=api ,broken,=novalue,k=")
-	want := map[string]string{"environment": "production", "workload": "api", "k": ""}
-
-	if len(got) != len(want) {
-		t.Fatalf("parseLabels = %v, want %v", got, want)
-	}
-	for k, v := range want {
-		if got[k] != v {
-			t.Errorf("label %q = %q, want %q", k, got[k], v)
-		}
-	}
-}
-
 // An empty gateway list must yield NO addresses, not one empty address: a
 // trailing comma or an unset env var would otherwise start a poll loop against
 // "" and spin on connection errors forever.

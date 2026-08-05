@@ -67,6 +67,10 @@ func (h *Handler) SetConfig(c *config.Config) error {
 // HUB — a passive component that is never dialled is otherwise silent.
 func (h *Handler) Configured() bool { return h.cfg.Load() != nil }
 
+// Config returns the active configuration, or nil before the hub has pushed
+// one. Callers must treat nil as "nothing is permitted yet".
+func (h *Handler) Config() *config.Config { return h.cfg.Load() }
+
 // ConfigVersion returns the active configuration version, or 0.
 func (h *Handler) ConfigVersion() int64 {
 	if c := h.cfg.Load(); c != nil {

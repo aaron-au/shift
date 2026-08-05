@@ -23,16 +23,28 @@ import (
 func TestEndToEndPollThenDeliver(t *testing.T) {
 	reg := runners.New()
 	pub := ingress.New(reg, nil)
-	if err := pub.SetConfig(&config.Config{Version: 1, Routes: []config.Route{{
-		Path: "/orders", Flow: "ingest",
-		Selector:      config.Selector{"environment": "production"},
-		AuthPrincipal: "acme-erp",
-	}}}); err != nil {
+	// Labels come from the hub's roster, keyed by the identity the runner
+	// PROVES with its client certificate (ADR-0041 §3) — never from its poll.
+	cfg := &config.Config{Version: 1,
+		Routes: []config.Route{{
+			Path: "/orders", Flow: "ingest",
+			Selector:      config.Selector{"environment": "production"},
+			AuthPrincipal: "acme-erp",
+		}},
+		Runners: []config.Runner{{
+			ID:     "rnr-1",
+			Labels: map[string]string{"environment": "production", "workload": "api"},
+		}},
+	}
+	if err := pub.SetConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
 
 	mux := http.NewServeMux()
-	ingress.NewDispatch(reg, nil, "").Routes(mux)
+	ingress.NewDispatch(reg, nil, "").
+		WithLabels(cfg.LabelsFor).
+		WithPeerID(func(*http.Request) string { return "rnr-1" }). // stands in for mTLS
+		Routes(mux)
 	ctrl := httptest.NewServer(mux)
 	defer ctrl.Close()
 	public := httptest.NewServer(pub)
@@ -70,10 +82,7 @@ func TestEndToEndPollThenDeliver(t *testing.T) {
 // an answer. It asserts what the gateway is contractually obliged to hand it.
 func fakeRunner(t *testing.T, ctrlURL string) error {
 	t.Helper()
-	pollBody, _ := json.Marshal(map[string]any{
-		"labels":       map[string]string{"environment": "production", "workload": "api"},
-		"wait_seconds": 5,
-	})
+	pollBody, _ := json.Marshal(map[string]any{"wait_seconds": 5})
 	resp, err := post(t, ctrlURL+"/api/v1/gw/poll", bytes.NewReader(pollBody))
 	if err != nil {
 		return err

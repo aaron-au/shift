@@ -85,6 +85,9 @@ github.com/aaron-au/shift/sdk/host 86
 # The gateway is the DMZ front door (ADR-0038). Its packages are small and
 # pure — a registry, a config model, an HTTP handler — with no subprocess or
 # database dependency, so there is no reason for them to be thinly covered.
+# identity is the mTLS material loader (ADR-0041). Small, pure, and the one
+# place a mistake means either "nothing can connect" or "anything can".
+github.com/aaron-au/shift/gateway/internal/identity 85
 github.com/aaron-au/shift/gateway/internal/runners 95
 github.com/aaron-au/shift/gateway/internal/config 96
 github.com/aaron-au/shift/gateway/internal/ingress 84

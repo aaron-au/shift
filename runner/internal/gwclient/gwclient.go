@@ -21,6 +21,7 @@ package gwclient
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -67,9 +68,13 @@ type Options struct {
 	// Addrs are the gateway control-listener base URLs to poll. One loop runs
 	// per address, concurrently.
 	Addrs []string
-	// Labels are what this runner IS (ADR-0030). Gateways match route
-	// selectors against them.
-	Labels map[string]string
+	// NB: there is deliberately NO Labels field. A runner used to state its own
+	// placement on every poll, which meant a compromised or misconfigured one
+	// could claim `environment: production` and be handed production traffic.
+	// Labels now come from the hub's roster, keyed by the identity this runner
+	// PROVES with its client certificate (ADR-0041 §3). A runner tells a
+	// gateway nothing about itself.
+
 	// Service executes the flows.
 	Service *service.Service
 	// Lookup resolves flow names to documents (hub-synced webhook registry).
@@ -82,10 +87,15 @@ type Options struct {
 	// is sent as a bearer credential on both calls. Empty is valid only
 	// against an unauthenticated (loopback-bound) gateway.
 	//
-	// Interim: ADR-0038 §6a replaces this with mutual TLS, which also
-	// authenticates the GATEWAY to the runner — this direction only proves the
-	// runner is entitled to receive work, not that the work is genuine.
+	// SUPERSEDED by TLS below (ADR-0041). A shared secret proves only that the
+	// caller knows a string: it cannot say WHICH runner is calling, so nothing
+	// can be attributed or revoked per runner, and it gives the runner no way
+	// to tell a real gateway from anything that answered on that address.
 	Token string
+	// TLS carries this runner's client certificate and the control-plane CA.
+	// When set, the runner presents its identity on every call (which is what
+	// the gateway resolves labels by) and verifies the gateway in return.
+	TLS *tls.Config
 	// PollWait is the long-poll window (default 30s).
 	PollWait time.Duration
 	// PollConcurrency is how many polls this runner parks PER GATEWAY
@@ -147,19 +157,26 @@ func New(opts Options) *Loop {
 		// Observed at 16 polls against a single gateway. Two connections per
 		// poll slot (one parked, one delivering) plus headroom.
 		perHost := opts.PollConcurrency*2 + 8
+		tr := &http.Transport{
+			Proxy:               http.ProxyFromEnvironment,
+			MaxIdleConnsPerHost: perHost,
+			MaxConnsPerHost:     0, // unbounded: the poll count is the real bound
+			MaxIdleConns:        perHost * max(len(opts.Addrs), 1),
+			IdleConnTimeout:     90 * time.Second,
+			TLSClientConfig:     opts.TLS,
+		}
+		// ForceAttemptHTTP2 matters more than it looks: over h2, every parked
+		// poll to one gateway shares a SINGLE connection instead of holding its
+		// own socket, which is the pressure that caused the port exhaustion
+		// this pool is sized around (docs/bench-gateway.md).
+		tr.ForceAttemptHTTP2 = true
 		cl = &http.Client{
 			// No client-side timeout: a poll legitimately blocks for the whole
 			// window and an execution may legitimately take longer still. The
 			// request context bounds both, which is the honest place for it —
 			// a blanket Timeout here would abort long-running work as if it
 			// had failed.
-			Transport: &http.Transport{
-				Proxy:               http.ProxyFromEnvironment,
-				MaxIdleConnsPerHost: perHost,
-				MaxConnsPerHost:     0, // unbounded: the poll count is the real bound
-				MaxIdleConns:        perHost * max(len(opts.Addrs), 1),
-				IdleConnTimeout:     90 * time.Second,
-			},
+			Transport: tr,
 		}
 	}
 	return &Loop{opts: opts, log: log, cl: cl}
@@ -246,7 +263,7 @@ type inbound struct {
 
 // poll parks against one gateway. It returns (nil, nil) on an empty window.
 func (l *Loop) poll(ctx context.Context, addr string) (*inbound, error) {
-	body, err := encodePoll(l.opts.Labels, l.opts.PollWait)
+	body, err := encodePoll(l.opts.PollWait)
 	if err != nil {
 		return nil, err
 	}

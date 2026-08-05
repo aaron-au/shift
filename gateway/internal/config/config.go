@@ -25,6 +25,10 @@ type Config struct {
 	// from the hub, which is where the administrator actually is.
 	Version int64   `json:"version"`
 	Routes  []Route `json:"routes"`
+	// Runners is the hub's roster: which runners may serve this gateway and
+	// what each one IS (ADR-0041 §3). Labels come from here, never from a
+	// runner's poll — see roster.go.
+	Runners []Runner `json:"runners,omitempty"`
 	// TrustedProxies are the CIDRs whose X-Forwarded-* headers are believed.
 	// Empty means believe none, which is the safe default: a spoofable
 	// forwarded header would defeat every per-route IP allowlist below.
@@ -110,7 +114,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: bad trusted proxy CIDR %q: %w", p, err)
 		}
 	}
-	return nil
+	return c.validateRunners()
 }
 
 // Lookup finds the route serving a request, or nil. Method-specific routes win

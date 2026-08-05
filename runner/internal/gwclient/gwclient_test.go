@@ -1,6 +1,7 @@
 package gwclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -43,12 +44,16 @@ func TestPollExecuteDeliver(t *testing.T) {
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == pollPath:
+			raw, _ := io.ReadAll(r.Body)
 			var pr pollRequest
-			if err := json.NewDecoder(r.Body).Decode(&pr); err != nil {
+			if err := json.Unmarshal(raw, &pr); err != nil {
 				t.Errorf("poll body: %v", err)
 			}
-			if pr.Labels["environment"] != "production" {
-				t.Errorf("labels = %v, want the runner's own", pr.Labels)
+			_ = pr
+			// The poll body must NOT carry labels: a runner that could state
+			// its own placement could promote itself (ADR-0041 §3).
+			if bytes.Contains(raw, []byte("labels")) {
+				t.Errorf("poll body carries labels: %s", raw)
 			}
 			mu.Lock()
 			first := !handedOut
@@ -90,7 +95,6 @@ func TestPollExecuteDeliver(t *testing.T) {
 
 	l := New(Options{
 		Addrs:    []string{gw.URL},
-		Labels:   map[string]string{"environment": "production"},
 		Service:  svc,
 		Lookup:   func(name string) (*flowdoc.Document, bool) { return doc, name == "echo" },
 		PollWait: time.Second,
