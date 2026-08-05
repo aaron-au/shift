@@ -1,6 +1,6 @@
 .PHONY: setup build proto notice test bench bench-report cover cover-bump fmt fmt-check vet lint actions vuln leaks check tidy tidy-check clean fuzz
 
-MODULES := engine sdk pkg runner hub connectors
+MODULES := engine sdk pkg runner hub gateway connectors
 VERSION ?= dev
 LDFLAGS := -s -w -X github.com/aaron-au/shift/pkg/buildinfo.Version=$(VERSION)
 

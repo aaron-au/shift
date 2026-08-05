@@ -76,6 +76,24 @@ linters:
             - pkg: github.com/aaron-au/shift/hub
             - pkg: github.com/aaron-au/shift/runner
             - pkg: github.com/aaron-au/shift/connectors
+        gateway: # DMZ front door: stdlib only, deliberately
+          # The gateway is the one component that sits in a DMZ, so what it can
+          # import is a security property, not a style preference. It proxies
+          # bytes and holds no domain model: importing the payload plane (sdk,
+          # engine/stream) or the control plane (hub) would put code — and
+          # eventually credentials — in the DMZ that ADR-0038 §3 says must not
+          # be there.
+          files: ["**/gateway/internal/**", "**/gateway/cmd/**"]
+          deny:
+            - pkg: github.com/aaron-au/shift/sdk
+              desc: "the gateway never touches the connector/payload plane (ADR-0038)"
+            - pkg: github.com/aaron-au/shift/engine
+              desc: "the gateway proxies bytes; it has no record model"
+            - pkg: github.com/aaron-au/shift/hub
+              desc: "the gateway receives pushed config over HTTP; it must not import hub code"
+            - pkg: github.com/aaron-au/shift/runner
+              desc: "runners poll the gateway over HTTP; no shared code"
+            - pkg: github.com/aaron-au/shift/connectors
         connectors: # connector binaries: connectors → sdk → engine
           files: ["**/connectors/**"]
           deny:

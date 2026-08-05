@@ -184,13 +184,92 @@ health-check loop, and no round trip to the hub on the request path.
 This is why the arrangement is not merely a firewall concession. It is
 structurally simpler than the one it replaces.
 
+### 4a. High availability: every runner polls every eligible gateway
+
+Amendment, 2026-08-05. A gateway's poll registry is **in-memory and its own** —
+a runner parked on gateway 1 is invisible to gateway 2. That is the right
+design, because the alternative is shared state between DMZ hosts, which is
+exactly what §4 exists to avoid. It does mean HA has a shape:
+
+**A runner polls every gateway eligible to send it work**, accepts from
+whichever hands over first, and re-polls when capacity allows. No coordination,
+no shared registry, no leader.
+
+The cost is small enough to state precisely. 100 runners across 5 gateways is
+100 parked connections *per gateway* — roughly 8 KB of goroutine stack each,
+under a megabyte — and a 30-second poll window is about 3 requests/sec of poll
+traffic per gateway. Three orders of magnitude below anything that matters.
+
+**Which gateways a runner polls is computed by the hub**, not configured on the
+runner and not discovered. The hub already holds the gateway records and the
+runner labels, so it hands each runner its gateway address list on the config
+sync that already exists. Adding a gateway therefore reconfigures nothing: the
+next sync includes it. (Aaron's framing — the runner reaches out to gateways
+matching its labels — with the selector evaluated hub-side, since that is where
+both halves of the data already live.)
+
+**Public VIP and runner-facing addresses are different things.** A deployment
+with several gateways will have a load balancer in front for inbound traffic.
+Runners must NOT connect through it: a poll parked on gateway 3 is only usable
+by gateway 3, so addressing the VIP would strand most of the fleet behind
+whichever backend the balancer happened to pick. Runners address each gateway
+individually.
+
+**A runner parked on several gateways can be handed several tasks at once**,
+because capacity is evaluated when it decides to poll, not when work arrives.
+Two mitigations compose: the runner drops its remaining polls the moment it
+accepts work, shrinking the window; and anything that still lands waits on the
+existing resource-governed admission (ADR-0005) — which is precisely what
+hub-leased tasks already do. The overshoot degrades into tested behaviour
+rather than a new failure mode.
+
+### 4b. Identity: strip, then stamp
+
+The gateway authenticates the caller, so the runner should not have to. It
+passes on **who called** rather than **the credential they used** — which is
+what lets a certificate-authenticated caller work without the runner touching
+any PKI: the gateway converts a certificate (or a token, or an HMAC signature)
+into an assertion, and the assertion is all that travels.
+
+Every credential in the pushed configuration therefore carries a **principal**
+alongside its verification material, so "who" is a configured fact rather than
+something derived per auth method.
+
+The stamped headers are a **statically coded set** — not configurable, not
+extensible per route — so a reader knows exactly what a runner can be told:
+
+```
+X-Shift-Principal   who the gateway authenticated
+X-Shift-Route       the route that matched
+X-Shift-Request-Id  the id correlating gateway, runner and hub records
+X-Shift-Client-Ip   the caller as resolved in §6 (trusted-proxy aware)
+```
+
+**Every inbound header matching `x-shift-*`, case-insensitively, is stripped
+before stamping.** No exceptions and no opt-out. This is the whole security
+property: if a caller could send `X-Shift-Principal: admin` and have it
+survive, the gateway would have built an authentication bypass *with an audit
+trail that lies about it* — worse than having no identity propagation at all.
+Strip-then-stamp, in that order, unconditionally.
+
+Downstream this gives the runner something it has never had: the ability to
+filter and report on a specific caller's actions, since the principal is a
+first-class field rather than something buried in a credential it cannot
+interpret.
+
 ### 5. Routing and placement reuse ADR-0030
 
 *Which* runners may serve a given path still comes from the placement model
-that already exists — runner groups and labels (ADR-0030): `prod` vs
-`non-prod`, region, capability. A flow declares its target group and the
-scheduler already resolves placement that way; the gateway consumes the same
-data rather than growing a second targeting model that would drift.
+that already exists — runner groups and labels (ADR-0030). A flow declares its
+target and the scheduler already resolves placement that way; the gateway
+consumes the same data rather than growing a second targeting model that would
+drift.
+
+Matching is on **label selectors**, not a single group name: a route names a
+label set (`{environment: production, workload: api}`) and a parked runner
+matches when its own labels are a superset. A single group string cannot
+express "any production API runner", which is the shape real fleets have
+(Aaron, 2026-08-05).
 
 The division is clean: **the hub decides eligibility, the poll set decides
 availability.** Group membership arrives with the pushed configuration (§6a);
@@ -485,11 +564,12 @@ decisions, and a reader should see it stated rather than infer it.
 
 ## Open questions
 
-- **Gateway HA.** Hub-owned configuration (§6) answers the shared-certificate
-  half — every replica converges on the same bundle. What remains open is
-  whether per-webhook rate limits are per-replica or coordinated. Per-replica
-  is cheap and approximately right; coordinated needs shared state the DMZ
-  should not hold.
+- **Gateway HA.** Answered in §4a (every runner polls every eligible gateway;
+  the hub computes the list) and §6 (every replica converges on the same pushed
+  configuration). What remains open is whether per-route rate limits are
+  per-replica or coordinated. Per-replica is cheap and approximately right;
+  coordinated needs shared state the DMZ should not hold, so per-replica is the
+  likely answer with the limit documented as approximate under HA.
 - **Long-poll ingress latency under load.** In the no-inbound topology, a
   request arriving when no runner is currently polling waits for the next poll.
   Bounded by poll interval; whether that is acceptable for synchronous flows

@@ -75,6 +75,16 @@ connectors/ Connector binaries: gen (bench/test), http (streaming GET source —
             on the node, emit a status record, idempotent); mandatory host-key verification + network
             guard fail-closed. Verbs presented as one node + verb dropdown, ADR-0024)
 proto/      gRPC contracts (ADR-0007: batches cross as opaque binary frames, never per-record proto)
+gateway/    gatewayd (ADR-0038, in progress — see docs/dev/09-gateway.md): the OPTIONAL, sole
+  internal/{config,runners,ingress}   publicly reachable component, DMZ-deployable. Stdlib-only by
+                                      depguard rule (a security property: this is the one box in a
+                                      DMZ). Nothing in the DMZ initiates inward — hub PUSHES config,
+                                      runners LONG-POLL for work, so the set of runners polling IS
+                                      the set available (no liveness table, no dead backends, and
+                                      admission+load-balancing from one mechanism). No runner ⇒ 503,
+                                      never a queue. Built: config model, poll registry, ingress
+                                      (auth/allowlist/headers/route/stream). Not yet: mTLS control
+                                      listener + identity bundle, hub push side, runner poll side.
 runner/     runnerd (M3a+M3b+M4b, done — see docs/dev/04-runner.md): flow docs → engine pipelines,
   internal/{flow,connpool,task,service,api}   resource-governed admission (ADR-0005), connector pool,
                                               capacity benchmark (ADR-0008), embedded dashboard on :8340

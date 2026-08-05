@@ -44,3 +44,4 @@ is wrong in the same PR.
 - `docs/REVIEW-2026-07.md` + `_archive/` — the 2025 prototype, why it was
   restarted, and the lessons register. Read §3 before "improving" anything
   back toward v0 patterns.
+- `09-gateway.md` — the inbound gateway: the optional, DMZ-deployable public front door (ADR-0038).
