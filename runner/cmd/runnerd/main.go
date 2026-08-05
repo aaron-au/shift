@@ -7,23 +7,30 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/aaron-au/shift/pkg/flowdoc"
 	"github.com/aaron-au/shift/runner/internal/api"
 	"github.com/aaron-au/shift/runner/internal/auth"
 	"github.com/aaron-au/shift/runner/internal/bind"
 	"github.com/aaron-au/shift/runner/internal/connstore"
+	"github.com/aaron-au/shift/runner/internal/gwclient"
 	"github.com/aaron-au/shift/runner/internal/hubclient"
 	"github.com/aaron-au/shift/runner/internal/leaseloop"
 	"github.com/aaron-au/shift/runner/internal/ratelimit"
@@ -45,6 +52,9 @@ func main() {
 		spillDir      = flag.String("spill-dir", os.Getenv("SHIFT_SPILL_DIR"), "scratch dir (default: OS temp)")
 		name          = flag.String("name", envOr("SHIFT_RUNNER_NAME", hostname()), "runner display name")
 		hubURL        = flag.String("hub", os.Getenv("SHIFT_HUB_URL"), "hub base URL; enables the lease intake (M3b)")
+		gatewayAddrs  = flag.String("gateways", os.Getenv("SHIFT_GATEWAYS"), "comma-separated gateway control-listener URLs to poll for inbound work (ADR-0038); empty = no gateway intake")
+		flowsDir      = flag.String("flows-dir", os.Getenv("SHIFT_FLOWS_DIR"), "directory of {\"document\":<flow>} JSON files to register as webhooks at start-up (the hub is authoritative when attached)")
+		runnerLabels  = flag.String("labels", os.Getenv("SHIFT_RUNNER_LABELS"), "placement labels \"k=v,k=v\" matched against gateway route selectors (ADR-0030)")
 		hubCA         = flag.String("hub-ca", os.Getenv("SHIFT_HUB_CA_FILE"), "extra CA certificate for the hub (self-signed bundles)")
 		credFile      = flag.String("cred-file", os.Getenv("SHIFT_HUB_CRED_FILE"), "persist/reuse the runner's hub identity here (reg tokens are single-use)")
 		connCache     = flag.String("connector-cache", envOr("SHIFT_CONNECTOR_CACHE", ""), "cache dir for registry-fetched connectors (default <spill-dir or temp>/shift-connectors)")
@@ -195,8 +205,46 @@ func main() {
 	// periodic sync (the hub is authoritative for config); standalone
 	// runners populate it via the local PUT /api/webhooks endpoint.
 	hooks := webhook.NewRegistry()
+	if *flowsDir != "" {
+		// Seed from a local directory. Useful for a standalone runner and for
+		// container deployments where the flow ships as a mounted file, and
+		// harmless alongside a hub: the sync below REPLACES the registry, so
+		// the hub stays authoritative the moment it says anything.
+		n, err := loadFlowDir(*flowsDir, hooks)
+		if err != nil {
+			log.Fatalf("runnerd: -flows-dir: %v", err)
+		}
+		log.Printf("runnerd: loaded %d flow(s) from %q", n, *flowsDir) //nolint:gosec // G706: operator-supplied flag, %q-escaped
+	}
 	if client != nil {
 		go syncWebhooks(loopCtx, client, hooks)
+	}
+
+	// Gateway intake (ADR-0038). Optional and absent by default: a deployment
+	// whose flows are all scheduled or polled never runs a gateway, and
+	// carries zero inbound attack surface as a result. The runner reaches OUT
+	// to each gateway, so it needs no inbound reachability of its own — which
+	// is what lets it sit behind a deny-all ingress policy.
+	if addrs := splitList(*gatewayAddrs); len(addrs) > 0 {
+		gw := gwclient.New(gwclient.Options{
+			Addrs:   addrs,
+			Labels:  parseLabels(*runnerLabels),
+			Service: svc,
+			Lookup: func(name string) (*flowdoc.Document, bool) {
+				h, ok := hooks.Get(name)
+				if !ok {
+					return nil, false
+				}
+				return h.Parsed, true
+			},
+			Bind: func(ctx context.Context, doc *flowdoc.Document) (*flowdoc.Document, []string, error) {
+				return binder.Apply(ctx, doc)
+			},
+			Log:    slog.Default(),
+			OnDone: func(t task.Task) { report(t, "gateway") },
+		})
+		go gw.Run(loopCtx)
+		log.Printf("runnerd: gateway intake polling %d gateway(s) with %d label(s)", len(addrs), len(parseLabels(*runnerLabels)))
 	}
 
 	// Webhook ingress rate limit (M6c, ADR-0021), keyed {hook, source IP}.
@@ -271,6 +319,88 @@ func hostname() string {
 		return "runner"
 	}
 	return h
+}
+
+// loadFlowDir registers every *.json file in dir as a webhook, named after
+// the file. It returns how many it registered.
+//
+// The hub remains authoritative: syncWebhooks REPLACES the registry wholesale,
+// so anything seeded here survives only until the hub first speaks. That
+// ordering is deliberate — a locally-mounted file must never be able to
+// override, or silently resurrect, a flow the hub has retired.
+func loadFlowDir(dir string, hooks *webhook.Registry) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name())) //nolint:gosec // G304: operator-configured directory
+		if err != nil {
+			return n, err
+		}
+		var req struct {
+			Document json.RawMessage `json:"document"`
+			Token    string          `json:"token"`
+		}
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return n, fmt.Errorf("%s: %w", e.Name(), err)
+		}
+		name := strings.TrimSuffix(e.Name(), ".json")
+		// Validate at load, not at first request: a malformed flow mounted
+		// into a container should fail the pod, not the caller who happens to
+		// trigger it first.
+		h, err := webhook.NewHook(name, req.Document, hashToken(req.Token))
+		if err != nil {
+			return n, fmt.Errorf("%s: %w", e.Name(), err)
+		}
+		hooks.Put(h)
+		n++
+	}
+	return n, nil
+}
+
+// hashToken mirrors the API's per-hook token hashing: the plaintext is never
+// stored, only its digest.
+func hashToken(tok string) string {
+	if tok == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(tok))
+	return hex.EncodeToString(sum[:])
+}
+
+// splitList parses a comma-separated list, dropping empties so a trailing
+// comma or a blank env var does not become an address of "".
+func splitList(s string) []string {
+	var out []string
+	for part := range strings.SplitSeq(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// parseLabels reads "k=v,k=v" placement labels. A malformed pair is SKIPPED
+// rather than fatal: labels widen what a runner is eligible for, never what it
+// is permitted to do, so a typo costing eligibility is the safe direction —
+// the runner simply never gets matched.
+func parseLabels(s string) map[string]string {
+	out := map[string]string{}
+	for _, pair := range splitList(s) {
+		k, v, ok := strings.Cut(pair, "=")
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if !ok || k == "" {
+			log.Printf("runnerd: ignoring malformed label %q (want k=v)", pair)
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 func envOr(key, def string) string {

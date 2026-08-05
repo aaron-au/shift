@@ -1,0 +1,81 @@
+# The runner: inside the internal zone, unreachable from the DMZ, and serving
+# public HTTP traffic anyway.
+#
+# It has no Service and no inbound port for gateway traffic. It does not need
+# one. It is a CLIENT of the gateway (ADR-0038 §4), which is what makes the
+# deny-all-ingress-from-DMZ policy survivable.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shift-runner-flows
+  namespace: shift-internal
+data:
+  # The flow the gateway route names. Registered on the runner at start-up by
+  # the sidecar below; in a real deployment the hub syncs it.
+  echo.json: |
+    {
+      "document": {
+        "name": "echo",
+        "source": {"connector": "@webhook"},
+        "sink": {"connector": "@response"}
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shift-runner
+  namespace: shift-internal
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shift-runner
+  template:
+    metadata:
+      labels:
+        app: shift-runner
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: runnerd
+          image: shift/runnerd:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - -listen=127.0.0.1:8340
+            # BOTH gateway replicas, addressed individually. Going through the
+            # headless service name would resolve to one arbitrary pod and
+            # strand the other (ADR-0038 §4a). The hub computes this list in a
+            # real deployment — it already holds the gateway records and the
+            # runner labels.
+            - -gateways=http://shift-gateway-0.shift-gateway-control.shift-dmz.svc.cluster.local:8444,http://shift-gateway-1.shift-gateway-control.shift-dmz.svc.cluster.local:8444
+            # What this runner IS. Gateway route selectors match against these.
+            - -labels=environment=production,workload=api
+            # Stands in for the hub's webhook sync, which is what supplies
+            # flows in a real deployment.
+            - -flows-dir=/etc/shift/flows
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 512Mi}
+          volumeMounts:
+            - name: flows
+              mountPath: /etc/shift/flows
+              readOnly: true
+            - name: scratch
+              mountPath: /tmp
+      volumes:
+        - name: flows
+          configMap:
+            name: shift-runner-flows
+        - name: scratch
+          emptyDir: {}

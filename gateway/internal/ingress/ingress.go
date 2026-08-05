@@ -108,26 +108,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		maxBody = defaultMaxBody
 	}
 
+	id := h.newI()
 	req := &runners.Request{
-		ID:      h.newI(),
+		ID:      id,
 		Flow:    route.Flow,
 		Method:  r.Method,
 		Path:    r.URL.Path,
-		Headers: forwardable(r.Header),
+		Headers: stamp(forwardable(r.Header), route, id, ip),
 		// The body streams to the runner under a hard cap. MaxBytesReader
 		// makes an over-long body an error at the point of reading rather
 		// than something the gateway has already accepted into memory.
 		Body: http.MaxBytesReader(w, r.Body, maxBody),
 	}
 
-	resp, err := h.reg.Dispatch(r.Context(), route.Group, req)
+	resp, err := h.reg.Dispatch(r.Context(), route.Selector, req)
 	switch {
 	case errors.Is(err, runners.ErrNoRunner):
 		// 503, never a queue. Retry-After tells a well-behaved sender to come
 		// back rather than treating this as a permanent failure.
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "no runner available", http.StatusServiceUnavailable)
-		h.log.Warn("no runner available", "flow", route.Flow, "group", route.Group)
+		h.log.Warn("no runner available", "flow", route.Flow, "selector", route.Selector.String())
 		return
 	case errors.Is(err, runners.ErrDeliveryTimeout):
 		http.Error(w, "runner did not respond", http.StatusGatewayTimeout)
@@ -190,6 +191,28 @@ func headersPresent(r *http.Request, required map[string]string) bool {
 	return true
 }
 
+// shiftPrefix is the reserved namespace for gateway-asserted facts. Nothing
+// carrying it may survive from the caller (see forwardable).
+const shiftPrefix = "X-Shift-"
+
+// The statically coded stamp set (ADR-0038 §4b). Not configurable and not
+// per-route, so a reader of the runner side knows the complete list of things
+// a gateway can assert.
+const (
+	HeaderPrincipal = shiftPrefix + "Principal"  // who the gateway authenticated
+	HeaderRoute     = shiftPrefix + "Route"      // the route that matched
+	HeaderRequestID = shiftPrefix + "Request-Id" // correlates gateway/runner/hub
+	HeaderClientIP  = shiftPrefix + "Client-Ip"  // caller, trusted-proxy aware
+	HeaderFlow      = shiftPrefix + "Flow"       // the flow to run
+	HeaderMethod    = shiftPrefix + "Method"     // the caller's HTTP method
+	HeaderPath      = shiftPrefix + "Path"       // the caller's path
+)
+
+// anonymous is the principal for a route that declares no credential. It is a
+// named value rather than an empty header so "nobody authenticated" and "the
+// gateway forgot to stamp" are distinguishable downstream.
+const anonymous = "anonymous"
+
 // hopByHop headers are connection-scoped and must not be forwarded to the
 // runner; Authorization is dropped because the gateway has already consumed
 // it and the runner has no business seeing the caller's credential.
@@ -199,15 +222,44 @@ var hopByHop = map[string]bool{
 	"Transfer-Encoding": true, "Upgrade": true, "Authorization": true,
 }
 
+// forwardable copies the caller's headers, dropping hop-by-hop ones and
+// STRIPPING the entire X-Shift-* namespace.
+//
+// The strip is unconditional and has no opt-out. It is the whole security
+// property of §4b: if a caller could send `X-Shift-Principal: admin` and have
+// it survive, the gateway would be an authentication bypass with an audit
+// trail that lies about it — worse than propagating no identity at all.
+// Matching is case-insensitive because HTTP header names are, and a check
+// that missed `x-shift-principal` would be no check.
 func forwardable(h http.Header) http.Header {
 	out := make(http.Header, len(h))
 	for k, vs := range h {
-		if hopByHop[http.CanonicalHeaderKey(k)] {
+		ck := http.CanonicalHeaderKey(k)
+		if hopByHop[ck] {
+			continue
+		}
+		// CanonicalHeaderKey normalises case, so one prefix test covers every
+		// spelling a caller might try.
+		if strings.HasPrefix(ck, shiftPrefix) {
 			continue
 		}
 		out[k] = vs
 	}
 	return out
+}
+
+// stamp asserts the gateway's own facts onto headers ALREADY stripped by
+// forwardable. Order matters and is the point: strip, then stamp.
+func stamp(h http.Header, route *config.Route, requestID, clientIP string) http.Header {
+	principal := route.AuthPrincipal
+	if principal == "" {
+		principal = anonymous
+	}
+	h.Set(HeaderPrincipal, principal)
+	h.Set(HeaderRoute, route.Path)
+	h.Set(HeaderRequestID, requestID)
+	h.Set(HeaderClientIP, clientIP)
+	return h
 }
 
 func newID() string {

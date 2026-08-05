@@ -10,7 +10,7 @@ import (
 
 func valid() *config.Config {
 	return &config.Config{Version: 1, Routes: []config.Route{
-		{Path: "/hook", Flow: "orders", Group: "prod"},
+		{Path: "/hook", Flow: "orders"},
 	}}
 }
 
@@ -26,15 +26,19 @@ func TestValidateAcceptsAWorkableConfig(t *testing.T) {
 func TestValidateRejectsUnserveableConfigs(t *testing.T) {
 	cases := map[string]*config.Config{
 		"no routes":      {Version: 1},
-		"relative path":  {Version: 1, Routes: []config.Route{{Path: "hook", Flow: "f", Group: "g"}}},
-		"no flow":        {Version: 1, Routes: []config.Route{{Path: "/h", Group: "g"}}},
-		"no group":       {Version: 1, Routes: []config.Route{{Path: "/h", Flow: "f"}}},
-		"lowercase verb": {Version: 1, Routes: []config.Route{{Path: "/h", Flow: "f", Group: "g", Method: "post"}}},
-		"bad cidr":       {Version: 1, Routes: []config.Route{{Path: "/h", Flow: "f", Group: "g", AllowCIDRs: []string{"10.0.0.0"}}}},
-		"negative cap":   {Version: 1, Routes: []config.Route{{Path: "/h", Flow: "f", Group: "g", MaxBodyBytes: -1}}},
-		"bad proxy cidr": {Version: 1, Routes: []config.Route{{Path: "/h", Flow: "f", Group: "g"}}, TrustedProxies: []string{"nope"}},
+		"relative path":  {Version: 1, Routes: []config.Route{{Path: "hook", Flow: "f"}}},
+		"no flow":        {Version: 1, Routes: []config.Route{{Path: "/h"}}},
+		"lowercase verb": {Version: 1, Routes: []config.Route{{Path: "/h", Flow: "f", Method: "post"}}},
+		// An empty selector key matches nothing, forever. A route that can
+		// never be served is worse than one that refuses to load.
+		"empty selector key": {Version: 1, Routes: []config.Route{
+			{Path: "/h", Flow: "f", Selector: config.Selector{" ": "production"}},
+		}},
+		"bad cidr":       {Version: 1, Routes: []config.Route{{Path: "/h", Flow: "f", AllowCIDRs: []string{"10.0.0.0"}}}},
+		"negative cap":   {Version: 1, Routes: []config.Route{{Path: "/h", Flow: "f", MaxBodyBytes: -1}}},
+		"bad proxy cidr": {Version: 1, Routes: []config.Route{{Path: "/h", Flow: "f"}}, TrustedProxies: []string{"nope"}},
 		"duplicate route": {Version: 1, Routes: []config.Route{
-			{Path: "/h", Flow: "a", Group: "g"}, {Path: "/h", Flow: "b", Group: "g"},
+			{Path: "/h", Flow: "a"}, {Path: "/h", Flow: "b"},
 		}},
 	}
 	for name, c := range cases {

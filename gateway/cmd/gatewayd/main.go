@@ -15,8 +15,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -24,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aaron-au/shift/gateway/internal/config"
 	"github.com/aaron-au/shift/gateway/internal/ingress"
 	"github.com/aaron-au/shift/gateway/internal/runners"
 )
@@ -40,8 +43,10 @@ func main() {
 // listener unclosed on the way out.
 func run() error {
 	var (
-		publicAddr = flag.String("public", ":8443", "public listener (inbound requests)")
-		debug      = flag.Bool("debug", false, "verbose logging")
+		publicAddr  = flag.String("public", ":8443", "public listener (inbound requests)")
+		controlAddr = flag.String("control", "127.0.0.1:8444", "control listener (runner poll/deliver, hub config push)")
+		configFile  = flag.String("config", "", "bootstrap configuration file (development only; the hub is the source of truth)")
+		debug       = flag.Bool("debug", false, "verbose logging")
 	)
 	flag.Parse()
 
@@ -55,12 +60,50 @@ func run() error {
 	reg := runners.New()
 	h := ingress.New(reg, log)
 
+	if *configFile != "" {
+		// Development bootstrap only. In a real deployment the hub pushes
+		// configuration over the mutually-authenticated control listener and
+		// this flag stays unset — a route defined locally is a second source
+		// of truth, and the failure mode is serving stale policy instead of a
+		// clean 503.
+		cfg, err := loadConfig(*configFile)
+		if err != nil {
+			return fmt.Errorf("config %s: %w", *configFile, err)
+		}
+		if err := h.SetConfig(cfg); err != nil {
+			return fmt.Errorf("config %s: %w", *configFile, err)
+		}
+		log.Warn("configuration loaded from a local file; the hub is the source of truth in a real deployment",
+			"file", *configFile, "version", cfg.Version, "routes", len(cfg.Routes))
+	}
+
+	// Two listeners with different exposure. The public one faces the
+	// internet; the control one carries runner poll/deliver and (later) the
+	// hub's config push, and must NEVER be published — an unauthenticated
+	// caller able to reach /poll could intercept inbound payloads by
+	// impersonating a runner. It defaults to loopback for that reason.
+	ctrlMux := http.NewServeMux()
+	ingress.NewDispatch(reg, log).Routes(ctrlMux)
+	ctrlMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"configured":     h.Configured(),
+			"config_version": h.ConfigVersion(),
+			"runners_parked": reg.Parked(),
+		})
+	})
+
 	srv := &http.Server{
 		Addr:    *publicAddr,
 		Handler: h,
 		// The public edge must never let a slow client hold a connection open
 		// indefinitely; the header timeout is the cheapest defence against the
 		// classic slowloris shape.
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	ctrl := &http.Server{
+		Addr:              *controlAddr,
+		Handler:           ctrlMux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -72,14 +115,43 @@ func run() error {
 		sctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(sctx)
+		_ = ctrl.Shutdown(sctx)
 	}()
+
+	errc := make(chan error, 2)
+	go func() { errc <- serve(ctrl) }()
+	go func() { errc <- serve(srv) }()
 
 	// Unconfigured is the correct starting state, not a fault: the gateway
 	// serves 503 until the hub pushes a configuration, and its health endpoint
 	// says so, so an ungreeted gateway is visible from the hub.
-	log.Info("gateway listening", "public", *publicAddr, "configured", h.Configured())
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	log.Info("gateway listening",
+		"public", *publicAddr, "control", *controlAddr, "configured", h.Configured())
+
+	// Either listener failing is fatal: a gateway serving the public port with
+	// no control listener can never be handed a runner, and would answer 503
+	// to everything while looking healthy.
+	if err := <-errc; err != nil {
+		return err
+	}
+	return <-errc
+}
+
+func serve(s *http.Server) error {
+	if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+func loadConfig(path string) (*config.Config, error) {
+	b, err := os.ReadFile(path) // #nosec G304 -- operator-supplied path, by design
+	if err != nil {
+		return nil, err
+	}
+	var c config.Config
+	if err := json.Unmarshal(b, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
 }

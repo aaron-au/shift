@@ -8,6 +8,18 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/aaron-au/shift/gateway/internal/config"
+)
+
+// prodLabels are what a production API runner IS; prodSel is what a route
+// asks for. They are separate values on purpose — matching is superset, not
+// equality, so a runner may legitimately carry labels no route mentions.
+var (
+	prodLabels    = map[string]string{"environment": "production", "workload": "api", "region": "au"}
+	stagingLabels = map[string]string{"environment": "staging", "workload": "api"}
+	prodSel       = config.Selector{"environment": "production", "workload": "api"}
+	stagingSel    = config.Selector{"environment": "staging"}
 )
 
 func req(id string) *Request {
@@ -23,7 +35,7 @@ func TestDispatchHandsWorkToAParkedRunnerAndReturnsItsResponse(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		got := r.Poll(t.Context(), "prod", time.Second)
+		got := r.Poll(t.Context(), prodLabels, time.Second)
 		if got == nil {
 			t.Error("runner polled and received nothing")
 			return
@@ -32,9 +44,9 @@ func TestDispatchHandsWorkToAParkedRunnerAndReturnsItsResponse(t *testing.T) {
 	}()
 
 	// Let the runner park before dispatching.
-	waitFor(t, func() bool { return r.Available("prod") == 1 })
+	waitFor(t, func() bool { return r.Available(prodSel) == 1 })
 
-	resp, err := r.Dispatch(t.Context(), "prod", req("r1"))
+	resp, err := r.Dispatch(t.Context(), prodSel, req("r1"))
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -49,7 +61,7 @@ func TestDispatchHandsWorkToAParkedRunnerAndReturnsItsResponse(t *testing.T) {
 func TestDispatchWithNoRunnerFailsImmediately(t *testing.T) {
 	r := New()
 	start := time.Now()
-	_, err := r.Dispatch(t.Context(), "prod", req("r1"))
+	_, err := r.Dispatch(t.Context(), prodSel, req("r1"))
 	if !errors.Is(err, ErrNoRunner) {
 		t.Fatalf("err = %v, want ErrNoRunner", err)
 	}
@@ -58,14 +70,14 @@ func TestDispatchWithNoRunnerFailsImmediately(t *testing.T) {
 	}
 }
 
-// Availability is group-scoped: a runner serving non-prod must never be handed
-// prod work (ADR-0030 placement).
-func TestDispatchNeverCrossesGroups(t *testing.T) {
+// Eligibility is selector-scoped: a staging runner must never be handed
+// production work (ADR-0030 placement).
+func TestDispatchNeverCrossesSelectors(t *testing.T) {
 	r := New()
-	go r.Poll(t.Context(), "non-prod", 500*time.Millisecond)
-	waitFor(t, func() bool { return r.Available("non-prod") == 1 })
+	go r.Poll(t.Context(), stagingLabels, 500*time.Millisecond)
+	waitFor(t, func() bool { return r.Available(stagingSel) == 1 })
 
-	if _, err := r.Dispatch(t.Context(), "prod", req("r1")); !errors.Is(err, ErrNoRunner) {
+	if _, err := r.Dispatch(t.Context(), prodSel, req("r1")); !errors.Is(err, ErrNoRunner) {
 		t.Fatalf("err = %v; a non-prod runner was eligible for prod work", err)
 	}
 }
@@ -74,10 +86,10 @@ func TestDispatchNeverCrossesGroups(t *testing.T) {
 // removes the liveness table: parked means available, full stop.
 func TestPollTimeoutUnparksTheRunner(t *testing.T) {
 	r := New()
-	if got := r.Poll(t.Context(), "prod", 20*time.Millisecond); got != nil {
+	if got := r.Poll(t.Context(), prodLabels, 20*time.Millisecond); got != nil {
 		t.Fatal("poll returned work that was never dispatched")
 	}
-	if n := r.Available("prod"); n != 0 {
+	if n := r.Available(prodSel); n != 0 {
 		t.Fatalf("available = %d after timeout, want 0 — a departed runner still looked available", n)
 	}
 }
@@ -91,12 +103,12 @@ func TestWorkHandedOverAtTheInstantOfTimeoutIsNotLost(t *testing.T) {
 		r := New()
 		r.DeliveryTimeout = 250 * time.Millisecond
 		got := make(chan *Request, 1)
-		go func() { got <- r.Poll(t.Context(), "prod", time.Millisecond) }()
+		go func() { got <- r.Poll(t.Context(), prodLabels, time.Millisecond) }()
 
 		// Dispatch racing the 1ms poll timeout: either it finds no runner, or
 		// it finds one — and if it finds one, that runner MUST see the work.
 		go func() {
-			resp, err := r.Dispatch(t.Context(), "prod", req("r1"))
+			resp, err := r.Dispatch(t.Context(), prodSel, req("r1"))
 			_, _ = resp, err
 		}()
 
@@ -115,10 +127,10 @@ func TestWorkHandedOverAtTheInstantOfTimeoutIsNotLost(t *testing.T) {
 func TestDispatchTimesOutWhenTheRunnerNeverDelivers(t *testing.T) {
 	r := New()
 	r.DeliveryTimeout = 50 * time.Millisecond
-	go r.Poll(t.Context(), "prod", time.Second) // takes the work, never delivers
-	waitFor(t, func() bool { return r.Available("prod") == 1 })
+	go r.Poll(t.Context(), prodLabels, time.Second) // takes the work, never delivers
+	waitFor(t, func() bool { return r.Available(prodSel) == 1 })
 
-	_, err := r.Dispatch(t.Context(), "prod", req("r1"))
+	_, err := r.Dispatch(t.Context(), prodSel, req("r1"))
 	if !errors.Is(err, ErrDeliveryTimeout) {
 		t.Fatalf("err = %v, want ErrDeliveryTimeout", err)
 	}
@@ -140,16 +152,16 @@ func TestDispatchIsFIFOAcrossParkedRunners(t *testing.T) {
 	order := make(chan int, 2)
 	for i := range 2 {
 		go func() {
-			if got := r.Poll(t.Context(), "prod", 2*time.Second); got != nil {
+			if got := r.Poll(t.Context(), prodLabels, 2*time.Second); got != nil {
 				order <- i
 				r.Deliver(t.Context(), got.ID, &Response{Status: 200, Body: strings.NewReader("")})
 			}
 		}()
 		// Park them in a known order.
-		waitFor(t, func() bool { return r.Available("prod") == i+1 })
+		waitFor(t, func() bool { return r.Available(prodSel) == i+1 })
 	}
 
-	if _, err := r.Dispatch(t.Context(), "prod", req("r1")); err != nil {
+	if _, err := r.Dispatch(t.Context(), prodSel, req("r1")); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	select {
@@ -174,27 +186,46 @@ func waitFor(t *testing.T, cond func() bool) {
 	t.Fatal("condition not met in time")
 }
 
-// Groups feeds the health endpoint, and it must report only groups with a
-// runner actually parked — a group listed with nobody waiting would tell the
-// hub the gateway can serve traffic it would immediately 503.
-func TestGroupsReportsOnlyGroupsWithAParkedRunner(t *testing.T) {
+// Parked feeds the health endpoint, and it must count runners ACTUALLY
+// holding a poll — a count that outlived its runners would tell the hub the
+// gateway can serve traffic it would immediately 503.
+func TestParkedCountsOnlyRunnersStillHoldingAPoll(t *testing.T) {
 	r := New()
-	if got := r.Groups(); len(got) != 0 {
-		t.Fatalf("Groups = %v on an empty registry, want none", got)
+	if got := r.Parked(); got != 0 {
+		t.Fatalf("Parked = %d on an empty registry, want 0", got)
 	}
 
-	go r.Poll(t.Context(), "prod", 500*time.Millisecond)
-	waitFor(t, func() bool { return r.Available("prod") == 1 })
-	got := r.Groups()
-	if len(got) != 1 || got[0] != "prod" {
-		t.Fatalf("Groups = %v, want [prod]", got)
-	}
+	go r.Poll(t.Context(), prodLabels, 500*time.Millisecond)
+	waitFor(t, func() bool { return r.Parked() == 1 })
 
-	// Once that runner leaves, the group must stop being reported even though
-	// the registry still holds an (empty) entry for it.
-	waitFor(t, func() bool { return r.Available("prod") == 0 })
-	if got := r.Groups(); len(got) != 0 {
-		t.Fatalf("Groups = %v after the runner left, want none", got)
+	// Once the poll window closes the runner must stop being counted.
+	waitFor(t, func() bool { return r.Parked() == 0 })
+}
+
+// Superset matching is the whole point of selectors over a group name: a
+// runner carrying extra labels still matches, and a selector naming a label
+// the runner lacks does not.
+func TestSelectorMatchesOnSupersetNotEquality(t *testing.T) {
+	r := New()
+	go r.Poll(t.Context(), prodLabels, 2*time.Second) // has an extra "region"
+	waitFor(t, func() bool { return r.Parked() == 1 })
+
+	// A narrower selector matches the broader runner.
+	if n := r.Available(config.Selector{"environment": "production"}); n != 1 {
+		t.Errorf("Available(environment=production) = %d, want 1", n)
+	}
+	// The empty selector means "any runner".
+	if n := r.Available(nil); n != 1 {
+		t.Errorf("Available(nil) = %d, want 1", n)
+	}
+	// A label the runner does not carry excludes it, even though every other
+	// label matches.
+	if n := r.Available(config.Selector{"environment": "production", "tier": "gold"}); n != 0 {
+		t.Errorf("Available(+tier=gold) = %d, want 0", n)
+	}
+	// A label it carries with a DIFFERENT value excludes it too.
+	if n := r.Available(config.Selector{"region": "eu"}); n != 0 {
+		t.Errorf("Available(region=eu) = %d, want 0", n)
 	}
 }
 
@@ -205,13 +236,13 @@ func TestSecondDeliveryForTheSameRequestIsRejected(t *testing.T) {
 	r := New()
 	r.DeliveryTimeout = time.Second
 	first := make(chan *Request, 1)
-	go func() { first <- r.Poll(t.Context(), "prod", 2*time.Second) }()
-	waitFor(t, func() bool { return r.Available("prod") == 1 })
+	go func() { first <- r.Poll(t.Context(), prodLabels, 2*time.Second) }()
+	waitFor(t, func() bool { return r.Available(prodSel) == 1 })
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if _, err := r.Dispatch(t.Context(), "prod", req("r1")); err != nil {
+		if _, err := r.Dispatch(t.Context(), prodSel, req("r1")); err != nil {
 			t.Errorf("dispatch: %v", err)
 		}
 	}()
@@ -238,11 +269,11 @@ func TestDeliverStopsWaitingWhenTheRunnerGivesUp(t *testing.T) {
 	r := New()
 	r.DeliveryTimeout = 2 * time.Second
 	parked := make(chan *Request, 1)
-	go func() { parked <- r.Poll(t.Context(), "prod", 2*time.Second) }()
-	waitFor(t, func() bool { return r.Available("prod") == 1 })
+	go func() { parked <- r.Poll(t.Context(), prodLabels, 2*time.Second) }()
+	waitFor(t, func() bool { return r.Available(prodSel) == 1 })
 
 	// Dispatch, but never read the response: the caller is slow/absent.
-	go func() { _, _ = r.Dispatch(t.Context(), "prod", req("r1")) }()
+	go func() { _, _ = r.Dispatch(t.Context(), prodSel, req("r1")) }()
 	got := <-parked
 	if got == nil {
 		t.Fatal("runner received nothing")

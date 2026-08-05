@@ -1,0 +1,20 @@
+# Two namespaces standing in for two network zones. The split is the point of
+# this bundle: everything else here exists to prove that traffic only ever
+# crosses it in ONE direction (ADR-0038 §2).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shift-dmz
+  labels:
+    zone: dmz
+    # Referenced by the NetworkPolicies below. Kubernetes matches namespaces by
+    # label, not by name, so this label is load-bearing rather than decorative.
+    kubernetes.io/metadata.name: shift-dmz
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shift-internal
+  labels:
+    zone: internal
+    kubernetes.io/metadata.name: shift-internal

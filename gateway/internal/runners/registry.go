@@ -22,6 +22,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/aaron-au/shift/gateway/internal/config"
 )
 
 // ErrNoRunner reports that no eligible runner was waiting. The caller must
@@ -56,7 +58,10 @@ type Response struct {
 
 // waiter is one runner parked on a long-poll, waiting to be handed work.
 type waiter struct {
-	group string
+	// labels are what this runner IS (ADR-0030 placement), sent on its poll.
+	// A route's selector is matched against them; the runner never evaluates
+	// its own eligibility.
+	labels map[string]string
 	// ch receives at most one request. Buffered so a hand-off never blocks on
 	// a runner that gave up between being chosen and being sent to.
 	ch chan *Request
@@ -73,8 +78,14 @@ type exchange struct {
 // Registry is the set of parked runners plus the in-flight exchanges.
 // Safe for concurrent use.
 type Registry struct {
-	mu       sync.Mutex
-	waiting  map[string][]*waiter // by group, FIFO
+	mu sync.Mutex
+	// waiting is ONE list in arrival order, not a map keyed by group. A
+	// selector matches label SETS rather than a name, so there is no key to
+	// bucket by; dispatch scans for the first match instead. That is O(parked
+	// runners) per request and parked runners number in the hundreds — an
+	// index over every distinct label set would cost more to maintain than
+	// the scan saves.
+	waiting  []*waiter
 	inflight map[string]*exchange // by request id
 
 	// DeliveryTimeout bounds how long a caller waits for a runner's response
@@ -84,10 +95,7 @@ type Registry struct {
 
 // New returns an empty registry.
 func New() *Registry {
-	return &Registry{
-		waiting:  make(map[string][]*waiter),
-		inflight: make(map[string]*exchange),
-	}
+	return &Registry{inflight: make(map[string]*exchange)}
 }
 
 const defaultDeliveryTimeout = 60 * time.Second
@@ -99,17 +107,17 @@ func (r *Registry) deliveryTimeout() time.Duration {
 	return defaultDeliveryTimeout
 }
 
-// Poll parks a runner until work arrives for its group, the wait elapses, or
-// ctx ends. It returns nil when nothing arrived, which the caller answers with
-// 204 so the runner immediately polls again.
+// Poll parks a runner carrying labels until work it can serve arrives, the
+// wait elapses, or ctx ends. It returns nil when nothing arrived, which the
+// caller answers with 204 so the runner immediately polls again.
 //
 // Parking is what makes this runner "available"; returning unparks it. A
 // runner that is executing is not polling, and is therefore not available —
 // no separate busy/idle state to keep in sync with reality.
-func (r *Registry) Poll(ctx context.Context, group string, wait time.Duration) *Request {
-	w := &waiter{group: group, ch: make(chan *Request, 1)}
+func (r *Registry) Poll(ctx context.Context, labels map[string]string, wait time.Duration) *Request {
+	w := &waiter{labels: labels, ch: make(chan *Request, 1)}
 	r.mu.Lock()
-	r.waiting[group] = append(r.waiting[group], w)
+	r.waiting = append(r.waiting, w)
 	r.mu.Unlock()
 
 	timer := time.NewTimer(wait)
@@ -139,35 +147,41 @@ func (r *Registry) Poll(ctx context.Context, group string, wait time.Duration) *
 func (r *Registry) remove(w *waiter) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	q := r.waiting[w.group]
-	for i, cand := range q {
+	for i, cand := range r.waiting {
 		if cand == w {
-			r.waiting[w.group] = append(q[:i], q[i+1:]...)
+			r.waiting = append(r.waiting[:i], r.waiting[i+1:]...)
 			return
 		}
 	}
 }
 
-// Dispatch hands req to a waiting runner in its group and blocks until that
-// runner delivers a response, the delivery deadline passes, or ctx ends.
+// Dispatch hands req to a waiting runner whose labels satisfy sel, and blocks
+// until that runner delivers a response, the delivery deadline passes, or ctx
+// ends.
 //
-// It returns ErrNoRunner immediately when nobody is waiting. That is a 503,
-// deliberately: the alternative is holding the request until a runner appears,
-// which is a queue, which is durable state in the DMZ.
-func (r *Registry) Dispatch(ctx context.Context, group string, req *Request) (*Response, error) {
+// It returns ErrNoRunner immediately when nobody eligible is waiting. That is
+// a 503, deliberately: the alternative is holding the request until a runner
+// appears, which is a queue, which is durable state in the DMZ.
+func (r *Registry) Dispatch(ctx context.Context, sel config.Selector, req *Request) (*Response, error) {
 	ex := &exchange{resp: make(chan *Response, 1), done: make(chan struct{})}
 
 	r.mu.Lock()
-	q := r.waiting[group]
-	if len(q) == 0 {
+	// First match in arrival order: the eligible runner waiting longest goes
+	// first, which spreads work evenly without tracking load. A busy runner is
+	// not polling, so it cannot be chosen — the queue is self-balancing.
+	idx := -1
+	for i, w := range r.waiting {
+		if sel.Matches(w.labels) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
 		r.mu.Unlock()
 		return nil, ErrNoRunner
 	}
-	// FIFO: the runner waiting longest goes first, which spreads work evenly
-	// without tracking load. A busy runner is not polling, so it cannot be
-	// chosen — the queue is self-balancing.
-	w := q[0]
-	r.waiting[group] = q[1:]
+	w := r.waiting[idx]
+	r.waiting = append(r.waiting[:idx], r.waiting[idx+1:]...)
 	r.inflight[req.ID] = ex
 	r.mu.Unlock()
 
@@ -221,25 +235,24 @@ func (r *Registry) Deliver(ctx context.Context, id string, resp *Response) bool 
 	}
 }
 
-// Available reports how many runners are currently parked for a group. It is
-// the honest answer to "can we serve this right now", because it counts
-// runners actually waiting rather than runners believed to be alive.
-func (r *Registry) Available(group string) int {
+// Available reports how many parked runners satisfy sel. It is the honest
+// answer to "can we serve this right now", because it counts runners actually
+// waiting rather than runners believed to be alive.
+func (r *Registry) Available(sel config.Selector) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return len(r.waiting[group])
-}
-
-// Groups returns the groups with at least one runner parked, for the health
-// endpoint. Order is unspecified.
-func (r *Registry) Groups() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]string, 0, len(r.waiting))
-	for g, q := range r.waiting {
-		if len(q) > 0 {
-			out = append(out, g)
+	n := 0
+	for _, w := range r.waiting {
+		if sel.Matches(w.labels) {
+			n++
 		}
 	}
-	return out
+	return n
+}
+
+// Parked reports how many runners are holding a poll, for the health endpoint.
+func (r *Registry) Parked() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.waiting)
 }

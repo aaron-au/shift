@@ -15,6 +15,8 @@ RUN go build -ldflags "-X github.com/aaron-au/shift/pkg/buildinfo.Version=${VERS
       -o /out/hubd            github.com/aaron-au/shift/hub/cmd/hubd && \
     go build -ldflags "-X github.com/aaron-au/shift/pkg/buildinfo.Version=${VERSION}" \
       -o /out/runnerd         github.com/aaron-au/shift/runner/cmd/runnerd && \
+    go build -ldflags "-X github.com/aaron-au/shift/pkg/buildinfo.Version=${VERSION}" \
+      -o /out/gatewayd        github.com/aaron-au/shift/gateway/cmd/gatewayd && \
     go build -o /out/shift-bootstrap     github.com/aaron-au/shift/hub/cmd/shift-bootstrap && \
     go build -o /out/shift-consign       github.com/aaron-au/shift/connectors/cmd/shift-consign && \
     go build -o /out/shift-connector-gen  github.com/aaron-au/shift/connectors/cmd/shift-connector-gen && \
@@ -46,6 +48,15 @@ COPY LICENSE NOTICE /usr/local/share/shift/
 COPY --from=build --chown=nonroot:nonroot /out/empty /var/lib/shift
 VOLUME ["/var/lib/shift"]
 ENTRYPOINT ["/usr/local/bin/runnerd"]
+
+# gatewayd is the one image that may sit in a DMZ, so it carries the least:
+# a single static binary on distroless, no connectors, no cache dir, no
+# writable volume, and nothing that could resolve a secret. That is the image
+# equivalent of the module boundary depguard already enforces.
+FROM gcr.io/distroless/static-debian12:nonroot AS gatewayd
+COPY --from=build /out/gatewayd /usr/local/bin/gatewayd
+COPY LICENSE NOTICE /usr/local/share/shift/
+ENTRYPOINT ["/usr/local/bin/gatewayd"]
 
 # tools: the bootstrap one-shot plus everything it publishes. Runs as
 # the same uid as the distroless services (65532) so the material it

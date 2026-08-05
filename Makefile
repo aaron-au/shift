@@ -140,11 +140,12 @@ tidy-check:
 	@git diff --exit-code -- $(foreach m,$(MODULES),$(m)/go.mod $(m)/go.sum) \
 	  || { echo "go.mod/go.sum not tidy — commit the changes shown above"; exit 1; }
 
-## images: OCI images for the compose bundle (hubd, runnerd, tools)
+## images: OCI images for the compose bundle (hubd, runnerd, gatewayd, tools)
 images:
-	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) --target hubd    -t shift/hubd:$(VERSION) .
-	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) --target runnerd -t shift/runnerd:$(VERSION) .
-	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) --target tools   -t shift/tools:$(VERSION) .
+	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) --target hubd     -t shift/hubd:$(VERSION) .
+	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) --target runnerd  -t shift/runnerd:$(VERSION) .
+	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) --target gatewayd -t shift/gatewayd:$(VERSION) .
+	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) --target tools    -t shift/tools:$(VERSION) .
 
 ## up: the "just runs" bundle (M4b exit criterion) — see deploy/README.md
 up: images

@@ -142,12 +142,75 @@ could send `X-Shift-Principal: admin` and have it survive, the gateway would
 be an authentication bypass *with an audit trail that lies about it* — worse
 than no identity propagation at all.
 
+## Placement: label selectors, not a group name
+
+A route names the runners eligible to serve it by **label set**
+(`{environment: production, workload: api}`), and a parked runner matches when
+its own labels are a **superset**. A single group string cannot express "any
+production API runner", which is the shape real fleets have.
+
+The empty selector matches any runner — right for a single-group deployment,
+and a trap in a mixed fleet, so the hub is expected to be explicit.
+
+Matching is a linear scan of parked runners, deliberately. A selector matches
+label *sets* rather than a name, so there is no key to bucket by, and parked
+runners number in the hundreds: an index over every distinct label set would
+cost more to maintain than the scan saves.
+
+## The two listeners
+
+| Listener | Faces | Carries |
+|---|---|---|
+| `-public` (`:8443`) | the internet | caller requests |
+| `-control` (`127.0.0.1:8444`) | the internal network only | runner poll/deliver, hub config push |
+
+**The control listener must never be published.** An unauthenticated caller
+able to reach `/poll` could intercept inbound payloads by impersonating a
+runner, so it binds to loopback by default and gets mutual TLS before it binds
+anywhere else.
+
+```
+POST /api/v1/gw/poll              park until work arrives (long-poll)
+POST /api/v1/gw/deliver/{id}      hand the response back
+GET  /healthz                     configured?, config version, runners parked
+```
+
+One inbound request becomes **two** runner-side calls rather than one duplex
+connection. That costs an extra round trip on the deliver — sub-millisecond on
+a LAN — and buys plain HTTP semantics: no framing protocol, no half-open state,
+and a poll abandoned by simply letting the request time out.
+
+The poll response carries the work as a normal HTTP message: metadata in
+`X-Shift-Flow` / `X-Shift-Request-Id` / `X-Shift-Method` / `X-Shift-Path`, the
+caller's own headers re-emitted under `X-Shift-Fwd-`, and the caller's body as
+the response body. The prefix exists because the two share a namespace —
+`Content-Type` would otherwise mean two different things.
+
+Coming back, `X-Shift-Status` carries the runner's intended status and the body
+streams through. Response headers are an **allowlist**, not a strip-list: the
+runner is inside the trust boundary, but its answer goes to the public
+internet, and "everything minus what we remembered to remove" is the shape that
+leaks an internal header the day someone adds one.
+
+Measured on a loopback dev box, a full caller → gateway → runner → engine →
+caller round trip runs **~0.5 ms p50** (see the walkthrough in
+`deploy/k8s/README.md`).
+
 ## Not built yet
 
 - mTLS control listener + identity bundle (ADR-0038 §6a): bootstrap inverts,
-  since a gateway that cannot dial the hub cannot register with it.
-- Hub side: gateway records, config push, certificate lifecycle. **Identity
-  renewal must be pushed before expiry** — a lapsed certificate strands a
-  gateway permanently, because requesting a new one would mean dialling.
-- Runner side: poll the gateway, bind privately (the ADR-0016 reversal).
+  since a gateway that cannot dial the hub cannot register with it. Until then
+  the control listener is loopback-bound and `-config` loads a local file.
+- Hub side: gateway records, config push, certificate lifecycle, and the
+  per-runner gateway address list. **Identity renewal must be pushed before
+  expiry** — a lapsed certificate strands a gateway permanently, because
+  requesting a new one would mean dialling.
+- **Caller identity inside the flow.** The gateway stamps the principal and the
+  runner receives it, but nothing yet binds it into the flow document — that
+  needs the flow-variable model ADR-0031 leaves open. Until then the principal
+  is logged, not addressable from a step.
+- Streaming the caller's body straight through: the runner currently reads it
+  fully, because the `@webhook` source binds a byte slice.
 - Rate limiting (reuse ADR-0021's token bucket), HMAC provider signatures.
+- **Pass-through proxy routes** (ADR-0040, drafted): fronting an internal API
+  with no runner and no flow.
