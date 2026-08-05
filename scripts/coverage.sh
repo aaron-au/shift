@@ -31,7 +31,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
-MODULES=(engine sdk pkg runner hub connectors)
+MODULES=(engine sdk pkg runner hub gateway connectors)
 OUT="$ROOT/coverage"
 THRESHOLDS="$ROOT/coverage.thresholds"
 MODPATH="github.com/aaron-au/shift"
