@@ -20,7 +20,7 @@
 
 default 0
 
-github.com/aaron-au/shift/connectors/internal/fsconn 80
+github.com/aaron-au/shift/connectors/internal/fsconn 81
 github.com/aaron-au/shift/connectors/internal/soapconn 85
 github.com/aaron-au/shift/connectors/internal/smtpconn 76
 github.com/aaron-au/shift/connectors/internal/dbconn 77
@@ -28,17 +28,17 @@ github.com/aaron-au/shift/connectors/internal/s3conn 82
 github.com/aaron-au/shift/connectors/internal/azureblobconn 72
 github.com/aaron-au/shift/connectors/internal/amqpconn 73
 github.com/aaron-au/shift/connectors/internal/ftpconn 80
-github.com/aaron-au/shift/connectors/internal/redisconn 85
+github.com/aaron-au/shift/connectors/internal/redisconn 86
 github.com/aaron-au/shift/connectors/internal/genconn 98
 github.com/aaron-au/shift/connectors/internal/httpconn 93
 github.com/aaron-au/shift/engine/format/csvf 84
-github.com/aaron-au/shift/engine/format/xmlf 90
+github.com/aaron-au/shift/engine/format/xmlf 92
 github.com/aaron-au/shift/engine/format/ndjson 91
 github.com/aaron-au/shift/connectors/internal/sftpconn 72
 github.com/aaron-au/shift/engine/mem 98
 github.com/aaron-au/shift/engine/record 85
 github.com/aaron-au/shift/engine/spill 93
-github.com/aaron-au/shift/engine/stream 83
+github.com/aaron-au/shift/engine/stream 84
 github.com/aaron-au/shift/hub/internal/api 88
 github.com/aaron-au/shift/hub/internal/connpolicy 98
 github.com/aaron-au/shift/hub/internal/kek 86
@@ -47,10 +47,10 @@ github.com/aaron-au/shift/hub/internal/ratelimit 86
 github.com/aaron-au/shift/hub/internal/scheduler 83
 github.com/aaron-au/shift/hub/internal/secrets 85
 github.com/aaron-au/shift/hub/internal/store 83
-github.com/aaron-au/shift/pkg/boomi 77
+github.com/aaron-au/shift/pkg/boomi 80
 github.com/aaron-au/shift/pkg/buildinfo 81
 github.com/aaron-au/shift/pkg/consign 91
-github.com/aaron-au/shift/pkg/flowdoc 88
+github.com/aaron-au/shift/pkg/flowdoc 90
 github.com/aaron-au/shift/runner/internal/api 83
 github.com/aaron-au/shift/runner/internal/auth 96
 github.com/aaron-au/shift/runner/internal/connpool 88
@@ -69,14 +69,14 @@ github.com/aaron-au/shift/runner/internal/hubclient 84
 # keep the gate deterministic (ADR-0022). The wire format those lines produce
 # is covered where it IS reachable, in hubclient (HeartbeatWithCheckpoint), and
 # the behaviour is covered end to end in hub/internal/store.
-github.com/aaron-au/shift/runner/internal/leaseloop 75
+github.com/aaron-au/shift/runner/internal/leaseloop 74
 # The gateway intake (ADR-0038). What is uncovered is the retry/backoff arms of
 # the poll loop and the secret-binding branch, which need a hub; the request
 # path itself is covered end to end against a stub gateway.
 github.com/aaron-au/shift/runner/internal/gwclient 74
 github.com/aaron-au/shift/runner/internal/bind 90
 github.com/aaron-au/shift/runner/internal/ratelimit 86
-github.com/aaron-au/shift/runner/internal/service 67
+github.com/aaron-au/shift/runner/internal/service 71
 github.com/aaron-au/shift/runner/internal/task 86
 github.com/aaron-au/shift/runner/internal/webhook 98
 github.com/aaron-au/shift/sdk 83
@@ -87,7 +87,13 @@ github.com/aaron-au/shift/sdk/host 86
 # database dependency, so there is no reason for them to be thinly covered.
 # identity is the mTLS material loader (ADR-0041). Small, pure, and the one
 # place a mistake means either "nothing can connect" or "anything can".
-github.com/aaron-au/shift/gateway/internal/identity 85
+github.com/aaron-au/shift/gateway/internal/identity 93
 github.com/aaron-au/shift/gateway/internal/runners 95
-github.com/aaron-au/shift/gateway/internal/config 96
-github.com/aaron-au/shift/gateway/internal/ingress 84
+github.com/aaron-au/shift/gateway/internal/config 98
+github.com/aaron-au/shift/gateway/internal/ingress 85
+
+# httpsec is the SSRF/network guard shared by every outbound connector. It was
+# only ever held by the permissive `default`; it is small, pure, and the code
+# whose failure mode is "a connector reached somewhere it must not", so it gets
+# an explicit floor at what it already achieves.
+github.com/aaron-au/shift/pkg/httpsec 98

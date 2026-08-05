@@ -105,6 +105,54 @@ func TestLoadRejectsAnIncompleteBundle(t *testing.T) {
 	}
 }
 
+// A bundle that loads but cannot authenticate anything is the worst outcome:
+// the gateway starts, the listener binds, and every runner fails a handshake
+// for reasons that look like a network fault. Both cases below are rejected at
+// load, where the message can name the file.
+func TestLoadRejectsAnUnusableBundle(t *testing.T) {
+	ca := newCA(t)
+
+	t.Run("a CA file with no certificate in it", func(t *testing.T) {
+		dir := t.TempDir()
+		writeBundle(t, dir, ca, "gw-1")
+		// Plausible-looking and entirely useless: the client-cert pool would be
+		// empty, so RequireAndVerifyClientCert would reject every runner.
+		if err := os.WriteFile(filepath.Join(dir, identity.CAFile),
+			[]byte("-----BEGIN CERTIFICATE-----\nnot base64\n-----END CERTIFICATE-----\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := identity.Load(dir); err == nil {
+			t.Error("loaded a bundle whose CA file contains no usable certificate")
+		}
+	})
+
+	t.Run("an empty gateway id", func(t *testing.T) {
+		dir := t.TempDir()
+		writeBundle(t, dir, ca, "gw-1")
+		if err := os.WriteFile(filepath.Join(dir, identity.IDFile), []byte("\n  \n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// An anonymous gateway cannot be named in an audit trail or revoked by
+		// the hub, so it must not run at all.
+		if _, err := identity.Load(dir); err == nil {
+			t.Error("loaded a bundle with a blank gateway id")
+		}
+	})
+}
+
+// PeerRunnerID is called on every poll, including on connections that carry no
+// certificate at all. It must answer "nobody" rather than panic — the caller
+// turns that into a 403, and a panic in this path takes the gateway down from
+// an unauthenticated request.
+func TestPeerRunnerIDWithoutAProvenIdentity(t *testing.T) {
+	if got := identity.PeerRunnerID(nil); got != "" {
+		t.Errorf("PeerRunnerID(nil) = %q, want empty", got)
+	}
+	if got := identity.PeerRunnerID(&tls.ConnectionState{}); got != "" {
+		t.Errorf("PeerRunnerID(no peer certificates) = %q, want empty", got)
+	}
+}
+
 // --- test CA ---------------------------------------------------------------
 
 type testCA struct {
