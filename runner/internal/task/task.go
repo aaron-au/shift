@@ -112,7 +112,10 @@ type Task struct {
 	Checkpoint []byte `json:"checkpoint,omitempty"`
 
 	// Phases records where the execution's wall time went (ADR-0020).
-	Phases Phases `json:"phases,omitempty"`
+	// omitzero, not omitempty: omitempty has no effect on a struct, so the
+	// zero Phases would serialize as a block of zeros on every task that
+	// never ran — reading as "measured, and it took no time".
+	Phases Phases `json:"phases,omitzero"`
 
 	// Captured holds per-step INPUT/OUTPUT samples when capture is enabled
 	// (test mode). Runner-only, redacted, ephemeral (evicted with the task).
