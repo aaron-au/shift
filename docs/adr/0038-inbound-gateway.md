@@ -267,9 +267,16 @@ drift.
 
 Matching is on **label selectors**, not a single group name: a route names a
 label set (`{environment: production, workload: api}`) and a parked runner
-matches when its own labels are a superset. A single group string cannot
+matches when its labels are a superset. A single group string cannot
 express "any production API runner", which is the shape real fleets have
 (Aaron, 2026-08-05).
+
+> **Amended by ADR-0041 (2026-08-05).** As first built, those labels came from
+> the runner's own poll body — so "the hub decides eligibility" below was only
+> half true, and a runner could promote itself into `environment: production`
+> simply by claiming it. ADR-0041 moves labels to a hub-pushed roster keyed by
+> the runner's mTLS identity: a runner proves *who* it is and never states
+> *what* it is.
 
 The division is clean: **the hub decides eligibility, the poll set decides
 availability.** Group membership arrives with the pushed configuration (§6a);
@@ -332,7 +339,9 @@ not hardening to add later.
 reach a hub at start-up. It is documented as such rather than offered as a
 peer.
 
-### 6a. How configuration reaches the gateway
+### 6a. [Superseded in part by ADR-0041]
+
+ How configuration reaches the gateway
 
 Because the gateway never initiates inward (§4), the hub **pushes**
 configuration to it: an HTTP POST when it changes, plus a periodic reconcile so
