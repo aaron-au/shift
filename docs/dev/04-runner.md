@@ -237,6 +237,46 @@ could resolve to a *different* position and resume at the wrong place with
 nothing downstream able to notice. The runner refuses to resume on a mismatch
 (and on a cursor with no recorded identity) and replays from the start
 instead — slower, and correct.
+### Finding a bottleneck (ADR-0039)
+
+Every execution records enough to answer "where did the time go" without
+turning anything on.
+
+**Per step** (`task.OpStat`, on the task and in the hub execution report):
+
+| Field | Reads as |
+|---|---|
+| `records_in` / `records_out` | how many |
+| `bytes` | how much — the scale dimension record counts hide |
+| `batches` | batching health; a count approaching the record count means per-record overhead |
+| `seconds` | this step's OWN work (exclusive) |
+| `wall_seconds` | this step INCLUDING everything upstream (inclusive) |
+
+The last pair is the one that changes what is diagnosable. `seconds` alone says
+how expensive a step is. **`wall_seconds` minus `seconds` is time spent
+waiting** — and in a pull pipeline a step blocked on a slow sink or a full
+fan-out queue is starved, not expensive. Without both numbers those look
+identical.
+
+`bytes` is exact at the source and **approximate downstream**: operators mutate
+the flowing batch in place and share its arena, so a step that rebuilds records
+also counts bytes written upstream. Read the source's figure as the flow's true
+input size.
+
+**Per execution** (`task.Phases`) — a fixed handful of numbers, so it rides the
+report at any throughput rather than needing a log pipeline:
+
+- `admission_ms` — queued on resource capacity before running. **The span
+  nothing else can show**: a runner at its memory ceiling (ADR-0005) is
+  otherwise indistinguishable from a slow integration.
+- `bind_ms` — connector checkout/spawn plus pipeline build, separating "the
+  connector was slow to start" from "the data was slow".
+- `run_ms` — the pipeline itself.
+- `total_ms` — submit to terminal state.
+
+Not built yet, and specified in ADR-0039: log levels and per-flow log capture,
+the `task_steps` table for cross-execution queries, OTel span export, and a
+trace id spanning gateway → hub → runner → connector.
 
 ## Task lifecycle and admission (ADR-0005 in practice)
 

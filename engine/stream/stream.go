@@ -37,8 +37,30 @@ type OpStats struct {
 	Batches    int64
 	RecordsIn  int64
 	RecordsOut int64
-	// Nanos is time spent inside this operator only (upstream excluded).
+	// Nanos is time spent inside this operator only (upstream excluded) —
+	// EXCLUSIVE time, the operator's own cost.
 	Nanos int64
+	// WallNanos is time from asking this stage for a batch to receiving one,
+	// so it INCLUDES every upstream stage — inclusive time.
+	//
+	// The pair is what makes a bottleneck legible. Nanos alone says how
+	// expensive a stage is; WallNanos minus Nanos says how long it spent
+	// WAITING on everything before it. A stage that is cheap but slow is
+	// starved, not expensive, and the two numbers are the only way to tell
+	// those apart. WallNanos is naturally monotonic down the chain, so the
+	// sink's figure is the whole pipeline's.
+	WallNanos int64
+	// Bytes is the approximate payload size observed at this stage, summed
+	// over batches from the arena the parser copied into.
+	//
+	// APPROXIMATE, deliberately, and the caveat matters: operators mutate the
+	// flowing batch in place and share its arena, so a stage that REBUILDS
+	// records (project, map) reports bytes written by upstream stages as well
+	// as its own. The source stage's figure is exact and is the one to read as
+	// "how much data this flow actually moved". Reporting per-op bytes as if
+	// they were exclusive would be the dishonest kind of metric this project
+	// does not ship (see the honest-metrics doctrine).
+	Bytes int64
 }
 
 // Report summarizes a pipeline run.
@@ -217,6 +239,7 @@ func (p *Pipeline) Run(ctx context.Context, sink Sink, sinkName string) (Report,
 			break
 		}
 		n := int64(b.Len())
+		bytes := b.ArenaBytes()
 		w := time.Now()
 		if err := sink.Write(ctx, b); err != nil {
 			runErr = &OpError{Op: sinkName, Err: err}
@@ -226,6 +249,7 @@ func (p *Pipeline) Run(ctx context.Context, sink Sink, sinkName string) (Report,
 		sinkStats.Batches++
 		sinkStats.RecordsIn += n
 		sinkStats.RecordsOut += n
+		sinkStats.Bytes += bytes
 		out += n
 		// Confirmed: the sink accepted this batch, so the source's current
 		// position is safe to resume from (ADR-0037). Read AFTER the write
@@ -241,7 +265,9 @@ func (p *Pipeline) Run(ctx context.Context, sink Sink, sinkName string) (Report,
 	}
 	sinkStats.Nanos += time.Since(cw).Nanoseconds()
 
-	rep := Report{RecordsOut: out, WallNanos: time.Since(start).Nanoseconds()}
+	// The sink is the last stage, so its inclusive time is the whole run.
+	sinkStats.WallNanos = time.Since(start).Nanoseconds()
+	rep := Report{RecordsOut: out, WallNanos: sinkStats.WallNanos}
 	for _, st := range p.stats {
 		rep.Ops = append(rep.Ops, *st)
 	}
@@ -259,7 +285,12 @@ type measuredSource struct {
 func (m *measuredSource) Next(ctx context.Context) (*record.Batch, error) {
 	start := time.Now()
 	b, err := m.up.Next(ctx)
-	m.stats.Nanos += time.Since(start).Nanoseconds()
+	elapsed := time.Since(start).Nanoseconds()
+	// The source has no upstream, so its own work and its wall time are the
+	// same measurement — recorded in both so the inclusive column reads
+	// consistently down the chain.
+	m.stats.Nanos += elapsed
+	m.stats.WallNanos += elapsed
 	if err != nil {
 		return nil, err
 	}
@@ -267,6 +298,7 @@ func (m *measuredSource) Next(ctx context.Context) (*record.Batch, error) {
 	n := int64(b.Len())
 	m.stats.RecordsIn += n
 	m.stats.RecordsOut += n
+	m.stats.Bytes += b.ArenaBytes()
 	if m.sampler != nil {
 		m.sampler.Sample(m.stats.Name, b)
 	}
@@ -285,6 +317,11 @@ type opSource struct {
 }
 
 func (o *opSource) Next(ctx context.Context) (*record.Batch, error) {
+	// Wall starts before the upstream pull, so it includes every stage before
+	// this one; Nanos covers only the transform. Their difference is time this
+	// stage spent waiting rather than working.
+	wallStart := time.Now()
+	defer func() { o.stats.WallNanos += time.Since(wallStart).Nanoseconds() }()
 	for {
 		b, err := o.up.Next(ctx)
 		if err != nil {
@@ -303,6 +340,7 @@ func (o *opSource) Next(ctx context.Context) (*record.Batch, error) {
 		if nb.Len() == 0 {
 			continue // fully filtered batch; pull the next one
 		}
+		o.stats.Bytes += nb.ArenaBytes()
 		if o.sampler != nil {
 			o.sampler.Sample(o.stats.Name, nb)
 		}

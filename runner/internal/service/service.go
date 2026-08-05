@@ -278,6 +278,11 @@ func (s *Service) run(id string, doc *flow.Document, o SubmitOpts) {
 	// testing capacity: a release between the test and the wait would otherwise
 	// fire on the old channel and be missed (lost wakeup), stranding the task.
 	cost := s.taskCost()
+	// Admission wait is the span nothing else can show: a task held on
+	// resource capacity (ADR-0005) looks simply "slow" in every other
+	// measurement, so a runner sitting at its memory ceiling is
+	// indistinguishable from a slow integration without this.
+	admissionStart := time.Now()
 	for {
 		s.mu.Lock()
 		ch := s.released
@@ -306,19 +311,26 @@ func (s *Service) run(id string, doc *flow.Document, o SubmitOpts) {
 	}()
 
 	now := time.Now()
+	admissionMS := float64(now.Sub(admissionStart).Nanoseconds()) / 1e6
 	s.store.Update(id, func(t *task.Task) {
 		t.State = task.StateRunning
 		t.Started = &now
+		t.Phases.AdmissionMS = admissionMS
 	})
 
 	var sampler *captureSampler
 	if o.Capture {
 		sampler = newCaptureSampler(o.CaptureMax, redact)
 	}
+	runStart := time.Now()
 	res, err := s.execute(ctx, doc, redact, sampler, o)
 	end := time.Now()
+	runMS := float64(end.Sub(runStart).Nanoseconds()) / 1e6
 	s.store.Update(id, func(t *task.Task) {
 		t.Finished = &end
+		t.Phases.RunMS = runMS
+		t.Phases.BindMS = res.bindMS
+		t.Phases.TotalMS = float64(end.Sub(t.Submitted).Nanoseconds()) / 1e6
 		t.Captured = res.captured // useful on success and failure alike
 		if err != nil {
 			t.State = task.StateFailed
@@ -342,11 +354,14 @@ func (s *Service) run(id string, doc *flow.Document, o SubmitOpts) {
 		}
 		for _, op := range res.rep.Ops {
 			t.Ops = append(t.Ops, task.OpStat{
-				Name:       op.Name,
-				StepID:     op.Name, // Apply/New/Run label every op by its step id
-				RecordsIn:  op.RecordsIn,
-				RecordsOut: op.RecordsOut,
-				Seconds:    float64(op.Nanos) / 1e9,
+				Name:        op.Name,
+				StepID:      op.Name, // Apply/New/Run label every op by its step id
+				RecordsIn:   op.RecordsIn,
+				RecordsOut:  op.RecordsOut,
+				Seconds:     float64(op.Nanos) / 1e9,
+				Batches:     op.Batches,
+				WallSeconds: float64(op.WallNanos) / 1e9,
+				Bytes:       op.Bytes,
 			})
 		}
 	})
@@ -363,6 +378,10 @@ type execResult struct {
 	handlerErr  string
 	stopped     bool
 	stopStep    string
+	// bindMS is connector checkout/spawn plus pipeline build — the setup cost
+	// before any record moves. It separates "the connector was slow to start"
+	// from "the data was slow", which the run span alone conflates.
+	bindMS float64
 	// checkpoint is the latest sink-confirmed resume position (ADR-0037), or
 	// nil when the flow is not resume-eligible or the source reported none.
 	checkpoint []byte
@@ -415,6 +434,7 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 	srcStep := plan.Main[0]
 	sinkStep := plan.Main[len(plan.Main)-1]
 
+	bindStart := time.Now()
 	src, srcCleanup, srcInfo, err := s.bindSourceInfo(srcStep, o)
 	if err != nil {
 		return execResult{}, err
@@ -451,8 +471,11 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 	if err != nil {
 		return execResult{}, err
 	}
+	// Bind is everything up to the first pull: connector checkout or spawn,
+	// plus pipeline construction.
+	bindMS := float64(time.Since(bindStart).Nanoseconds()) / 1e6
 	rep, runErr := p.Run(ctx, sink, sinkStep.ID)
-	res := execResult{rep: rep, confirmed: confirmed(), checkpoint: checkpoint}
+	res := execResult{rep: rep, confirmed: confirmed(), checkpoint: checkpoint, bindMS: bindMS}
 	if sampler != nil {
 		res.captured = sampler.result()
 	}
