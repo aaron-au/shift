@@ -49,6 +49,8 @@ func main() {
 		kekFilesOld  = flag.String("kek-files-old", os.Getenv("SHIFT_HUB_KEK_FILES_OLD"), "comma-separated retired KEK files still needed to unwrap")
 
 		schedInterval = flag.Duration("sched-interval", envDuration("SHIFT_HUB_SCHED_INTERVAL", 5*time.Second), "scheduler poll interval")
+		statusSweep   = flag.Duration("status-sweep", envDuration("SHIFT_HUB_STATUS_SWEEP", 10*time.Minute),
+			"how often to prune read/expired async execution status (ADR-0042)")
 
 		connAllow = flag.String("connector-allow", os.Getenv("SHIFT_HUB_CONNECTOR_ALLOW"), "comma-separated connector allowlist (empty = all); cloud hubs restrict")
 		connDeny  = flag.String("connector-deny", os.Getenv("SHIFT_HUB_CONNECTOR_DENY"), "comma-separated connector denylist (hidden + blocked at deploy)")
@@ -132,6 +134,13 @@ func main() {
 		sched.Run(schedCtx)
 	}()
 	opts.SchedStatus = sched.Status
+
+	// Prune caller-facing execution status (ADR-0042 §3c). Unsynchronised
+	// across replicas on purpose: this only deletes rows already past their
+	// grace or TTL, so concurrent passes are wasted work rather than a
+	// correctness problem — unlike the scheduler, where a double fire is a
+	// duplicated side effect.
+	go st.SweepStatus(schedCtx, *statusSweep, store.ConsumedGrace, slog.Default())
 
 	// Rate limiting (M6c, ADR-0021). Burst ~2x rps (min 1). Disabled classes
 	// (rps<=0) are no-ops. Runners poll leases, so they get a higher ceiling.

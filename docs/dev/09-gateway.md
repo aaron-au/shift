@@ -58,6 +58,15 @@ available the answer is **503 with Retry-After**, never a wait: a gateway that
 holds work is a gateway with durable state, and durable state in the DMZ is
 what this component exists to avoid.
 
+**Status reads live under the developer's own route.** `GET /orders/_status/{id}`
+resolves to the `/orders` route and inherits its ENTIRE policy — token,
+allowlist, rate limit, principal. Authorisation is therefore structural: a
+caller with access to `/orders` has no path on which to try a `/payroll` id.
+It is GET-only regardless of the route's own method, and config validation
+refuses any route that would shadow another's `_status` segment. An anonymous
+route's status URL carries a per-task capability token in the query; the
+gateway does not log it.
+
 **Async is the default (ADR-0042).** A flow terminating at `@response` keeps
 the caller's exchange open and returns the flow's output; anything else is
 answered `202 Accepted` with a task id as soon as the request is verified, and
@@ -270,9 +279,7 @@ than this system.
 - Rate limiting (reuse ADR-0021's token bucket), HMAC provider signatures.
 - **Pass-through proxy routes** (ADR-0040, drafted): fronting an internal API
   with no runner and no flow.
-- **The status URL** (ADR-0042 §2/§3). Async requests return a task id but no
-  `status_url` yet: serving `GET /_shift/tasks/{id}` needs a hub record created
-  at ACCEPT time and looked up by id, and neither exists — `direct_executions`
-  is written only when an execution is already terminal, with an id the hub
-  mints rather than one the runner can quote. Advertising a URL that 404s would
-  be worse than omitting the field, and adding it later is additive.
+- `accept: "fast"` (ADR-0042 §6): today an accept that cannot be recorded is a
+  503, which is the durable-by-default answer. The faster mode trades a status
+  URL that may briefly 404 for edge availability when the hub is unreachable,
+  and nobody has asked for it.

@@ -2,7 +2,7 @@
 
 Date: 2026-08-05
 
-Status: **Partially built.** Amends ADR-0038 (the gateway's request/response
+Status: **Built** (§1–§5); §6 `accept: "fast"` deferred. Amends ADR-0038 (the gateway's request/response
 lifecycle) and extends ADR-0024 (`@response` and synchronous run). Nothing in
 either is retracted: `@response` remains the synchronous path, and it becomes
 the explicit opt-in rather than the accident of how the exchange happens to be
@@ -94,17 +94,18 @@ human reading the response in a terminal will find. Neither is a redirect — a
 202 with a `Location` is defined as "here is where the status lives", which is
 what this is.
 
-> **Build status (2026-08-06).** §1 (async default), §4 (input verification,
-> `engine/schema` + `flowdoc.Input`) and §5 (read before answering) are built.
-> The 202 carries the task id but **no `status_url`** until §3 lands: it needs
-> a record created at accept time and looked up by id, and `direct_executions`
-> today is written only once an execution is terminal, under an id the hub mints
-> rather than one the runner can quote. Advertising a URL that 404s would be
-> worse than omitting the field, and the field is additive when §3 arrives.
+> **Build status (2026-08-06).** §1–§5 are built and the status URL works end
+> to end: `engine/schema`, `flowdoc.Input`, the runner's verify-then-accept
+> path, the hub's `execution_status` table and endpoints, the gateway's
+> `_status` sub-path, and the sweeper.
 >
 > §3 was **revised on 2026-08-06** after review: the status path moved from a
 > global `/_shift/tasks/{id}` to the developer's own route, which is both safer
 > and simpler — see §3, §3a, §3b, §3c.
+>
+> Deferred: `accept: "fast"` (§6) — durable accept is the only mode built, and
+> nobody has asked for the other. Retention policy beyond the TTL and grace is
+> still open.
 
 ### 3. The status endpoint lives UNDER the developer's own route
 

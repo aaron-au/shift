@@ -1,11 +1,14 @@
 package store_test
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -324,4 +327,48 @@ func newID(t *testing.T) string {
 func sha256Hex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
+}
+
+// The sweeper runs on a ticker and must not need a lock: it only deletes rows
+// already past their grace or TTL, so two replicas doing it at once is wasted
+// work rather than a correctness problem (unlike the scheduler, where a double
+// fire is a duplicated side effect).
+func TestSweepStatusLoopPrunesAndStops(t *testing.T) {
+	s := open(t)
+	ctx := t.Context()
+	id := newID(t)
+
+	if err := s.AcceptExecution(ctx, "", store.ExecutionStatus{
+		ID: id, FlowName: "orders", Route: "/orders", Principal: "acme-erp",
+	}, "", time.Nanosecond); err != nil {
+		t.Fatal(err)
+	}
+
+	loopCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.SweepStatus(loopCtx, 10*time.Millisecond, time.Nanosecond, discardLogger())
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := s.ExecutionStatusByID(ctx, id, "/orders", "acme-erp", ""); err != nil {
+			stop()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the sweeper did not stop when its context ended")
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	stop()
+	<-done
+	t.Fatal("an expired row survived the sweeper loop")
+}
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError + 1}))
 }
