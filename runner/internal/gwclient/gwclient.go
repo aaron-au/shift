@@ -125,6 +125,8 @@ type Loop struct {
 	opts Options
 	log  *slog.Logger
 	cl   *http.Client
+	// schemas compiles each distinct input schema once (ADR-0042 §4c).
+	schemas schemaCache
 }
 
 // New builds an intake. It does not dial anything until Run.
@@ -337,6 +339,30 @@ func (l *Loop) execute(ctx context.Context, in *inbound) (status int, body []byt
 		// place for it, and saying so lets the gateway's operator see the
 		// drift instead of chasing an opaque failure.
 		return http.StatusNotFound, []byte(`{"error":"unknown flow"}`), "application/json"
+	}
+
+	// Verify BEFORE anything else runs (ADR-0042 §4). A malformed payload is
+	// the one failure the caller can fix, and this is the only moment they
+	// still hold the data.
+	if res := l.verify(doc, in.body); !res.ok() {
+		switch {
+		case res.TooLarge:
+			l.log.Warn("request too large to verify", "flow", in.flow, "request", in.id,
+				"bytes", len(in.body), "limit", res.Limit)
+			return http.StatusRequestEntityTooLarge,
+				problem(http.StatusRequestEntityTooLarge, "input_too_large",
+					"the request is larger than this flow verifies", nil), "application/json"
+		case res.Err != nil:
+			// The parse error names a column, which is useful and reveals no
+			// payload — it is a position, not content.
+			return http.StatusBadRequest,
+				problem(http.StatusBadRequest, "input_invalid",
+					"the request body is not valid JSON: "+res.Err.Error(), nil), "application/json"
+		default:
+			return http.StatusBadRequest,
+				problem(http.StatusBadRequest, "input_invalid",
+					"the request does not satisfy this flow's input schema", res.Violations), "application/json"
+		}
 	}
 
 	var secretValues []string
