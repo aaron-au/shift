@@ -397,3 +397,35 @@ func TestGetFlowVersionAddressing(t *testing.T) {
 		t.Fatalf("Enqueue of an unknown flow = %v, want ErrNotFound", err)
 	}
 }
+
+// FlowByName is the design-time lookup: it answers "which versions exist"
+// without resolving to the published one, because a draft is exactly what a
+// review is for.
+func TestFlowByNameSeesDrafts(t *testing.T) {
+	s := open(t)
+	ctx := t.Context()
+
+	if _, err := s.FlowByName(ctx, "ghost"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("unknown flow = %v, want ErrNotFound", err)
+	}
+	v, err := s.DeployFlow(ctx, "orders", flowDoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := s.FlowByName(ctx, "orders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.LatestVersion != v {
+		t.Errorf("latest = %d, want the just-deployed %d", f.LatestVersion, v)
+	}
+	if f.PublishedVersion != 0 {
+		t.Errorf("published = %d; nothing has been published", f.PublishedVersion)
+	}
+	if err := s.PublishFlow(ctx, "orders", v); err != nil {
+		t.Fatal(err)
+	}
+	if f, err = s.FlowByName(ctx, "orders"); err != nil || f.PublishedVersion != v {
+		t.Errorf("after publish: %+v, %v", f, err)
+	}
+}

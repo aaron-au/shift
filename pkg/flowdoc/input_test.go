@@ -199,3 +199,110 @@ func TestNoInputIsFine(t *testing.T) {
 		t.Errorf("nil scope = %q, want the %q default", none.EffectiveScope(), flowdoc.ScopeBody)
 	}
 }
+
+// Fire-and-forget (ADR-0042 §3d): the third endpoint shape. A high-volume feed
+// wants no status row per request, and that has to be sayable.
+func TestFireAndForgetIsAccepted(t *testing.T) {
+	doc := `{
+		"name": "events",
+		"source": {"connector": "@webhook", "action": "ndjson", "ack": "none"},
+		"sink": {"connector": "@discard"}
+	}`
+	d, err := flowdoc.Parse([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.EffectiveAck() != flowdoc.AckNone {
+		t.Errorf("ack = %q, want %q", d.EffectiveAck(), flowdoc.AckNone)
+	}
+}
+
+// The default is the trackable shape — an absent ack must not silently mean
+// "no status", or every existing flow changes behaviour on upgrade.
+func TestAckDefaultsToStatus(t *testing.T) {
+	doc := `{
+		"name": "orders",
+		"source": {"connector": "@webhook", "action": "ndjson"},
+		"sink": {"connector": "@discard"}
+	}`
+	d, err := flowdoc.Parse([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.EffectiveAck() != flowdoc.AckStatus {
+		t.Errorf("ack = %q, want %q", d.EffectiveAck(), flowdoc.AckStatus)
+	}
+}
+
+// A synchronous flow has no accept to acknowledge, so "none" is a genuine
+// contradiction — validation's job, not review's.
+func TestFireAndForgetContradictsAResponseSink(t *testing.T) {
+	doc := `{
+		"name": "orders",
+		"source": {"connector": "@webhook", "action": "ndjson", "ack": "none"},
+		"sink": {"connector": "@response"}
+	}`
+	_, err := flowdoc.Parse([]byte(doc))
+	if err == nil {
+		t.Fatal("accepted a flow that both answers its caller and refuses to acknowledge them")
+	}
+	if !strings.Contains(err.Error(), "@response") {
+		t.Errorf("error %q does not name the contradiction", err)
+	}
+}
+
+func TestAckRejectsAnUnknownMode(t *testing.T) {
+	doc := `{
+		"name": "orders",
+		"source": {"connector": "@webhook", "action": "ndjson", "ack": "maybe"},
+		"sink": {"connector": "@discard"}
+	}`
+	if _, err := flowdoc.Parse([]byte(doc)); err == nil {
+		t.Fatal("accepted an unknown ack mode, which would silently behave as the default")
+	}
+}
+
+// There is no caller to acknowledge on a pull source, so an ack there would be
+// a field that silently never applies.
+func TestAckRejectedOnANonWebhookSource(t *testing.T) {
+	doc := `{
+		"name": "nightly",
+		"source": {"connector": "gen", "action": "records", "ack": "none"},
+		"sink": {"connector": "@discard"}
+	}`
+	if _, err := flowdoc.Parse([]byte(doc)); err == nil {
+		t.Fatal("accepted an ack on a pull source")
+	}
+}
+
+func TestAckRejectedOnASink(t *testing.T) {
+	doc := `{
+		"name": "orders",
+		"source": {"connector": "@webhook", "action": "ndjson"},
+		"sink": {"connector": "@discard", "ack": "none"}
+	}`
+	if _, err := flowdoc.Parse([]byte(doc)); err == nil {
+		t.Fatal("accepted an ack on the sink")
+	}
+}
+
+// Graph form must behave identically: the two authoring forms lower to one
+// plan, and an option honoured in only one of them is a trap.
+func TestAckOnAGraphFormSourceStep(t *testing.T) {
+	doc := `{
+		"name": "events",
+		"start": "in",
+		"steps": [
+			{"id": "in", "type": "source", "connector": "@webhook", "action": "ndjson",
+			 "ack": "none", "onSuccess": "out"},
+			{"id": "out", "type": "sink", "connector": "@discard"}
+		]
+	}`
+	d, err := flowdoc.Parse([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.EffectiveAck() != flowdoc.AckNone {
+		t.Errorf("ack = %q, want %q", d.EffectiveAck(), flowdoc.AckNone)
+	}
+}

@@ -115,6 +115,98 @@ func (in *Input) validate(where string) error {
 	return nil
 }
 
+// Acknowledgement modes for an asynchronous webhook (ADR-0042 §3d).
+const (
+	// AckStatus is the default: the caller receives a task id and a status
+	// URL, and the runner records the acceptance at the hub before answering.
+	AckStatus = "status"
+
+	// AckNone is fire-and-forget: the caller receives 202 and nothing to poll,
+	// and the accept path touches the hub not at all — no id, no row, no
+	// retention. Right for a high-volume event feed, where a million status
+	// rows nobody reads is bookkeeping for its own sake.
+	//
+	// It withholds only the CALLER's view. Execution reporting, metering and
+	// telemetry are unchanged: the operator keeps full history.
+	AckNone = "none"
+)
+
+// EffectiveAck returns the acknowledgement mode, defaulted.
+func (d *Document) EffectiveAck() string {
+	if a := d.ackSpec(); a != "" {
+		return a
+	}
+	return AckStatus
+}
+
+// ackSpec returns the declared ack, in either document form.
+func (d *Document) ackSpec() string {
+	if d.Source.Ack != "" {
+		return d.Source.Ack
+	}
+	for i := range d.Steps {
+		if d.Steps[i].Type == "source" && d.Steps[i].Ack != "" {
+			return d.Steps[i].Ack
+		}
+	}
+	return ""
+}
+
+// validateAck enforces where an ack may appear and what it may say.
+func (d *Document) validateAck() error {
+	check := func(where, connector, ack string) error {
+		if ack == "" {
+			return nil
+		}
+		if connector != WebhookSource {
+			return fmt.Errorf("flow: %s: ack applies to a %s source "+
+				"(there is no caller to acknowledge on a %q source)", where, WebhookSource, connector)
+		}
+		switch ack {
+		case AckStatus, AckNone:
+		default:
+			return fmt.Errorf("flow: %s: ack %q must be %q or %q", where, ack, AckStatus, AckNone)
+		}
+		if ack == AckNone && d.TerminatesAtResponse() {
+			// A genuine contradiction rather than a questionable choice: a
+			// synchronous flow answers with its output, so there is no accept
+			// to acknowledge and no shape in which "none" could be honoured.
+			return fmt.Errorf("flow: %s: ack %q contradicts the %s sink — "+
+				"a synchronous flow answers with its output, so there is no acknowledgement to suppress",
+				where, AckNone, ResponseSink)
+		}
+		return nil
+	}
+	if err := check("source", d.Source.Connector, d.Source.Ack); err != nil {
+		return err
+	}
+	if d.Sink.Ack != "" {
+		return errors.New("flow: sink: ack applies to the entry step, not the sink")
+	}
+	seen := ""
+	for i := range d.Steps {
+		s := &d.Steps[i]
+		if s.Ack == "" {
+			continue
+		}
+		if s.Type != "source" {
+			return fmt.Errorf("flow: step %q: ack applies to a %s source, not a %s step",
+				s.ID, WebhookSource, s.Type)
+		}
+		if err := check("step "+s.ID, s.Connector, s.Ack); err != nil {
+			return err
+		}
+		if seen != "" {
+			// Same reasoning as two input blocks: one request, one accept
+			// decision, so two answers cannot both be honoured.
+			return fmt.Errorf("flow: step %q: ack is already declared on step %q; "+
+				"a request has one acknowledgement", s.ID, seen)
+		}
+		seen = s.ID
+	}
+	return nil
+}
+
 // validateInputs enforces where an input block may appear.
 //
 // It is confined to a @webhook source because that is the only place a REQUEST

@@ -358,3 +358,75 @@ func inboundWith(flow string, headers map[string]string, body string) *inbound {
 	}
 	return &inbound{id: "req-1", flow: flow, headers: h, body: []byte(body)}
 }
+
+// Fire-and-forget (ADR-0042 §3d): the accept path must not touch the hub at
+// all. An event feed doing a million of these a day should not be writing a
+// million rows nobody will read, and the round trip is the cost that made the
+// shape worth having.
+func TestFireAndForgetRecordsNothingAndPromisesNothing(t *testing.T) {
+	fs := newFakeStatus()
+	l := statusLoop(t, `{"name":"events","source":{"connector":"@webhook","action":"ndjson","ack":"none"},
+		"sink":{"connector":"@discard"}}`, fs)
+
+	code, body, _ := l.execute(t.Context(), inboundWith("events", map[string]string{
+		hdrRoute: "/events", hdrPrincipal: "acme-erp", hdrPublicBase: "https://api.example.com",
+	}, `{"event":"created"}`))
+
+	if code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: %s", code, body)
+	}
+	var got accepted
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Task != "" {
+		t.Errorf("task = %q; an id nobody can look up is worse than no id", got.Task)
+	}
+	if got.StatusURL != "" {
+		t.Errorf("status_url = %q; there is no row for it to resolve to", got.StatusURL)
+	}
+	if got.Status != "accepted" || got.Flow != "events" {
+		t.Errorf("body = %+v; the envelope should lose only what does not exist", got)
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if len(fs.accepted) != 0 {
+		t.Errorf("the hub was written to %d times on a fire-and-forget accept", len(fs.accepted))
+	}
+}
+
+// A hub that is down must not stop a fire-and-forget route: it never needed the
+// hub, so a failure there is not its failure.
+func TestFireAndForgetAcceptsWhileTheHubIsUnreachable(t *testing.T) {
+	fs := newFakeStatus()
+	fs.acceptEr = errFake
+	l := statusLoop(t, `{"name":"events","source":{"connector":"@webhook","action":"ndjson","ack":"none"},
+		"sink":{"connector":"@discard"}}`, fs)
+
+	code, body, _ := l.execute(t.Context(), inboundWith("events", map[string]string{
+		hdrRoute: "/events", hdrPublicBase: "https://api.example.com",
+	}, `{}`))
+	if code != http.StatusAccepted {
+		t.Errorf("status = %d, want 202: %s", code, body)
+	}
+}
+
+// Verification is independent of acknowledgement, and matters MORE here: a 400
+// is the only feedback a fire-and-forget caller can ever receive.
+func TestFireAndForgetStillVerifiesItsInput(t *testing.T) {
+	fs := newFakeStatus()
+	l := statusLoop(t, `{"name":"events","source":{"connector":"@webhook","action":"ndjson","ack":"none",
+		"input":{"scope":"body","schema":{"type":"object","required":["event"],
+			"properties":{"event":{"type":"string"}}}}},
+		"sink":{"connector":"@discard"}}`, fs)
+
+	code, body, _ := l.execute(t.Context(), inboundWith("events", map[string]string{
+		hdrRoute: "/events",
+	}, `{"event": 7}`))
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", code, body)
+	}
+	if !strings.Contains(string(body), "event") {
+		t.Errorf("body %s does not name the offending field", body)
+	}
+}

@@ -2,7 +2,7 @@
 
 Date: 2026-08-05
 
-Status: **Built** (§1–§5); §6 `accept: "fast"` deferred. Amends ADR-0038 (the gateway's request/response
+Status: **Built** (§1–§5, §7); §6 `accept: "fast"` deferred. Amends ADR-0038 (the gateway's request/response
 lifecycle) and extends ADR-0024 (`@response` and synchronous run). Nothing in
 either is retracted: `@response` remains the synchronous path, and it becomes
 the explicit opt-in rather than the accident of how the exchange happens to be
@@ -233,6 +233,57 @@ The grace period exists because clients poll twice. Deleting on first read makes
 the second look like a forgery, so within the window a second read is **410
 Gone** rather than 404 — no leak, since the caller already proved the
 capability, and far kinder than a 404 that reads as "you got the id wrong".
+
+### 3d. Fire-and-forget: a third shape, declared on the webhook
+
+Aaron's observation (2026-08-06): *an async web process isn't necessarily
+something that needs a status afterwards — it could be fire and forget.*
+
+Correct, and §3 quietly assumed otherwise. There are **three** endpoint shapes,
+not two:
+
+| | terminal | the caller gets | hub write on accept |
+|---|---|---|---|
+| synchronous | `@response` | the output, in the same response | none |
+| async, trackable | anything else | 202 + task id + status URL | one row, before the 202 |
+| **fire-and-forget** | anything else, `ack: "none"` | 202, nothing to poll | **none** |
+
+An event feed posting a million notifications a day does not want a million
+status rows nobody will ever read, and it certainly does not want a hub round
+trip on every accept in order to create them. Forcing one is the bookkeeping
+equivalent of the whole-payload buffering this platform exists to avoid.
+
+**It is declared on the `@webhook` source, beside `input`.** Not by the graph,
+because unlike synchronous-versus-async there is no node whose presence means
+"observable": every async flow looks identical whether or not anyone intends to
+poll it. And not on the gateway route, because whether a flow is worth tracking
+is a property of what the flow *is*, and the gateway must keep holding no
+opinion about flow semantics (ADR-0038).
+
+```json
+"source": {"connector": "@webhook", "action": "ndjson", "ack": "none"}
+```
+
+Three rules:
+
+- `ack: "none"` on a flow ending at `@response` is a **422, not a notice**. The
+  two are a genuine contradiction — a synchronous flow has no accept to
+  acknowledge — and a contradiction is validation's job, not review's.
+- The accept path skips the hub entirely: no id minted, no row, no capability
+  token, no retention. The 202 body is the same envelope minus what does not
+  exist — `{"flow": …, "status": "accepted", "accepted_at": …}`, with no `task`
+  and no `status_url`. A task id nobody can look up would be worse than no id
+  at all, and a second envelope shape would be worse than either.
+- **Input verification is unaffected, and matters more.** A 400 is the only
+  feedback a fire-and-forget caller will ever receive. An endpoint that is both
+  unverified and untrackable accepts anything and reports nothing, and the
+  review says so.
+
+**Fire-and-forget means the CALLER cannot check, not that the platform
+forgets.** Execution reporting, metering and telemetry (`direct_executions`,
+ADR-0016/M6d) are unchanged — the operator keeps full history. What is dropped
+is exactly the caller-facing row in `execution_status`, which is the only part
+that existed for polling.
 
 ### 4. Input verification: the schema is what makes 202 mean something
 
@@ -477,6 +528,54 @@ the payload through the hub queue would buy retries and survive runner loss —
 and would put payload on the control plane, which is the one line the entire
 two-plane architecture exists to hold. The hub gets metadata; the payload never
 leaves the runner.
+
+### 7. The developer is told at design time, by a registry of checks
+
+Everything above is decided by the SHAPE of the flow: a missing `@response`
+makes a route asynchronous, a missing `input` makes it unverified. Both are
+absences, and an absence is invisible on a canvas. A developer can ship an
+endpoint that answers 202 to anything, having never made either decision
+consciously.
+
+So the flow document carries a second, advisory pass — `flowdoc.Review` —
+alongside `Validate`:
+
+| | `Validate` | `Review` |
+|---|---|---|
+| answers | will this run | will this do what you think |
+| on failure | 422, nothing is stored | nothing; notices are returned |
+| returns | `error` | `[]Notice` |
+
+**A notice never blocks.** The separation is structural, not conventional:
+`Review` has no error return, and no caller may derive one. The moment an
+advisory can fail a deploy it has become validation living in the wrong file,
+and the pressure to soften a real validation rule into "just a warning" starts
+immediately after.
+
+**Checks are registered, not listed.** `RegisterCheck` at init; `Review` runs
+whatever is registered, orders warnings first, and namespaces each notice under
+its check's code. Adding a check is a file; retiring one deletes a file. Three
+consequences follow that a hard-coded list would not give:
+
+- A deployment can register its own. A cloud hub that forbids anonymous
+  webhooks can say so at design time in its own build, without that policy
+  leaking into the shared model that self-hosted runs also compile.
+- `GET /api/v1/review-checks` serves the set, so the studio can name where a
+  notice came from without carrying a second copy of the rules.
+- The registry freezes at the first `Review`. Two identical documents must not
+  review differently depending on when they arrived.
+
+The initial checks are the four facts a developer would otherwise learn from a
+caller: this route is asynchronous (or synchronous); this endpoint accepts
+unverified input; `scope: records` verified only the first record; this
+synchronous flow contains a blocking operator and so holds the caller's
+connection for the whole run.
+
+**Where they surface** is the other half of the decision. Notices ride on the
+deploy response and on the publish response, and the studio also reviews the
+live canvas as it is edited. Publish repeats what deploy already said, on
+purpose: the two are often days apart and often different people, and publish
+is the last point at which changing your mind is cheap.
 
 ## Consequences
 

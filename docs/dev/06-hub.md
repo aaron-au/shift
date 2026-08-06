@@ -364,6 +364,25 @@ from each flow row's "Graph" button.
   authoritative** — a 422 is surfaced inline (`#gerr`), never re-implemented
   client-side.
 
+- *Design-time review (ADR-0042 §7).* `flowdoc.Review(doc)` returns advisory
+  `Notice`s — warnings first, each namespaced under the check that produced
+  it — for the facts a flow's SHAPE decides silently: no `@response` ⇒ this
+  route answers 202 and not the result; no `input` ⇒ it accepts anything;
+  `scope: records` ⇒ only the first record was verified; `@response` plus a
+  blocking operator ⇒ the caller's connection is held for the whole run.
+  Checks are **registered** (`flowdoc.RegisterCheck`, init-time; the registry
+  freezes at the first `Review`), so a deployment can add its own without
+  touching the shared model. Served three ways: on the `deployFlow` 201 and
+  the `publishFlow` 200 bodies, `POST /api/v1/flows/review` for an unsaved
+  canvas, `GET /api/v1/flows/{name}/review[?version=N]` for a stored one
+  (defaulting to the **latest** version, not the published one — reviewing a
+  draft is how you decide whether to publish it), plus
+  `GET /api/v1/review-checks` for the registered set. The studio renders them
+  as a panel under the toolbar, badges the node each is about, and shows them
+  in a **confirmation before publish**. Notices never block: `Review` returns
+  no error, and a flow that reviews with warnings deploys and publishes
+  exactly as before.
+
 **Windowed shell (Phase E, ADR-0019).** The dashboard is an "OS-lite" desktop:
 a left **dock** of tools, each toggling a draggable/resizable/closable
 **window** (`initShell` + a small window manager). One singleton window per

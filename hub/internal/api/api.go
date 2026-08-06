@@ -143,6 +143,9 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("GET /api/v1/flows", a.admin(a.listFlows))
 	mux.Handle("GET /api/v1/flows/{name}", a.admin(a.getFlow))
 	mux.Handle("GET /api/v1/flows/{name}/graph", a.admin(a.getFlowGraph))
+	mux.Handle("POST /api/v1/flows/review", a.admin(a.reviewFlow))             // ADR-0042 §7
+	mux.Handle("GET /api/v1/flows/{name}/review", a.admin(a.reviewStoredFlow)) // ADR-0042 §7
+	mux.Handle("GET /api/v1/review-checks", a.admin(a.listReviewChecks))
 	mux.Handle("POST /api/v1/flows/{name}/versions/{version}/publish", a.admin(a.publishFlow))
 	mux.Handle("POST /api/v1/flows/{name}/execute", a.admin(a.executeFlow))
 	mux.Handle("PUT /api/v1/flows/{name}/schedule", a.admin(a.putSchedule))
@@ -323,6 +326,17 @@ func writeErrCode(w http.ResponseWriter, code int, machineCode string, err error
 	writeJSON(w, code, map[string]apiErr{"error": {Status: code, Code: machineCode, Message: err.Error()}})
 }
 
+// writeLookupErr answers a read that could not find what it was asked for.
+// ErrNotFound is a 404 and anything else is ours to own, which is the same
+// two-line shape every lookup handler was writing out longhand.
+func writeLookupErr(w http.ResponseWriter, err error) {
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	writeErr(w, http.StatusInternalServerError, err)
+}
+
 // readBody decodes a bounded JSON body ({} for an empty body).
 func readBody(r *http.Request, into any) error {
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
@@ -398,7 +412,13 @@ func (a *api) deployFlow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = a.st.Audit(r.Context(), actor(r), "flow.deploy", name, map[string]int{"version": version})
-	writeJSON(w, http.StatusCreated, map[string]any{"name": name, "version": version})
+	// Notices ride on the deploy rather than needing a second call: the moment
+	// a developer has just shipped something is the moment they will read
+	// "this deploys as an asynchronous web call" (ADR-0042 §7). They never
+	// block — the deploy above has already happened.
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"name": name, "version": version, "notices": flowdoc.Review(doc),
+	})
 }
 
 func (a *api) listFlows(w http.ResponseWriter, r *http.Request) {
@@ -466,7 +486,12 @@ func (a *api) publishFlow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = a.st.Audit(r.Context(), actor(r), "flow.publish", name, map[string]int{"version": version})
-	writeJSON(w, http.StatusOK, map[string]any{"name": name, "published_version": version})
+	// Publish is the last point at which changing your mind is cheap, so the
+	// notices are repeated here even though deploy already showed them: the
+	// two are often days apart, and often different people.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": name, "published_version": version, "notices": a.noticesFor(r, name, version),
+	})
 }
 
 func (a *api) executeFlow(w http.ResponseWriter, r *http.Request) {

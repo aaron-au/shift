@@ -465,25 +465,31 @@ func (l *Loop) accept(ctx context.Context, doc *flowdoc.Document, in *inbound, s
 	// in the 202 without coordinating with anyone. Minting is not owning: the
 	// row lives at the hub, so any runner can serve the status read and this
 	// one may be long gone by then.
-	taskID, err := newTaskID()
-	if err != nil {
-		l.log.Error("minting a task id failed", "flow", in.flow, "error", err)
-		return http.StatusInternalServerError,
-			problem(http.StatusInternalServerError, "runner_error", "could not accept", nil), "application/json"
+	// Fire-and-forget (ADR-0042 §3d) skips all of it: no id, no hub round trip
+	// on the accept path, no row to retain. A million status rows nobody reads
+	// is bookkeeping for its own sake, and quoting a task id that cannot be
+	// looked up would be worse than quoting none.
+	var taskID, statusURL string
+	if doc.EffectiveAck() != flowdoc.AckNone {
+		var err error
+		if taskID, err = newTaskID(); err != nil {
+			l.log.Error("minting a task id failed", "flow", in.flow, "error", err)
+			return http.StatusInternalServerError,
+				problem(http.StatusInternalServerError, "runner_error", "could not accept", nil), "application/json"
+		}
+		if statusURL, err = l.recordAccept(ctx, doc, in, taskID); err != nil {
+			// Durable accept (ADR-0042 §6): the record comes BEFORE the promise,
+			// so a status URL never 404s and an accepted task never vanishes
+			// without trace. Failing here is honest — the caller has been
+			// promised nothing.
+			l.log.Error("recording the accept failed", "flow", in.flow, "request", in.id, "error", err)
+			return http.StatusServiceUnavailable,
+				problem(http.StatusServiceUnavailable, "runner_unavailable",
+					"this runner cannot accept work right now", nil), "application/json"
+		}
 	}
 
-	statusURL, err := l.recordAccept(ctx, doc, in, taskID)
-	if err != nil {
-		// Durable accept (ADR-0042 §6): the record comes BEFORE the promise, so
-		// a status URL never 404s and an accepted task never vanishes without
-		// trace. Failing here is honest — the caller has been promised nothing.
-		l.log.Error("recording the accept failed", "flow", in.flow, "request", in.id, "error", err)
-		return http.StatusServiceUnavailable,
-			problem(http.StatusServiceUnavailable, "runner_unavailable",
-				"this runner cannot accept work right now", nil), "application/json"
-	}
-
-	_, err = l.opts.Service.SubmitWith(doc, service.SubmitOpts{
+	_, err := l.opts.Service.SubmitWith(doc, service.SubmitOpts{
 		WebhookBody:  in.body,
 		SecretValues: secretValues,
 		// The completion hooks belong HERE rather than on the response path:
@@ -562,7 +568,10 @@ func (l *Loop) recordAccept(ctx context.Context, doc *flowdoc.Document, in *inbo
 
 // finishStatus closes out a status row when the task reaches a terminal state.
 func (l *Loop) finishStatus(taskID string, t task.Task) {
-	if l.opts.Status == nil {
+	// An empty id means fire-and-forget (ADR-0042 §3d): no row was written, so
+	// there is nothing to close out. The execution report and metering happen
+	// elsewhere and are unaffected.
+	if l.opts.Status == nil || taskID == "" {
 		return
 	}
 	out := hubclient.ExecutionOutcome{
@@ -595,7 +604,7 @@ func (l *Loop) finishStatus(taskID string, t task.Task) {
 
 // failStatus closes out a row for work that never started.
 func (l *Loop) failStatus(taskID, step, code, msg string) {
-	if l.opts.Status == nil {
+	if l.opts.Status == nil || taskID == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -609,7 +618,10 @@ func (l *Loop) failStatus(taskID, step, code, msg string) {
 
 // accepted is the 202 body (ADR-0042 §2).
 type accepted struct {
-	Task string `json:"task"`
+	// Task is omitted for a fire-and-forget route (ADR-0042 §3d), where no id
+	// was minted. An id the caller cannot look up would be a promise of
+	// something that does not exist.
+	Task string `json:"task,omitempty"`
 	Flow string `json:"flow"`
 	// StatusURL is where the caller polls. Omitted when this runner has no hub
 	// to record against: advertising a URL that 404s is worse than saying
