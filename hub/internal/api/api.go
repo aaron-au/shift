@@ -23,6 +23,7 @@ import (
 	"github.com/aaron-au/shift/hub/internal/connpolicy"
 	"github.com/aaron-au/shift/hub/internal/oidcauth"
 	"github.com/aaron-au/shift/hub/internal/ratelimit"
+	"github.com/aaron-au/shift/hub/internal/runnerca"
 	"github.com/aaron-au/shift/hub/internal/scheduler"
 	"github.com/aaron-au/shift/hub/internal/secrets"
 	"github.com/aaron-au/shift/hub/internal/store"
@@ -51,6 +52,15 @@ type Options struct {
 	// disallowed connectors are hidden from listing/resolution and rejected
 	// at deploy. Optional; nil allows everything (self-hosted default).
 	ConnectorPolicy *connpolicy.Policy
+	// RunnerCA issues and anchors runner client certificates (ADR-0044).
+	// Optional; nil leaves the runner realm on bearer secrets, which is what
+	// a deployment terminating TLS at a proxy needs.
+	RunnerCA *runnerca.CA
+	// RunnerAuth decides which runner credentials are accepted: "mtls",
+	// "bearer" or "both" (default). A deployment that has cut over should set
+	// "mtls" — "we support both forever" is how the weaker credential stays
+	// alive.
+	RunnerAuth RunnerAuthMode
 	// LeaseTTL is how long a claimed task stays leased between heartbeats
 	// (default 30s).
 	LeaseTTL time.Duration
@@ -80,6 +90,16 @@ func (o *Options) defaults() error {
 	}
 	if o.OIDCFlow != nil && o.OIDC == nil {
 		return errors.New("api: OIDCFlow requires OIDC")
+	}
+	mode, err := ParseRunnerAuthMode(string(o.RunnerAuth))
+	if err != nil {
+		return err
+	}
+	o.RunnerAuth = mode
+	if o.RunnerAuth == RunnerAuthMTLS && o.RunnerCA == nil {
+		// Refusing at startup beats a hub that accepts no runner at all and
+		// reports it one 401 at a time.
+		return errors.New(`api: runner auth "mtls" needs a runner CA (SHIFT_HUB_RUNNER_CA_CERT/KEY)`)
 	}
 	if o.LeaseTTL <= 0 {
 		o.LeaseTTL = 30 * time.Second
@@ -139,6 +159,7 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	// Admin realm.
 	mux.Handle("POST /api/v1/runner-tokens", a.admin(a.createRunnerToken))
 	mux.Handle("GET /api/v1/runners", a.admin(a.listRunners))
+	mux.Handle("DELETE /api/v1/runners/{id}", a.admin(a.deleteRunner)) // ADR-0044: decommission = revoke
 	mux.Handle("PUT /api/v1/flows/{name}", a.admin(a.deployFlow))
 	mux.Handle("GET /api/v1/flows", a.admin(a.listFlows))
 	mux.Handle("GET /api/v1/flows/{name}", a.admin(a.getFlow))
@@ -210,6 +231,9 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	// against the DB — throttle it like the other anonymous routes to bound
 	// online token brute-force and write-DoS (ADR-0021).
 	mux.HandleFunc("POST /api/v1/runners/register", a.publicLimit(a.register))
+	// Renewal rides the runner's CURRENT certificate — no operator token, or a
+	// fleet would need a human in the loop every day (ADR-0044).
+	mux.Handle("POST /api/v1/runners/certificate", a.runner(a.renewCertificate))
 	mux.Handle("POST /api/v1/lease", a.runner(a.lease))
 	mux.Handle("POST /api/v1/tasks/{id}/heartbeat", a.runner(a.heartbeat))
 	mux.Handle("POST /api/v1/tasks/{id}/complete", a.runner(a.complete))
@@ -375,6 +399,19 @@ func (a *api) listRunners(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"runners": runners})
+}
+
+// deleteRunner decommissions a runner. Under mTLS this is how a certificate
+// stops being honoured (ADR-0044 §2): the name it carries no longer resolves.
+func (a *api) deleteRunner(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	err := a.st.DeleteRunner(r.Context(), id)
+	if err != nil {
+		writeLookupErr(w, err)
+		return
+	}
+	_ = a.st.Audit(r.Context(), actor(r), "runner.delete", id, nil)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *api) deployFlow(w http.ResponseWriter, r *http.Request) {
@@ -561,6 +598,10 @@ func (a *api) register(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Token string `json:"token"`
 		Name  string `json:"name"`
+		// CSR (base64 DER) asks for a client certificate instead of a bearer
+		// secret (ADR-0044 §1). Its presence is the runner's choice of
+		// credential; the hub's mode decides whether that choice is allowed.
+		CSR string `json:"csr,omitempty"`
 	}
 	if err := readBody(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -568,6 +609,23 @@ func (a *api) register(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Token == "" || req.Name == "" {
 		writeErr(w, http.StatusBadRequest, errors.New("token and name are required"))
+		return
+	}
+	if req.CSR != "" {
+		if !a.opts.RunnerAuth.allowsMTLS() {
+			writeErrCode(w, http.StatusBadRequest, "mtls_unavailable",
+				errors.New("this hub does not accept certificate-authenticated runners"))
+			return
+		}
+		a.registerCert(w, r, req.Token, req.Name, req.CSR)
+		return
+	}
+	if !a.opts.RunnerAuth.allowsBearer() {
+		// A deployment that has cut over must refuse the weaker credential at
+		// the point it would be ISSUED, not only where it would be accepted —
+		// otherwise the secret exists on disk and merely does not work yet.
+		writeErrCode(w, http.StatusBadRequest, "csr_required",
+			errors.New("this hub issues certificates only; send a csr"))
 		return
 	}
 	id, secret, err := a.st.RegisterRunner(r.Context(), req.Token, req.Name)
@@ -702,6 +760,14 @@ func (a *api) complete(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(raw) == 0 {
 		raw = []byte(`{}`)
+	}
+	if !json.Valid(raw) {
+		// The result is stored as opaque JSONB and never parsed, but opaque is
+		// not the same as unchecked: passing invalid JSON through to Postgres
+		// turns a client mistake into a 500, and a runner retrying on 5xx
+		// would retry a request that can never succeed.
+		writeErr(w, http.StatusBadRequest, errors.New("result must be a JSON document"))
+		return
 	}
 	err = a.st.Complete(r.Context(), r.PathValue("id"), runnerID(r), raw)
 	if errors.Is(err, store.ErrLeaseLost) {
