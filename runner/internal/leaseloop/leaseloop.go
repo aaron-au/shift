@@ -10,7 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -98,7 +98,8 @@ func (l *Loop) Run(ctx context.Context) {
 				break
 			}
 			l.errs.Add(1)
-			log.Printf("leaseloop: lease: %v (retrying in %s)", err, backoff)
+			slog.Warn("lease request failed, backing off",
+				"event", "runner.lease.failed", "error", err.Error(), "retry_in", backoff.String())
 			sleep(ctx, backoff)
 			backoff = min(backoff*2, 30*time.Second)
 			continue
@@ -127,6 +128,11 @@ func (l *Loop) headroom() bool {
 // execute runs one leased task: submit to the service, heartbeat while it
 // runs, then report the terminal state to the hub.
 func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Duration) {
+	// DEBUG, not INFO: one record per task is real volume on a busy runner,
+	// and "a task was leased" is only interesting when something went wrong
+	// with it — in which case the terminal record says so (ADR-0046).
+	slog.Debug("task leased", "event", "task.leased",
+		"task", t.ID, "flow", t.FlowName, "attempt", t.Attempt)
 	doc, err := flowdoc.Parse(t.Document)
 	if err == nil {
 		// Step idempotency (ADR-0002): the sink sees a key that is stable
@@ -215,10 +221,11 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 				// the duplicate side-effect-free — but stop reporting.
 				leaseHeld = false
 				l.errs.Add(1)
-				log.Printf("leaseloop: task %s: lease lost mid-run", t.ID)
+				slog.Warn("lease lost mid-run", "event", "task.lease_lost", "task", t.ID, "flow", t.FlowName)
 			} else if err != nil {
 				l.errs.Add(1)
-				log.Printf("leaseloop: task %s: heartbeat: %v", t.ID, err)
+				slog.Warn("heartbeat failed", "event", "task.heartbeat_failed",
+					"task", t.ID, "flow", t.FlowName, "error", err.Error())
 			}
 		case <-poll.C:
 			lt, ok := l.opts.Service.Task(localID)
@@ -232,6 +239,9 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 			case "completed":
 				if leaseHeld {
 					res := resultOf(lt, localID)
+					slog.Info("task completed", "event", "task.completed",
+						"task", t.ID, "flow", t.FlowName,
+						"records_in", res.RecordsIn, "records_out", res.RecordsOut)
 					l.report(t.ID, func(ctx context.Context) error {
 						return l.opts.Client.Complete(ctx, t.ID, res)
 					})
@@ -248,6 +258,9 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 							msg += "; handler error: " + lt.HandlerError
 						}
 					}
+					slog.Warn("task failed", "event", "task.failed",
+						"task", t.ID, "flow", t.FlowName,
+						"handled", lt.Handled, "handler_step", lt.HandlerStep, "error", msg)
 					l.report(t.ID, func(ctx context.Context) error {
 						return l.opts.Client.Fail(ctx, t.ID, msg)
 					})
@@ -298,12 +311,14 @@ func (l *Loop) report(taskID string, fn func(context.Context) error) {
 		cancel()
 		if err == nil || errors.Is(err, hubclient.ErrLeaseLost) {
 			if errors.Is(err, hubclient.ErrLeaseLost) {
-				log.Printf("leaseloop: task %s: result discarded, lease was re-dispatched", taskID)
+				slog.Warn("result discarded, the lease had been re-dispatched",
+					"event", "task.result_discarded", "task", taskID)
 			}
 			return
 		}
 		l.errs.Add(1)
-		log.Printf("leaseloop: task %s: report attempt %d: %v", taskID, attempt+1, err)
+		slog.Warn("reporting a terminal state failed, retrying",
+			"event", "task.report_retry", "task", taskID, "attempt", attempt+1, "error", err.Error())
 		time.Sleep(time.Second << attempt)
 	}
 }

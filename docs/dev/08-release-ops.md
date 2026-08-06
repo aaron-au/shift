@@ -74,9 +74,22 @@ the availability keystone (ADR-0002); everything durable lives there.
 - **Metrics**: `/metrics` on hubd and runnerd (ADR-0020) — queue depth, oldest
   queued age, runner liveness, per-route HTTP latency/status (#7),
   rate-limit rejections.
-- **Logs**: hubd emits structured JSON (`SHIFT_HUB_LOG_LEVEL`); each request
-  carries a correlation id (`X-Request-Id`, on the access line as `id`) — grep
-  it to follow one request (#7).
+- **Logs** (ADR-0046): all three binaries emit structured records on **stdout**
+  — JSON off a terminal, text on one, `SHIFT_LOG_FORMAT` / `SHIFT_LOG_LEVEL`
+  override. Every record carries `component` and `version`; lifecycle records
+  carry a stable `event`, so triage is a filter and not a grep:
+
+  ```
+  docker compose logs --no-log-prefix runnerd | jq 'select(.event=="task.failed")'
+  docker compose logs --no-log-prefix runnerd | jq 'select(.event|startswith("runner.cert"))'
+  ```
+
+  The ones worth alerting on: `runner.cert.renew_failed` (ERROR inside the last
+  hour before expiry — a fleet goes quiet if this is ignored),
+  `runner.control.unauthenticated`, `hub.runner_mtls.unreachable`,
+  `task.result_discarded`. Each request also carries a correlation id
+  (`X-Request-Id`, on the access line as `request`) — filter it to follow one
+  request (#7).
 - **Runner loss**: a dead runner's task re-dispatches on lease expiry, or fails
   terminally for an `at_most_once` flow (06-hub.md #11); no operator action for
   the common case.

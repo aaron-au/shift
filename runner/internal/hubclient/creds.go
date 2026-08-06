@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -110,7 +110,8 @@ func Connect(ctx context.Context, hc *http.Client, hubURL, credFile, token, name
 		if time.Now().After(deadline) || ctx.Err() != nil {
 			return "", nil, fmt.Errorf("hubclient: registration failed after %d attempts: %w", attempt, lastErr)
 		}
-		log.Printf("hubclient: registration attempt %d: %v — retrying", attempt, err)
+		slog.Warn("registration attempt failed, retrying",
+			"event", "runner.register.retry", "attempt", attempt, "error", err.Error())
 		select {
 		case <-ctx.Done():
 			return "", nil, ctx.Err()

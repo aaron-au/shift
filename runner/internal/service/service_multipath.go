@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/aaron-au/shift/engine/format/ndjson"
 	"github.com/aaron-au/shift/engine/mem"
@@ -63,8 +63,10 @@ func (s *Service) bindSourceInfo(step *flow.Step, o SubmitOpts) (stream.Source, 
 		if resumeAllowed(o, proc.Info()) {
 			src.ResumeFrom(o.ResumeFrom)
 		} else {
-			log.Printf("service: ignoring resume cursor from %s %s: this runner has %s %s; replaying from the start",
-				o.ResumeConnector, o.ResumeVersion, proc.Info().Name, proc.Info().Version)
+			slog.Warn("ignoring a resume cursor from another connector build; replaying from the start",
+				"event", "task.checkpoint.ignored",
+				"cursor_connector", o.ResumeConnector, "cursor_version", o.ResumeVersion,
+				"connector", proc.Info().Name, "version", proc.Info().Version)
 		}
 	}
 	return src, func() { s.pool.Put(step.Connector) }, proc.Info(), nil

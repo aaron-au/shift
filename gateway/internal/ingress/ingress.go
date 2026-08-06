@@ -157,17 +157,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// back rather than treating this as a permanent failure.
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "no runner available", http.StatusServiceUnavailable)
-		h.log.Warn("no runner available", "flow", route.Flow, "selector", route.Selector.String())
+		h.log.Warn("no runner available", "event", "request.no_runner", "flow", route.Flow, "selector", route.Selector.String())
 		return
 	case errors.Is(err, runners.ErrDeliveryTimeout):
 		http.Error(w, "runner did not respond", http.StatusGatewayTimeout)
-		h.log.Warn("runner delivery timeout", "flow", route.Flow, "request", req.ID)
+		h.log.Warn("runner delivery timeout", "event", "request.delivery_timeout", "flow", route.Flow, "request", req.ID)
 		return
 	case errors.Is(err, context.Canceled):
 		return // caller went away; nothing to say to a closed connection
 	case err != nil:
 		http.Error(w, "gateway error", http.StatusBadGateway)
-		h.log.Error("dispatch failed", "flow", route.Flow, "error", err)
+		h.log.Error("dispatch failed", "event", "request.dispatch_failed", "flow", route.Flow, "error", err)
 		return
 	}
 
@@ -186,7 +186,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// up mid-response, which is not a gateway fault and not worth an
 		// error-level log.
 		if _, err := io.Copy(w, resp.Body); err != nil {
-			h.log.Debug("response copy ended early", "request", req.ID, "error", err)
+			h.log.Debug("response copy ended early", "event", "request.response_truncated", "request", req.ID, "error", err)
 		}
 	}
 }

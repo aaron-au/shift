@@ -12,7 +12,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -106,7 +106,7 @@ func (s *Scheduler) pass(ctx context.Context) {
 	var errMsg string
 	if err := s.st.ReapExpired(ctx); err != nil && ctx.Err() == nil {
 		errMsg = err.Error()
-		log.Printf("scheduler: lease sweep: %v", err)
+		slog.Warn("lease sweep failed", "event", "scheduler.sweep_failed", "error", err.Error())
 	}
 	total := 0
 	for {
@@ -115,7 +115,7 @@ func (s *Scheduler) pass(ctx context.Context) {
 		if err != nil {
 			if ctx.Err() == nil {
 				errMsg = err.Error()
-				log.Printf("scheduler: fire pass: %v", err)
+				slog.Warn("scheduler pass failed", "event", "scheduler.pass_failed", "error", err.Error())
 			}
 			break
 		}

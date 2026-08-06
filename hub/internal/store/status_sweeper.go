@@ -43,9 +43,10 @@ func (s *Store) SweepStatus(ctx context.Context, interval, grace time.Duration, 
 				// Nothing is lost by a failed pass — the rows are still there
 				// and the next tick tries again — so this is a warning rather
 				// than anything louder.
-				log.Warn("execution status sweep failed", "error", err)
+				log.Warn("execution status sweep failed",
+					"event", "hub.status_sweep.failed", "error", err)
 			case n > 0:
-				log.Info("execution status swept", "rows", n)
+				log.Info("execution status swept", "event", "hub.status_sweep.done", "rows", n)
 			}
 		}
 	}

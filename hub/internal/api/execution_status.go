@@ -130,7 +130,8 @@ func (a *api) getExecutionStatus(w http.ResponseWriter, r *http.Request) {
 			// The caller has their answer; failing the response over
 			// bookkeeping would be the wrong trade. The sweeper's TTL still
 			// bounds the row.
-			slog.Warn("marking an execution status consumed failed", "id", e.ID, "error", err)
+			slog.Warn("marking an execution status consumed failed",
+				"event", "hub.execution_status.consume_failed", "task", e.ID, "error", err)
 		}
 	}
 	writeJSON(w, http.StatusOK, e)

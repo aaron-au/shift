@@ -247,7 +247,7 @@ func (l *Loop) pollLoop(ctx context.Context, addr string) {
 			// A gateway being down is normal (rolling restart, DMZ host
 			// replaced) and must not take the runner with it — the other
 			// gateways and the hub lease loop keep working.
-			l.log.Warn("gateway poll failed", "gateway", addr, "error", err, "retry_in", backoff)
+			l.log.Warn("gateway poll failed", "event", "runner.gateway.poll_failed", "gateway", addr, "error", err, "retry_in", backoff)
 			sleep(ctx, backoff)
 			backoff = min(backoff*2, 30*time.Second)
 			continue
@@ -360,7 +360,7 @@ func (l *Loop) poll(ctx context.Context, addr string) (*inbound, error) {
 func (l *Loop) serve(ctx context.Context, addr string, in *inbound) {
 	status, body, ctype := l.execute(ctx, in)
 	if err := l.deliver(ctx, addr, in.id, status, ctype, body); err != nil {
-		l.log.Warn("gateway deliver failed", "gateway", addr, "request", in.id, "error", err)
+		l.log.Warn("gateway deliver failed", "event", "runner.gateway.deliver_failed", "gateway", addr, "request", in.id, "error", err)
 	}
 }
 
@@ -386,7 +386,7 @@ func (l *Loop) execute(ctx context.Context, in *inbound) (status int, body []byt
 	if res := l.verify(doc, in.body); !res.ok() {
 		switch {
 		case res.TooLarge:
-			l.log.Warn("request too large to verify", "flow", in.flow, "request", in.id,
+			l.log.Warn("request too large to verify", "event", "request.too_large", "flow", in.flow, "request", in.id,
 				"bytes", len(in.body), "limit", res.Limit)
 			return http.StatusRequestEntityTooLarge,
 				problem(http.StatusRequestEntityTooLarge, "input_too_large",
@@ -408,7 +408,7 @@ func (l *Loop) execute(ctx context.Context, in *inbound) (status int, body []byt
 	if l.opts.Bind != nil {
 		bound, vals, err := l.opts.Bind(ctx, doc)
 		if err != nil {
-			l.log.Error("secret resolution failed", "flow", in.flow, "request", in.id, "error", err)
+			l.log.Error("secret resolution failed", "event", "request.secrets_failed", "flow", in.flow, "request", in.id, "error", err)
 			return http.StatusInternalServerError, []byte(`{"error":"secret resolution failed"}`), "application/json"
 		}
 		doc, secretValues = bound, vals
@@ -440,14 +440,14 @@ func (l *Loop) execute(ctx context.Context, in *inbound) (status int, body []byt
 		go l.opts.OnDone(t)
 	}
 	if err != nil {
-		l.log.Error("gateway flow failed", "flow", in.flow, "request", in.id, "error", err)
+		l.log.Error("gateway flow failed", "event", "request.failed", "flow", in.flow, "request", in.id, "error", err)
 		return http.StatusUnprocessableEntity, []byte(`{"error":"execution failed"}`), "application/json"
 	}
 	if t.State == task.StateFailed {
 		// The error text is redacted by the service, but it is still derived
 		// from payload and internals — it goes to the runner's log, never to
 		// an internet caller.
-		l.log.Error("gateway flow failed", "flow", in.flow, "request", in.id, "task", t.ID, "error", t.Error)
+		l.log.Error("gateway flow failed", "event", "request.failed", "flow", in.flow, "request", in.id, "task", t.ID, "error", t.Error)
 		return http.StatusUnprocessableEntity, []byte(`{"error":"execution failed"}`), "application/json"
 	}
 	return http.StatusOK, out.buf.Bytes(), "application/x-ndjson"
@@ -473,7 +473,7 @@ func (l *Loop) accept(ctx context.Context, doc *flowdoc.Document, in *inbound, s
 	if doc.EffectiveAck() != flowdoc.AckNone {
 		var err error
 		if taskID, err = newTaskID(); err != nil {
-			l.log.Error("minting a task id failed", "flow", in.flow, "error", err)
+			l.log.Error("minting a task id failed", "event", "request.accept_failed", "flow", in.flow, "error", err)
 			return http.StatusInternalServerError,
 				problem(http.StatusInternalServerError, "runner_error", "could not accept", nil), "application/json"
 		}
@@ -482,7 +482,7 @@ func (l *Loop) accept(ctx context.Context, doc *flowdoc.Document, in *inbound, s
 			// so a status URL never 404s and an accepted task never vanishes
 			// without trace. Failing here is honest — the caller has been
 			// promised nothing.
-			l.log.Error("recording the accept failed", "flow", in.flow, "request", in.id, "error", err)
+			l.log.Error("recording the accept failed", "event", "request.accept_failed", "flow", in.flow, "request", in.id, "error", err)
 			return http.StatusServiceUnavailable,
 				problem(http.StatusServiceUnavailable, "runner_unavailable",
 					"this runner cannot accept work right now", nil), "application/json"
@@ -505,7 +505,7 @@ func (l *Loop) accept(ctx context.Context, doc *flowdoc.Document, in *inbound, s
 		// Admission refused it (draining, or the document is unrunnable). The
 		// status row exists and would otherwise sit at "accepted" forever, so
 		// it is closed out here.
-		l.log.Error("gateway flow rejected at admission", "flow", in.flow, "request", in.id, "error", err)
+		l.log.Error("gateway flow rejected at admission", "event", "request.rejected", "flow", in.flow, "request", in.id, "error", err)
 		l.failStatus(taskID, "admission", "runner_unavailable", err.Error())
 		return http.StatusServiceUnavailable,
 			problem(http.StatusServiceUnavailable, "runner_unavailable",
@@ -522,7 +522,7 @@ func (l *Loop) accept(ctx context.Context, doc *flowdoc.Document, in *inbound, s
 	if err != nil {
 		// Unreachable with these field types, but a marshalling failure must
 		// not lose a task that is already running.
-		l.log.Error("encoding the accept response failed", "flow", in.flow, "task", taskID, "error", err)
+		l.log.Error("encoding the accept response failed", "event", "request.encode_failed", "flow", in.flow, "task", taskID, "error", err)
 		return http.StatusAccepted, []byte(`{"status":"accepted"}`), "application/json"
 	}
 	return http.StatusAccepted, body, "application/json"
@@ -598,7 +598,7 @@ func (l *Loop) finishStatus(taskID string, t task.Task) {
 	defer cancel()
 	if err := l.opts.Status.FinishExecution(ctx, taskID, out); err != nil {
 		// The work is done either way; the row's TTL bounds the consequence.
-		l.log.Warn("finalising execution status failed", "task", taskID, "error", err)
+		l.log.Warn("finalising execution status failed", "event", "task.status_finalise_failed", "task", taskID, "error", err)
 	}
 }
 
@@ -612,7 +612,7 @@ func (l *Loop) failStatus(taskID, step, code, msg string) {
 	if err := l.opts.Status.FinishExecution(ctx, taskID, hubclient.ExecutionOutcome{
 		State: "failed", ErrorStep: step, ErrorCode: code, Error: msg,
 	}); err != nil {
-		l.log.Warn("closing an unstarted execution status failed", "task", taskID, "error", err)
+		l.log.Warn("closing an unstarted execution status failed", "event", "task.status_finalise_failed", "task", taskID, "error", err)
 	}
 }
 
@@ -657,7 +657,7 @@ func (l *Loop) deliver(ctx context.Context, addr, id string, status int, ctype s
 	case http.StatusGone:
 		// The caller gave up. Expected under load or on a slow flow, and
 		// nothing to retry — the work is simply wasted.
-		l.log.Info("caller gave up before the flow finished", "request", id)
+		l.log.Info("caller gave up before the flow finished", "event", "request.caller_gone", "request", id)
 		return nil
 	default:
 		return fmt.Errorf("deliver: status %d", resp.StatusCode)

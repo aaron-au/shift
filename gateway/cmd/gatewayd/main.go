@@ -19,6 +19,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	stdlog "log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -34,9 +35,39 @@ import (
 	"github.com/aaron-au/shift/gateway/internal/runners"
 )
 
+// buildVersion is stamped at link time (-ldflags -X main.buildVersion=…),
+// matching hubd/runnerd. It rides every log record so a mixed-version fleet is
+// legible (ADR-0046 §3).
+var buildVersion = "dev"
+
+// logBridge re-emits stdlib log output as slog records, so a third-party
+// library writing through the global logger cannot put prose into a JSON
+// stream. Mirrors pkg/shiftlog; see the note in main about why it is copied.
+type logBridge struct{ l *slog.Logger }
+
+func (b logBridge) Write(p []byte) (int, error) {
+	msg := strings.TrimRight(string(p), "\n")
+	if before, rest, found := strings.Cut(msg, ": "); found && !strings.Contains(before, " ") {
+		msg = rest
+	}
+	b.l.LogAttrs(context.Background(), slog.LevelInfo, msg)
+	return len(p), nil
+}
+
+// logText reports whether out is a terminal (text) rather than a pipe (JSON).
+func logText(out *os.File) bool {
+	if f := strings.ToLower(strings.TrimSpace(os.Getenv("SHIFT_LOG_FORMAT"))); f == "text" {
+		return true
+	} else if f == "json" {
+		return false
+	}
+	info, err := out.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
 func main() {
 	if err := run(); err != nil {
-		slog.Error("gateway stopped", "error", err)
+		slog.Error("gateway stopped", "event", "gateway.stopped", "error", err)
 		os.Exit(1)
 	}
 }
@@ -91,12 +122,33 @@ func run() error {
 			"set -identity (ADR-0041), or export SHIFT_GATEWAY_CONTROL_TOKEN, or bind -control to 127.0.0.1", *controlAddr)
 	}
 
+	// Logging setup is duplicated from pkg/shiftlog on purpose (ADR-0046 §2):
+	// this module's go.mod has ZERO dependencies, which is an auditable
+	// security property of the one component that may sit in a DMZ. The
+	// contract with the other binaries is the output SCHEMA — asserted by
+	// TestLogSchemaMatchesTheOtherBinaries — not shared code.
 	lvl := slog.LevelInfo
-	if *debug {
-		lvl = slog.LevelDebug
+	if err := lvl.UnmarshalText([]byte(strings.TrimSpace(os.Getenv("SHIFT_LOG_LEVEL")))); err != nil {
+		lvl = slog.LevelInfo // a typo in a log level must not stop the gateway
 	}
-	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
+	if *debug {
+		lvl = slog.LevelDebug // the explicit flag wins over the env
+	}
+	// stdout, and text only on a terminal — same rule as the other two.
+	var lh slog.Handler
+	lopts := &slog.HandlerOptions{Level: lvl}
+	if logText(os.Stdout) {
+		lh = slog.NewTextHandler(os.Stdout, lopts)
+	} else {
+		lh = slog.NewJSONHandler(os.Stdout, lopts)
+	}
+	log := slog.New(lh.WithAttrs([]slog.Attr{
+		slog.String("component", "gateway"),
+		slog.String("version", buildVersion),
+	}))
 	slog.SetDefault(log)
+	stdlog.SetFlags(0)
+	stdlog.SetOutput(logBridge{log})
 
 	reg := runners.New()
 	h := ingress.New(reg, log)
@@ -115,6 +167,7 @@ func run() error {
 			return fmt.Errorf("config %s: %w", *configFile, err)
 		}
 		log.Warn("configuration loaded from a local file; the hub is the source of truth in a real deployment",
+			"event", "gateway.config.local_file",
 			"file", *configFile, "version", cfg.Version, "routes", len(cfg.Routes))
 	}
 
@@ -184,20 +237,32 @@ func run() error {
 	// Unconfigured is the correct starting state, not a fault: the gateway
 	// serves 503 until the hub pushes a configuration, and its health endpoint
 	// says so, so an ungreeted gateway is visible from the hub.
-	logArgs := []any{
-		"public", *publicAddr, "control", *controlAddr, "configured", h.Configured(),
-	}
+	// A FIXED field set, computed above rather than appended conditionally. Two
+	// reasons: a query should not have to handle a field that is sometimes
+	// absent, and keys listed literally at the call site are keys the
+	// vocabulary gate can actually check (ADR-0046 §3) — a `args...` splat is
+	// invisible to it.
+	//
+	// cert_expires is operationally load-bearing: a lapsed certificate strands
+	// this gateway permanently, because renewing it would mean dialling the
+	// hub. Renewal is the hub's job to PUSH (ADR-0041 §4).
+	identityID, certExpires := "", ""
 	if bundle != nil {
-		// cert_expires is operationally load-bearing: a lapsed certificate
-		// strands this gateway permanently, because renewing it would mean
-		// dialling the hub. Renewal is the hub's job to PUSH (ADR-0041 §4).
-		logArgs = append(logArgs, "identity", bundle.ID, "control_mtls", true,
-			"cert_expires", bundle.NotAfter.UTC().Format(time.RFC3339))
-	} else {
-		logArgs = append(logArgs, "control_mtls", false,
-			"control_shared_secret", dispatch.Authenticated())
+		identityID = bundle.ID
+		certExpires = bundle.NotAfter.UTC().Format(time.RFC3339)
 	}
-	log.Info("gateway listening", logArgs...)
+	log.Info("gateway listening",
+		"event", "gateway.started",
+		"public", *publicAddr,
+		"control", *controlAddr,
+		"configured", h.Configured(),
+		"identity", identityID,
+		"control_mtls", bundle != nil,
+		"cert_expires", certExpires,
+		// Whether the control listener authenticates at all — never anything
+		// about the credential itself.
+		"control_authenticated", dispatch.Authenticated(),
+	)
 
 	// Either listener failing is fatal: a gateway serving the public port with
 	// no control listener can never be handed a runner, and would answer 503
