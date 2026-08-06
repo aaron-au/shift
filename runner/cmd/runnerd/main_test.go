@@ -54,3 +54,13 @@ func TestSplitListDropsEmpties(t *testing.T) {
 		t.Errorf("splitList = %v, want the two trimmed addresses", got)
 	}
 }
+
+// Regression shape, the second time: a typed nil wrapped in a non-nil
+// interface passes every `!= nil` check and panics on first use. The first
+// occurrence (gatewayOnDone) killed a hub-less runner after ONE request,
+// because the panic happened on its own goroutine.
+func TestStatusReaderIsNilWithoutAHub(t *testing.T) {
+	if got := statusReader(nil); got != nil {
+		t.Fatal("statusReader(nil) returned a non-nil interface; using it would panic")
+	}
+}

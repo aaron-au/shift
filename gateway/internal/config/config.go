@@ -114,6 +114,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: bad trusted proxy CIDR %q: %w", p, err)
 		}
 	}
+	if err := c.validateStatusPaths(); err != nil {
+		return err
+	}
 	return c.validateRunners()
 }
 

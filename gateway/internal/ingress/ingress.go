@@ -86,6 +86,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	route := cfg.Lookup(r.Method, r.URL.Path)
+	// A status read lives UNDER the developer's own route (ADR-0042 §3), so it
+	// resolves to that route and inherits its entire policy — token, allowlist,
+	// rate limit, principal. Nothing extra to configure, and nothing that can
+	// drift from the route it belongs to.
+	var taskID string
+	if route == nil {
+		route, taskID = cfg.StatusRequest(r.Method, r.URL.Path)
+	}
 	if route == nil {
 		http.NotFound(w, r)
 		return
@@ -113,12 +121,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := h.newI()
+	headers := stamp(forwardable(r.Header), route, id, ip)
+	headers.Set(HeaderPublicBase, publicBase(r))
+	if r.URL.RawQuery != "" {
+		headers.Set(HeaderQuery, r.URL.RawQuery)
+	}
+	if taskID != "" {
+		// The runner answers this one itself: there is no flow to run, and it
+		// must not be handed one — a status read that executed a flow would be
+		// a side effect on a GET.
+		headers.Set(HeaderOp, OpStatus)
+		headers.Set(HeaderTask, taskID)
+	}
 	req := &runners.Request{
 		ID:      id,
 		Flow:    route.Flow,
 		Method:  r.Method,
 		Path:    r.URL.Path,
-		Headers: stamp(forwardable(r.Header), route, id, ip),
+		Headers: headers,
 		// The body streams to the runner under a hard cap. MaxBytesReader
 		// makes an over-long body an error at the point of reading rather
 		// than something the gateway has already accepted into memory.
@@ -171,6 +191,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// publicBase renders the scheme and authority the caller used, which is what
+// an absolute status URL has to be built from. The runner cannot derive it:
+// only the gateway knows the address the internet reaches it on.
+//
+// X-Forwarded-Proto is honoured because a gateway behind a TLS-terminating
+// load balancer sees a plaintext request for an https:// service, and a status
+// URL on the wrong scheme is a broken link. It is only ever read here, never
+// used for an access decision — unlike X-Forwarded-For, which is trusted only
+// from a configured proxy because it gates allowlists.
+func publicBase(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if p := r.Header.Get("X-Forwarded-Proto"); p == "https" || p == "http" {
+		scheme = p
+	}
+	if r.Host == "" {
+		return ""
+	}
+	return scheme + "://" + r.Host
+}
+
 // authorized checks the caller's bearer token against the route's stored
 // digest. The token is never stored or logged — only its SHA-256 — and the
 // comparison is constant-time.
@@ -215,7 +258,25 @@ const (
 	HeaderFlow      = shiftPrefix + "Flow"       // the flow to run
 	HeaderMethod    = shiftPrefix + "Method"     // the caller's HTTP method
 	HeaderPath      = shiftPrefix + "Path"       // the caller's path
+
+	// HeaderOp names a request the runner must handle itself rather than by
+	// running a flow. Absent for ordinary work; "status" for an async status
+	// read (ADR-0042 §3), which has no flow to name.
+	HeaderOp = shiftPrefix + "Op"
+	// HeaderTask carries the task id of a status read.
+	HeaderTask = shiftPrefix + "Task"
+	// HeaderQuery carries the caller's raw query string. A status read on an
+	// anonymous route carries its capability token there, and HeaderPath is
+	// the path alone. The gateway does not log it — that token is a secret.
+	HeaderQuery = shiftPrefix + "Query"
+	// HeaderPublicBase is the scheme and authority the CALLER reached us on.
+	// The runner needs it to build an absolute status URL, and the gateway is
+	// the only component that knows its own public identity.
+	HeaderPublicBase = shiftPrefix + "Public-Base"
 )
+
+// OpStatus is the HeaderOp value for an async status read.
+const OpStatus = "status"
 
 // anonymous is the principal for a route that declares no credential. It is a
 // named value rather than an empty header so "nobody authenticated" and "the

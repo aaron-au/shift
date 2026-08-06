@@ -239,6 +239,11 @@ func main() {
 			Bind: func(ctx context.Context, doc *flowdoc.Document) (*flowdoc.Document, []string, error) {
 				return binder.Apply(ctx, doc)
 			},
+			// Caller-facing async status (ADR-0042 §3). Present only with a
+			// hub: without one there is nowhere to record an accept, so the
+			// runner still serves async requests and simply hands out no
+			// status URL rather than one that would 404.
+			Status:          statusReader(client),
 			PollConcurrency: *gatewayPolls,
 			Token:           os.Getenv("SHIFT_GATEWAY_TOKEN"),
 			Log:             slog.Default(),
@@ -381,6 +386,20 @@ func hashToken(tok string) string {
 // closure that called a nil reporter would panic THERE — and a panic in a
 // goroutine takes the whole process down, on the first request a caller makes.
 // A hub-less runner would serve exactly one gateway request and die.
+// statusReader returns the hub-backed status recorder, or nil when this runner
+// has no hub.
+//
+// The nil check is load-bearing rather than tidy: a typed nil wrapped in a
+// non-nil interface would pass every `!= nil` test and panic on first use, on
+// a goroutine, which takes the whole process down rather than failing one
+// request. That exact shape has bitten this file once already (gatewayOnDone).
+func statusReader(client *hubclient.Client) gwclient.StatusReader {
+	if client == nil {
+		return nil
+	}
+	return client
+}
+
 func gatewayOnDone(report api.ExecReporter) func(task.Task) {
 	if report == nil {
 		return nil

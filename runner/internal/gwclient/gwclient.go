@@ -21,19 +21,23 @@ package gwclient
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/aaron-au/shift/pkg/flowdoc"
+	"github.com/aaron-au/shift/runner/internal/hubclient"
 	"github.com/aaron-au/shift/runner/internal/service"
 	"github.com/aaron-au/shift/runner/internal/task"
 )
@@ -49,8 +53,20 @@ const (
 
 	hdrRequestID = "X-Shift-Request-Id"
 	hdrFlow      = "X-Shift-Flow"
-	hdrStatus    = "X-Shift-Status"
-	fwdPrefix    = "X-Shift-Fwd-"
+	// The gateway's stamped facts about the caller (ADR-0038 §4b) and, for a
+	// status read, what to answer (ADR-0042 §3). Separate modules by design
+	// (depguard), so nothing but these names enforces the contract.
+	hdrOp         = "X-Shift-Op"
+	hdrTask       = "X-Shift-Task"
+	hdrRoute      = "X-Shift-Route"
+	hdrPrincipal  = "X-Shift-Principal"
+	hdrPublicBase = "X-Shift-Public-Base"
+	hdrQuery      = "X-Shift-Query"
+	// opStatus is the only op a runner answers itself rather than by running
+	// a flow.
+	opStatus  = "status"
+	hdrStatus = "X-Shift-Status"
+	fwdPrefix = "X-Shift-Fwd-"
 )
 
 // maxResponseBody bounds what one execution may return to a caller. Matches
@@ -115,6 +131,10 @@ type Options struct {
 	Client *http.Client
 	// Log receives operational events. Optional.
 	Log *slog.Logger
+	// Status records and reads caller-facing execution status (ADR-0042 §3).
+	// Optional: a runner with no hub still serves async requests, it simply
+	// hands out no status URL — there would be nowhere to read it from.
+	Status StatusReader
 	// OnDone, when set, receives each completed task so execution metadata
 	// can be reported to the hub — OFF the response path, since the caller is
 	// already waiting and nobody is waiting on the metadata.
@@ -262,7 +282,14 @@ type inbound struct {
 	flow    string
 	headers http.Header // caller headers plus the gateway's stamped identity
 	body    []byte
+	// query is the caller's raw query string, parsed. A status read on an
+	// anonymous route carries its capability token here.
+	query url.Values
 }
+
+// op returns what the gateway asked for: "" for ordinary work, opStatus for a
+// status read.
+func (in *inbound) op() string { return in.headers.Get(hdrOp) }
 
 // poll parks against one gateway. It returns (nil, nil) on an empty window.
 func (l *Loop) poll(ctx context.Context, addr string) (*inbound, error) {
@@ -316,6 +343,11 @@ func (l *Loop) poll(ctx context.Context, addr string) (*inbound, error) {
 		headers: unprefix(resp.Header),
 		body:    payload,
 	}
+	if q := in.headers.Get(hdrQuery); q != "" {
+		// A malformed query is not worth failing a request over; the values
+		// that did parse are what the checks below use.
+		in.query, _ = url.ParseQuery(q)
+	}
 	if in.id == "" || in.flow == "" {
 		return nil, errors.New("poll: gateway sent work with no request id or flow")
 	}
@@ -333,6 +365,12 @@ func (l *Loop) serve(ctx context.Context, addr string, in *inbound) {
 }
 
 func (l *Loop) execute(ctx context.Context, in *inbound) (status int, body []byte, ctype string) {
+	// A status read is answered HERE rather than by running the flow: a status
+	// read that executed a flow would be a side effect on a GET.
+	if in.op() == opStatus {
+		return l.serveStatus(ctx, in)
+	}
+
 	doc, ok := l.opts.Lookup(in.flow)
 	if !ok {
 		// The gateway's configuration names a flow this runner does not have.
@@ -385,7 +423,7 @@ func (l *Loop) execute(ctx context.Context, in *inbound) (status int, body []byt
 	// changes, which is why the exchange lifetime collapses from "flow duration"
 	// to "validate and accept" without the gateway gaining a single code path.
 	if !doc.TerminatesAtResponse() {
-		return l.accept(doc, in, secretValues)
+		return l.accept(ctx, doc, in, secretValues)
 	}
 
 	out := &boundedBuffer{limit: maxResponseBody}
@@ -421,19 +459,48 @@ func (l *Loop) execute(ctx context.Context, in *inbound) (status int, body []byt
 // source binds a byte slice, so the request is in memory before we get here.
 // That ordering is not incidental — delivering a response ENDS the exchange, so
 // anything unread at that moment is gone (ADR-0042 §5).
-func (l *Loop) accept(doc *flowdoc.Document, in *inbound, secretValues []string) (int, []byte, string) {
-	taskID, err := l.opts.Service.SubmitWith(doc, service.SubmitOpts{
+func (l *Loop) accept(ctx context.Context, doc *flowdoc.Document, in *inbound, secretValues []string) (int, []byte, string) {
+	// The id is minted HERE (ADR-0042 §3a). Uniqueness comes from randomness
+	// rather than from a sequence the hub owns, which is what lets it be quoted
+	// in the 202 without coordinating with anyone. Minting is not owning: the
+	// row lives at the hub, so any runner can serve the status read and this
+	// one may be long gone by then.
+	taskID, err := newTaskID()
+	if err != nil {
+		l.log.Error("minting a task id failed", "flow", in.flow, "error", err)
+		return http.StatusInternalServerError,
+			problem(http.StatusInternalServerError, "runner_error", "could not accept", nil), "application/json"
+	}
+
+	statusURL, err := l.recordAccept(ctx, doc, in, taskID)
+	if err != nil {
+		// Durable accept (ADR-0042 §6): the record comes BEFORE the promise, so
+		// a status URL never 404s and an accepted task never vanishes without
+		// trace. Failing here is honest — the caller has been promised nothing.
+		l.log.Error("recording the accept failed", "flow", in.flow, "request", in.id, "error", err)
+		return http.StatusServiceUnavailable,
+			problem(http.StatusServiceUnavailable, "runner_unavailable",
+				"this runner cannot accept work right now", nil), "application/json"
+	}
+
+	_, err = l.opts.Service.SubmitWith(doc, service.SubmitOpts{
 		WebhookBody:  in.body,
 		SecretValues: secretValues,
-		// The completion hook belongs HERE rather than on the response path:
+		// The completion hooks belong HERE rather than on the response path:
 		// the caller is already gone, and nobody is waiting on the metadata.
-		OnDone: l.opts.OnDone,
+		OnDone: func(t task.Task) {
+			l.finishStatus(taskID, t)
+			if l.opts.OnDone != nil {
+				l.opts.OnDone(t)
+			}
+		},
 	})
 	if err != nil {
 		// Admission refused it (draining, or the document is unrunnable). The
-		// caller has NOT been promised anything, so this is an honest failure
-		// rather than an accepted-then-lost task.
+		// status row exists and would otherwise sit at "accepted" forever, so
+		// it is closed out here.
 		l.log.Error("gateway flow rejected at admission", "flow", in.flow, "request", in.id, "error", err)
+		l.failStatus(taskID, "admission", "runner_unavailable", err.Error())
 		return http.StatusServiceUnavailable,
 			problem(http.StatusServiceUnavailable, "runner_unavailable",
 				"this runner cannot accept work right now", nil), "application/json"
@@ -443,6 +510,7 @@ func (l *Loop) accept(doc *flowdoc.Document, in *inbound, secretValues []string)
 		Task:       taskID,
 		Flow:       doc.Name,
 		Status:     "accepted",
+		StatusURL:  statusURL,
 		AcceptedAt: time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
@@ -454,15 +522,99 @@ func (l *Loop) accept(doc *flowdoc.Document, in *inbound, secretValues []string)
 	return http.StatusAccepted, body, "application/json"
 }
 
-// accepted is the 202 body (ADR-0042 §2).
+// recordAccept writes the status row and returns the URL the caller polls.
 //
-// It carries NO status_url yet. The status endpoint needs a hub record created
-// at accept time and looked up by id — neither exists — and advertising a URL
-// that 404s would be worse than omitting it. The field is additive when the
-// endpoint lands, so no caller breaks by its arrival.
+// A runner with no hub records nothing and returns no URL: there would be
+// nowhere to read it from, and advertising a URL that 404s is worse than
+// omitting the field.
+func (l *Loop) recordAccept(ctx context.Context, doc *flowdoc.Document, in *inbound, taskID string) (string, error) {
+	if l.opts.Status == nil {
+		return "", nil
+	}
+	route := in.headers.Get(hdrRoute)
+	principal := in.headers.Get(hdrPrincipal)
+
+	// An anonymous route stamps one principal for every caller, so comparing
+	// principals authorises nothing. The status URL becomes a capability URL
+	// instead (ADR-0042 §3b) — whoever holds it holds the read.
+	var token, digest string
+	if principal == "" || principal == anonymousPrincipal {
+		var err error
+		if token, err = newCapabilityToken(); err != nil {
+			return "", err
+		}
+		sum := sha256.Sum256([]byte(token))
+		digest = hex.EncodeToString(sum[:])
+	}
+
+	// A background context with its own bound, not ctx: this write is what
+	// makes the accept durable, and abandoning it because the caller's request
+	// context is closing would defeat the point.
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err := l.opts.Status.AcceptExecution(rctx, hubclient.AcceptedExecution{
+		ID: taskID, FlowName: doc.Name, Route: route, Principal: principal, TokenSHA256: digest,
+	}); err != nil {
+		return "", err
+	}
+	return statusURL(in.headers.Get(hdrPublicBase), route, taskID, token), nil
+}
+
+// finishStatus closes out a status row when the task reaches a terminal state.
+func (l *Loop) finishStatus(taskID string, t task.Task) {
+	if l.opts.Status == nil {
+		return
+	}
+	out := hubclient.ExecutionOutcome{
+		State:      string(t.State),
+		RecordsIn:  t.RecordsIn,
+		RecordsOut: t.RecordsOut,
+	}
+	if t.State == task.StateFailed {
+		// The step and the class of failure — never record content, since an
+		// internet caller reads this (ADR-0031, ADR-0042 §3). t.Error is
+		// already redacted by the service, and HandlerStep names the failing
+		// step when the flow declared an error handler.
+		out.ErrorStep, out.ErrorCode, out.Error = t.HandlerStep, "execution_failed", t.Error
+	}
+	if t.Started != nil {
+		s := t.Started.UTC()
+		out.StartedAt = &s
+	}
+	if t.Finished != nil {
+		f := t.Finished.UTC()
+		out.FinishedAt = &f
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := l.opts.Status.FinishExecution(ctx, taskID, out); err != nil {
+		// The work is done either way; the row's TTL bounds the consequence.
+		l.log.Warn("finalising execution status failed", "task", taskID, "error", err)
+	}
+}
+
+// failStatus closes out a row for work that never started.
+func (l *Loop) failStatus(taskID, step, code, msg string) {
+	if l.opts.Status == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := l.opts.Status.FinishExecution(ctx, taskID, hubclient.ExecutionOutcome{
+		State: "failed", ErrorStep: step, ErrorCode: code, Error: msg,
+	}); err != nil {
+		l.log.Warn("closing an unstarted execution status failed", "task", taskID, "error", err)
+	}
+}
+
+// accepted is the 202 body (ADR-0042 §2).
 type accepted struct {
-	Task       string `json:"task"`
-	Flow       string `json:"flow"`
+	Task string `json:"task"`
+	Flow string `json:"flow"`
+	// StatusURL is where the caller polls. Omitted when this runner has no hub
+	// to record against: advertising a URL that 404s is worse than saying
+	// nothing, and the field's absence is the honest signal.
+	StatusURL  string `json:"status_url,omitempty"`
 	Status     string `json:"status"`
 	AcceptedAt string `json:"accepted_at"`
 }
