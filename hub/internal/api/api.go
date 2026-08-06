@@ -212,6 +212,11 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("POST /api/v1/tasks/{id}/complete", a.runner(a.complete))
 	mux.Handle("POST /api/v1/tasks/{id}/fail", a.runner(a.fail))
 	mux.Handle("POST /api/v1/executions", a.runner(a.reportExecution))
+	// Caller-facing async status (ADR-0042 §3). Runner realm throughout: the
+	// hub never speaks to the caller, and the gateway never dials inward.
+	mux.Handle("POST /api/v1/execution-status", a.runner(a.acceptExecution))
+	mux.Handle("POST /api/v1/execution-status/{id}/finish", a.runner(a.finishExecution))
+	mux.Handle("GET /api/v1/execution-status/{id}", a.runner(a.getExecutionStatus))
 
 	return httpsec.Headers(a.observe(mux)), nil
 }
