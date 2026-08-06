@@ -464,7 +464,13 @@ func (c *Client) do(ctx context.Context, method, path, body string) (*http.Respo
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.secret)
+	if c.secret != "" {
+		// Empty under mTLS (ADR-0044): the credential is the client
+		// certificate the transport presents, and sending "Bearer " with
+		// nothing after it would be a credential that cannot work, offered on
+		// every request.
+		req.Header.Set("Authorization", "Bearer "+c.secret)
+	}
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}

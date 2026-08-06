@@ -600,6 +600,34 @@ intake over the same `service.Submit` path, exactly as ADR-0008 promised:
   shut down. SIGKILL needs no cooperation at all — the lease expires and
   the hub re-dispatches (`hub/e2e/crash_recovery_test.go`).
 
+**Credential: mTLS or bearer (ADR-0044).** `-identity-dir` (`SHIFT_RUNNER_IDENTITY_DIR`)
+switches the runner to a client certificate:
+
+- First boot generates a **P-256 key in-process**, sends a CSR with the
+  single-use registration token, and writes the issued bundle
+  (`runner.pem`, `runner-key.pem`, `ca.pem`, `runner-id`, all 0600) into the
+  directory. The private key never leaves the process; only a public key
+  inside a CSR does. There is no bearer secret at all.
+- The hub assigns the subject, ignoring whatever the CSR asked for — a runner
+  that could name itself could name another runner.
+- **Renewal is the runner's own job**, unlike the gateway (ADR-0041 §4, where
+  the hub must push): `RenewLoop` renews at half the *remaining* lifetime with
+  a one-minute floor, using a **fresh key every time**, authenticating with the
+  current certificate — no operator token, or a fleet needs a human in the loop
+  every day. On repeated failure the runner **keeps working and keeps
+  retrying**, more often as expiry approaches, and logs at ERROR inside the
+  last hour: a renewal outage must not become a work stoppage before the
+  certificates have actually expired.
+- The certificate is swapped through an atomic pointer read by
+  `GetClientCertificate`, so one transport and one connection pool survive a
+  renewal with no window in which a caller holds a stale certificate.
+- Server trust is the **system store plus the control-plane CA**, and
+  `-hub-ca` adds to it. Pinning to the control CA alone would break every hub
+  fronted by a public or corporate certificate.
+
+Without `-identity-dir` the runner keeps the ADR-0009 bearer secret in
+`-cred-file`, which is what a deployment terminating TLS at a proxy needs.
+
 See [06-hub.md](06-hub.md) for the hub side of the protocol.
 
 ## Gateway intake (`internal/gwclient`, ADR-0038)

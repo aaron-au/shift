@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"github.com/aaron-au/shift/hub/internal/kek"
 	"github.com/aaron-au/shift/hub/internal/oidcauth"
 	"github.com/aaron-au/shift/hub/internal/ratelimit"
+	"github.com/aaron-au/shift/hub/internal/runnerca"
 	"github.com/aaron-au/shift/hub/internal/scheduler"
 	"github.com/aaron-au/shift/hub/internal/secrets"
 	"github.com/aaron-au/shift/hub/internal/store"
@@ -41,6 +43,14 @@ func main() {
 		leaseTTL = flag.Duration("lease-ttl", envDuration("SHIFT_HUB_LEASE_TTL", 30*time.Second), "task lease duration between heartbeats")
 		tlsCert  = flag.String("tls-cert", os.Getenv("SHIFT_HUB_TLS_CERT"), "TLS certificate file (serve HTTPS)")
 		tlsKey   = flag.String("tls-key", os.Getenv("SHIFT_HUB_TLS_KEY"), "TLS key file")
+
+		runnerCACert = flag.String("runner-ca-cert", os.Getenv("SHIFT_HUB_RUNNER_CA_CERT"),
+			"control-plane CA certificate — issues runner client certificates (ADR-0044)")
+		runnerCAKey   = flag.String("runner-ca-key", os.Getenv("SHIFT_HUB_RUNNER_CA_KEY"), "control-plane CA key")
+		runnerCertTTL = flag.Duration("runner-cert-ttl", envDuration("SHIFT_HUB_RUNNER_CERT_TTL", runnerca.DefaultTTL),
+			"lifetime of an issued runner certificate (runners renew at half of it)")
+		runnerAuth = flag.String("runner-auth", envOr("SHIFT_HUB_RUNNER_AUTH", "both"),
+			`runner credentials accepted: "mtls", "bearer" or "both"`)
 
 		oidcIssuer   = flag.String("oidc-issuer", os.Getenv("SHIFT_HUB_OIDC_ISSUER"), "OIDC issuer URL (enables the OIDC admin realm)")
 		oidcClientID = flag.String("oidc-client-id", os.Getenv("SHIFT_HUB_OIDC_CLIENT_ID"), "OIDC client id")
@@ -98,7 +108,17 @@ func main() {
 		log.Fatalf("hubd: migrate: %v", err) //nolint:gocritic // exitAfterDefer: startup-fatal; process exits and the OS reclaims the pool/fds — deferred st.Close() is moot
 	}
 
-	opts := api.Options{AdminToken: adminToken, LeaseTTL: *leaseTTL}
+	opts := api.Options{AdminToken: adminToken, LeaseTTL: *leaseTTL, RunnerAuth: api.RunnerAuthMode(*runnerAuth)}
+	if *runnerCACert != "" || *runnerCAKey != "" {
+		ca, err := runnerca.Load(*runnerCACert, *runnerCAKey, *runnerCertTTL)
+		if err != nil {
+			log.Fatalf("hubd: %v", err) //nolint:gocritic // exitAfterDefer: startup-fatal, the OS reclaims the pool
+		}
+		opts.RunnerCA = ca
+		//nolint:gosec // G706: both values are our own — a parsed duration flag and the CA's own NotAfter
+		log.Printf("hubd: runner mTLS enabled (certificates valid %s, CA expires %s)",
+			*runnerCertTTL, ca.NotAfter().UTC().Format(time.RFC3339))
+	}
 	if policy := connpolicy.Parse(*connAllow, *connDeny); policy.Restricted() {
 		opts.ConnectorPolicy = policy
 		log.Print("hubd: connector capability policy active")
@@ -195,6 +215,23 @@ func main() {
 		Addr:              *listen,
 		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+	if opts.RunnerCA != nil {
+		// VerifyClientCertIfGiven, not Require: this listener also serves the
+		// dashboard and the human realm, and requiring a client certificate
+		// would lock every browser out. "If given" is still fail-closed for
+		// what matters — an INVALID certificate aborts the handshake, and a
+		// verified chain is the only way r.TLS.VerifiedChains is non-empty,
+		// which is the only thing the runner realm reads.
+		srv.TLSConfig = &tls.Config{
+			ClientAuth: tls.VerifyClientCertIfGiven,
+			ClientCAs:  opts.RunnerCA.Pool(),
+			MinVersion: tls.VersionTLS12,
+		}
+		if *tlsCert == "" {
+			log.Print("hubd: WARNING: a runner CA is configured but this hub serves plaintext — " +
+				"client certificates cannot be presented over HTTP, so runners must use bearer secrets")
+		}
 	}
 	go func() {
 		var err error

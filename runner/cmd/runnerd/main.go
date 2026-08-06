@@ -57,6 +57,8 @@ func main() {
 		gatewayPolls  = flag.Int("gateway-polls", envInt("SHIFT_GATEWAY_POLLS", 16), "parked polls per gateway; bounds concurrent inbound requests from one gateway (the resource governor is still the real ceiling)")
 		hubCA         = flag.String("hub-ca", os.Getenv("SHIFT_HUB_CA_FILE"), "extra CA certificate for the hub (self-signed bundles)")
 		credFile      = flag.String("cred-file", os.Getenv("SHIFT_HUB_CRED_FILE"), "persist/reuse the runner's hub identity here (reg tokens are single-use)")
+		identityDir   = flag.String("identity-dir", os.Getenv("SHIFT_RUNNER_IDENTITY_DIR"),
+			"mTLS identity bundle directory (ADR-0044); set it to authenticate to the hub with a client certificate instead of a bearer secret")
 		connCache     = flag.String("connector-cache", envOr("SHIFT_CONNECTOR_CACHE", ""), "cache dir for registry-fetched connectors (default <spill-dir or temp>/shift-connectors)")
 		requireSigned = flag.Bool("require-signed", os.Getenv("SHIFT_REQUIRE_SIGNED") == "1", "refuse local connector binaries; registry-verified artifacts only")
 		users         = flag.String("users", os.Getenv("SHIFT_RUNNER_USERS"), "control-surface users \"user:bcrypt-hash:role;...\" (role: admin|operator|viewer); empty = open (loopback only)")
@@ -91,19 +93,50 @@ func main() {
 	// the lease intake both hang off the registered client.
 	var client *hubclient.Client
 	var locate func(ctx context.Context, name string) (string, error)
+	// Held so the renewal loop can start alongside the lease loop, on the
+	// context SIGTERM already cancels.
+	var renewIdentity *hubclient.Identity
 	if *hubURL != "" {
 		hc, err := hubclient.HTTPClient(*hubCA)
 		if err != nil {
 			log.Fatalf("runnerd: %v", err)
 		}
 		regCtx, regCancel := context.WithTimeout(context.Background(), 90*time.Second)
-		runnerID, cl, err := hubclient.Connect(regCtx, hc, *hubURL, *credFile, hubRegToken, *name)
-		regCancel()
-		if err != nil {
-			log.Fatalf("runnerd: hub registration: %v", err)
+		var runnerID string
+		if *identityDir != "" {
+			// mTLS (ADR-0044): the credential is a client certificate this
+			// process holds the key for, and the key never leaves it.
+			id, cl, err := hubclient.ConnectMTLS(regCtx, hc, *hubURL, *identityDir, hubRegToken, *name)
+			regCancel()
+			if err != nil {
+				log.Fatalf("runnerd: hub registration: %v", err)
+			}
+			// The identity trusts the system store plus the control-plane CA;
+			// an operator-supplied hub CA (self-signed bundles) is added on
+			// top rather than replacing either.
+			if *hubCA != "" {
+				//nolint:gocritic // exitAfterDefer: startup-fatal; the renewal loop has not started yet
+				pemBytes, err := os.ReadFile(*hubCA) //nolint:gosec // G304: operator-configured CA path
+				if err != nil {
+					log.Fatalf("runnerd: -hub-ca: %v", err)
+				}
+				if !id.TrustAlso(pemBytes) {
+					log.Fatalf("runnerd: -hub-ca %s: no certificates found", *hubCA) //nolint:gosec // G706: operator-supplied path
+				}
+			}
+			runnerID, client = id.RunnerID, cl
+			renewIdentity = id
+			log.Printf("runnerd: registered with hub %q as %q (mTLS, certificate valid until %s)", //nolint:gosec // G706: operator-supplied flag + hub-issued id, %q-escaped
+				*hubURL, runnerID, id.NotAfter().Format(time.RFC3339))
+		} else {
+			id, cl, err := hubclient.Connect(regCtx, hc, *hubURL, *credFile, hubRegToken, *name)
+			regCancel()
+			if err != nil {
+				log.Fatalf("runnerd: hub registration: %v", err)
+			}
+			runnerID, client = id, cl
+			log.Printf("runnerd: registered with hub %q as %q", *hubURL, runnerID) //nolint:gosec // G706: operator-supplied flag + hub-issued id, %q-escaped
 		}
-		client = cl
-		log.Printf("runnerd: registered with hub %q as %q", *hubURL, runnerID) //nolint:gosec // G706: operator-supplied flag + hub-issued id, %q-escaped
 
 		cache := *connCache
 		if cache == "" {
@@ -148,6 +181,13 @@ func main() {
 	loopCtx, loopCancel := context.WithCancel(context.Background())
 	defer loopCancel()
 	loopDone := make(chan struct{})
+	if renewIdentity != nil {
+		// Renewal is the runner's own job — unlike a gateway, it can dial out
+		// (ADR-0044). A certificate that lapses stops the runner leasing, and
+		// "the fleet went quiet overnight" is a bad way to discover the
+		// renewal path was never written.
+		go renewIdentity.RenewLoop(loopCtx, *hubURL)
+	}
 	if client != nil {
 		loop = leaseloop.New(leaseloop.Options{Client: client, Service: svc})
 		hubStatus = func() any { return loop.Status() }

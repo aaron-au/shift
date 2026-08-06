@@ -2,7 +2,7 @@
 
 Date: 2026-08-06
 
-Status: **Designed, build deferred.** Supersedes the runner-realm credential in
+Status: **Built.** Supersedes the runner-realm credential in
 **ADR-0009** (single-use registration token → hashed bearer secret). The two
 auth realms, the lease model, and the human/OIDC realm are unchanged.
 
@@ -136,15 +136,40 @@ hub). More isolation in theory; in practice two renewal paths, two revocation
 lists and two ways to be half-configured, for an identity that is the same
 runner either way.
 
-## Open questions
+## Resolved while building
 
-1. **Renewal cadence and the failure mode.** A runner renewing at 50% of
-   lifetime is standard; what it does when renewal fails repeatedly (keep
-   leasing until expiry? refuse new work early?) is a policy decision.
-2. **Revocation distribution.** A CRL or short lifetimes. Short lifetimes with
-   automatic renewal are simpler and are probably the answer, but they raise the
-   cost of a renewal outage.
-3. **Sequencing.** This changes how every runner authenticates to the hub, so it
-   should not land interleaved with ADR-0042's status work, which depends on
-   runner→hub calls. Status first on the existing credential; this on its own
-   branch after, so a failure in one is not debugged as two.
+1. **Renewal cadence and the failure mode.** Renew at half the **remaining**
+   lifetime, floored at a minute — deriving it from what is left rather than
+   from the original lifetime means a runner that has been asleep, or that has
+   failed several attempts, converges on trying more often as the cliff
+   approaches instead of waking on a schedule it has already missed.
+
+   On repeated failure the runner **keeps working and keeps retrying**, and
+   logs at ERROR inside the last hour. It does not refuse new work early. A
+   renewal outage is already a problem; converting it into a fleet-wide work
+   stoppage *before the certificates have actually expired* would make the
+   platform's response to a hub hiccup worse than the hiccup.
+
+   Every issuance uses a **fresh key**, including renewals: reusing one would
+   mean a key compromised today stays useful for as long as the runner keeps
+   renewing, which is exactly the property short lifetimes exist to remove.
+
+2. **Revocation distribution.** Short lifetimes, no CRL. 24h by default, and
+   `DELETE /runners/{id}` is the revocation: the certificate stays
+   cryptographically valid and the **name it carries stops resolving**, so the
+   next request it makes is refused and the certificate ages out on its own.
+   There is nothing to publish, distribute, or fail to fetch.
+
+3. **Sequencing.** Held: ADR-0042's status work landed first on the existing
+   credential (#70), and this landed on its own branch (#71).
+
+## Found while building
+
+**Server trust is the system store plus the control-plane CA, not the control
+CA alone.** The first implementation pinned the runner's `RootCAs` to the CA
+that issued its client certificate, which would have failed every handshake
+against a hub fronted by a public or corporate certificate — and the failure
+would have looked like a runner problem. The control CA is *added* to the
+system pool, and `-hub-ca` adds to it as well. `Identity.CA` — the control
+plane's own root, used to verify gateways — is never widened by that flag,
+because §3's rule is that the three PKIs do not share a trust store.

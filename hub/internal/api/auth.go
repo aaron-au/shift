@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aaron-au/shift/hub/internal/ratelimit"
+	"github.com/aaron-au/shift/hub/internal/runnerca"
 	"github.com/aaron-au/shift/hub/internal/store"
 )
 
@@ -140,7 +141,7 @@ func (a *api) authenticateAdmin(r *http.Request) (identity, bool) {
 // hash probe; the admin path may hit the IdP).
 func (a *api) adminOrRunner(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if id, account, err := a.st.AuthRunner(r.Context(), bearer(r)); err == nil {
+		if id, account, err := a.authRunner(r); err == nil {
 			if !a.opts.RateLimit.Allow("runner", id) {
 				ratelimit.Reject(w)
 				return
@@ -160,9 +161,32 @@ func (a *api) adminOrRunner(next http.HandlerFunc) http.Handler {
 
 type runnerKey struct{}
 
+// authRunner resolves the runner making this request (ADR-0044).
+//
+// The certificate is tried FIRST and its failure is terminal for that request:
+// a connection that presented a verified certificate has already said who it
+// is, and falling back to a bearer token after that would let a runner whose
+// certificate names a deleted runner keep working under a secret. The two
+// credentials are alternatives, never a chain.
+func (a *api) authRunner(r *http.Request) (id, account string, err error) {
+	if a.opts.RunnerAuth.allowsMTLS() {
+		if certID := runnerca.RunnerID(r.TLS); certID != "" {
+			account, err = a.st.AuthRunnerCert(r.Context(), certID)
+			if err != nil {
+				return "", "", err
+			}
+			return certID, account, nil
+		}
+	}
+	if !a.opts.RunnerAuth.allowsBearer() {
+		return "", "", store.ErrUnauthorized
+	}
+	return a.st.AuthRunner(r.Context(), bearer(r))
+}
+
 func (a *api) runner(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, account, err := a.st.AuthRunner(r.Context(), bearer(r))
+		id, account, err := a.authRunner(r)
 		if err != nil {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return

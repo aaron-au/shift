@@ -51,6 +51,12 @@ services:
       SHIFT_HUB_TLS_CERT: /bootstrap/hub.pem
       SHIFT_HUB_TLS_KEY: /bootstrap/hub.key
       SHIFT_HUB_KEK_FILE: /bootstrap/kek.bin
+      # Runner mTLS (ADR-0044): the hub issues client certificates from the
+      # bundle CA. "both" during the transition — a bundle generated before
+      # ADR-0044 has no ca.key, and those runners keep using bearer secrets.
+      SHIFT_HUB_RUNNER_CA_CERT: /bootstrap/ca.pem
+      SHIFT_HUB_RUNNER_CA_KEY: /bootstrap/ca.key
+      SHIFT_HUB_RUNNER_AUTH: both
       # Break-glass token: bootstrap automation uses it; humans use Dex.
       SHIFT_HUB_ADMIN_TOKEN: bundle-admin-token-dev-only
       SHIFT_HUB_OIDC_ISSUER: http://dex:5556/dex
@@ -80,9 +86,14 @@ services:
     environment:
       SHIFT_HUB_URL: https://hubd:8400
       SHIFT_HUB_CA_FILE: /bootstrap/ca.pem
-      # Registration tokens are single-use; persisted credentials keep
+      # Registration tokens are single-use; the persisted identity keeps
       # `docker compose restart runnerd` working.
       SHIFT_HUB_REG_TOKEN_FILE: /bootstrap/runner-token
+      # mTLS identity (ADR-0044): key, certificate, CA and id. On the runner's
+      # OWN volume, not the shared bootstrap one — the private key is the
+      # runner's alone, and a bundle volume that several containers mount is
+      # the wrong place for it.
+      SHIFT_RUNNER_IDENTITY_DIR: /var/lib/shift/identity
       SHIFT_HUB_CRED_FILE: /bootstrap/runner-cred.json
       # No local connector dir: everything arrives signed via the
       # registry — the whole supply chain is exercised on every boot.

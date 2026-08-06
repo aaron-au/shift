@@ -78,7 +78,7 @@ github.com/aaron-au/shift/runner/internal/leaseloop 74
 # The gateway intake (ADR-0038). What is uncovered is the retry/backoff arms of
 # the poll loop and the secret-binding branch, which need a hub; the request
 # path itself is covered end to end against a stub gateway.
-github.com/aaron-au/shift/runner/internal/gwclient 74
+github.com/aaron-au/shift/runner/internal/gwclient 75
 github.com/aaron-au/shift/runner/internal/bind 90
 github.com/aaron-au/shift/runner/internal/ratelimit 86
 github.com/aaron-au/shift/runner/internal/service 71
@@ -102,3 +102,9 @@ github.com/aaron-au/shift/gateway/internal/ingress 85
 # whose failure mode is "a connector reached somewhere it must not", so it gets
 # an explicit floor at what it already achieves.
 github.com/aaron-au/shift/pkg/httpsec 98
+
+# The control-plane CA (ADR-0044). What is uncovered is the signing-failure and
+# serial-generation arms, which need a broken crypto source; every rule that
+# decides WHAT gets issued — subject, usages, key strength, proof of possession
+# — is covered.
+github.com/aaron-au/shift/hub/internal/runnerca 83

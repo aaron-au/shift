@@ -68,7 +68,17 @@ func certs(args []string) error {
 	_ = fs.Parse(args)
 
 	if _, err := os.Stat(filepath.Join(*dir, "hub.pem")); err == nil {
-		log.Print("certs: material exists, keeping it")
+		if _, err := os.Stat(filepath.Join(*dir, "ca.key")); err != nil {
+			// A bundle from before ADR-0044 has no CA key, and the key it was
+			// signed with is gone — so runner certificates cannot be issued
+			// from it. Regenerating would invalidate the trust every existing
+			// runner and gateway already has, so the bundle stays as it is and
+			// the runner realm stays on bearer secrets.
+			log.Print("certs: material exists but has no CA key (pre-ADR-0044 bundle) — " +
+				"runner mTLS stays off; delete the bootstrap volume to regenerate")
+		} else {
+			log.Print("certs: material exists, keeping it")
+		}
 		return nil
 	}
 	if err := os.MkdirAll(*dir, 0o700); err != nil {
@@ -85,10 +95,19 @@ func certs(args []string) error {
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().AddDate(5, 0, 0),
 		IsCA:                  true,
-		KeyUsage:              x509.KeyUsageCertSign,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
 	}
 	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		return err
+	}
+	// The CA key is kept so the hub can issue runner client certificates
+	// (ADR-0044). It is the most sensitive file in the bundle — anything
+	// holding it can mint an identity for any runner — hence 0600, and hence
+	// the ADR's insistence that it live in files rather than beside the data
+	// it protects.
+	caKeyDER, err := x509.MarshalPKCS8PrivateKey(caKey)
 	if err != nil {
 		return err
 	}
@@ -133,13 +152,14 @@ func certs(args []string) error {
 		{"ca.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}), 0o644},
 		{"hub.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srvDER}), 0o644},
 		{"hub.key", pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: srvKeyDER}), 0o600},
+		{"ca.key", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: caKeyDER}), 0o600},
 		{"kek.bin", kek, 0o600},
 	} {
 		if err := os.WriteFile(filepath.Join(*dir, f.name), f.data, f.mode); err != nil {
 			return err
 		}
 	}
-	log.Print("certs: wrote ca.pem, hub.pem, hub.key, kek.bin")
+	log.Print("certs: wrote ca.pem, ca.key, hub.pem, hub.key, kek.bin")
 	return nil
 }
 

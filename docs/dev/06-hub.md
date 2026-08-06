@@ -137,13 +137,50 @@ Proof: FireDue contention test (N schedules, 2 stores, exactly N tasks)
   Break-glass `SHIFT_HUB_ADMIN_TOKEN` (≥16 chars, constant-time) stays
   for bootstrap/automation — audited as `admin:break-glass`, warn-logged
   when OIDC is also on, unset it in production.
-- **Runner realm**: unchanged — single-use registration token →
-  per-runner bearer secret, both stored as SHA-256.
+- **Runner realm**: a single-use registration token, then either a **client
+  certificate** (ADR-0044, preferred) or the original per-runner bearer secret
+  (SHA-256 only). See "Runner credentials" below.
 - `adminOrRunner` guards the endpoints both need (artifact resolve/fetch,
   trusted keys).
 - Unauthenticated: `/` (static dashboard page), `/healthz`, `/readyz`,
   `/metrics` (M6a), `/api/v1/authinfo` (which login methods exist — nothing
   more).
+
+### Runner credentials: mTLS (ADR-0044)
+
+`SHIFT_HUB_RUNNER_CA_CERT` / `_KEY` load the control-plane CA (`internal/runnerca`)
+and the hub starts issuing runner client certificates:
+
+| | |
+|---|---|
+| `POST /runners/register` `{token, name, csr}` | spends the single-use token, signs a certificate whose **subject is the runner id the hub just assigned**, returns cert + CA and **no secret** |
+| `POST /runners/certificate` `{csr}` (runner realm) | renewal, authenticated by the current certificate — no operator token |
+| `DELETE /runners/{id}` (admin) | decommission, which under mTLS **is** revocation |
+
+Rules the issuer holds:
+
+- **The CSR's subject is ignored.** Only its public key is used; the hub says
+  who that makes you (ADR-0044 §5, ADR-0041 §3).
+- **Proof of possession is checked** (`csr.CheckSignature`) — otherwise a valid
+  registration token would let somebody have a certificate issued over another
+  party's public key.
+- **Client-auth only, no SANs, not a CA, ECDSA P-256+/Ed25519/RSA-2048+.** A
+  runner dials and never serves.
+- **24h default lifetime** (`-runner-cert-ttl`). Short lifetimes replace a CRL:
+  a deleted runner's certificate stays cryptographically valid and its *name*
+  stops resolving, so the next request is refused and the certificate ages out.
+
+`SHIFT_HUB_RUNNER_AUTH` = `mtls` | `bearer` | `both` (default). `mtls` refuses
+the weaker credential where it would be **issued** as well as where it would be
+accepted, and `Handler` fails at startup if no CA is configured. `bearer` is
+retained for deployments that terminate TLS at a proxy (ADR-0044 §4).
+
+The listener uses `VerifyClientCertIfGiven`, not `Require` — it also serves the
+dashboard. Still fail-closed for what matters: an invalid certificate aborts
+the handshake, and only a **verified** chain populates `r.TLS.VerifiedChains`,
+which is the only thing `authRunner` reads. Schema v7 (`0014`) makes
+`secret_hash` nullable and records `cert_serial` / `cert_not_after` /
+`cert_issued_at` for operations — never for authentication.
 
 ## Audit log (M6b)
 
