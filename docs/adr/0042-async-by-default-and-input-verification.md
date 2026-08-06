@@ -96,31 +96,56 @@ what this is.
 
 > **Build status (2026-08-06).** §1 (async default), §4 (input verification,
 > `engine/schema` + `flowdoc.Input`) and §5 (read before answering) are built.
-> The 202 carries the task id but **no `status_url`**: §3 needs a hub record
-> created at accept time and looked up by id, and `direct_executions` today is
-> written only once an execution is terminal, under an id the hub mints rather
-> than one the runner can quote. Advertising a URL that 404s would be worse
-> than omitting the field, which is additive when §3 and §6 land.
+> The 202 carries the task id but **no `status_url`** until §3 lands: it needs
+> a record created at accept time and looked up by id, and `direct_executions`
+> today is written only once an execution is terminal, under an id the hub mints
+> rather than one the runner can quote. Advertising a URL that 404s would be
+> worse than omitting the field, and the field is additive when §3 arrives.
+>
+> §3 was **revised on 2026-08-06** after review: the status path moved from a
+> global `/_shift/tasks/{id}` to the developer's own route, which is both safer
+> and simpler — see §3, §3a, §3b, §3c.
 
-### 3. The status endpoint is a built-in gateway route
+### 3. The status endpoint lives UNDER the developer's own route
 
-`GET /_shift/tasks/{id}` is served by every gateway without being configured,
-under a reserved path prefix (`/_shift/`) that route configuration may not
-claim. It is dispatched exactly like any other request: to an eligible parked
-runner, which asks the hub (`GET /api/v1/tasks/{id}`, the runner realm) and
-returns the answer.
+`GET /orders/_status/{id}` — the flow's own public path, plus a reserved
+`_status` segment and the task id. Not a global `/_shift/tasks/{id}`.
 
-This preserves the direction property that ADR-0038 exists to hold. **The
-gateway still never dials inward.** It does not learn the hub's address, hold a
-database connection, or cache task state; it asks a runner, and runner→hub is
-already an allowed direction.
+Aaron's proposal (2026-08-06), and it is better than the global path on more
+than the extra entropy it obviously buys:
 
-The response carries **metadata only** — never payload, in keeping with
-ADR-0038 §3:
+- **Authorization becomes structural rather than a comparison after the fact.**
+  A caller with access to `/orders` has no path on which to try a `/payroll`
+  id. The global design needed the gateway to match a presented token against
+  *any* token configured on it — a deployment with twenty routes should not
+  need a twenty-first for status reads — and that was a wart. This deletes it.
+- **The status read inherits the route's ENTIRE policy**: its token, its IP
+  allowlist, its rate limit, its principal. Nothing new to configure and
+  nothing that can drift from the route it belongs to.
+- The gateway has already resolved the route by the time it sees `_status`, so
+  no new dispatch concept is needed — it is the same route, answered
+  differently.
+
+Three rules it needs:
+
+- The status sub-path is **always GET**, even where the route itself is
+  POST-only. A route's method constrains its trigger, not its status.
+- Config validation must **reject a route whose path would shadow another's
+  `_status` segment**, or a customer route silently swallows status reads.
+- The hub check gains cheap defence in depth: the row's flow must match the
+  route's flow, so a valid id from a different route is still refused.
+
+It is dispatched exactly like any other request: to an eligible parked runner,
+which asks the hub and returns the answer. This preserves the direction
+property ADR-0038 exists to hold — **the gateway still never dials inward.** It
+does not learn the hub's address, hold a database connection, or cache task
+state.
+
+The response carries **metadata only** — never payload (ADR-0038 §3):
 
 ```json
 {
-  "task": "tsk_01JZ8Q3F2N7K",
+  "task": "01JZ8Q3F2N7K…",
   "flow": "orders-ingest",
   "state": "running",
   "accepted_at": "2026-08-05T04:11:07Z",
@@ -128,29 +153,85 @@ ADR-0038 §3:
   "finished_at": null,
   "records_in": 41233,
   "records_out": 41233,
-  "attempt": 1,
   "error": null
 }
 ```
 
-On failure, `error` carries the canonical error shape from ADR-0031 (`step`,
-`code`, `message`) — the step id and class of failure, with no record content.
-A caller learning "step `post-to-warehouse` failed with `connector_timeout`" is
-being told something operationally useful and nothing confidential.
+On failure, `error` carries the canonical shape from ADR-0031 (`step`, `code`,
+`message`) — the step id and class of failure, with no record content. "Step
+`post-to-warehouse` failed with `connector_timeout`" is operationally useful
+and confidentially empty.
 
-**Authorization.** The task id is unguessable, and that is not sufficient on
-its own. The gateway authenticates the status request against **any credential
-configured on this gateway** and stamps the resulting `X-Shift-Principal`; the
-hub records the accepting principal on the execution row and returns **404** —
-not 403 — when the caller's principal does not match. A 403 would confirm that
-someone else's task exists under that id, which is exactly the fact being
-protected.
+### 3a. The id is minted by the RUNNER, and minting is not owning
 
-Matching against any configured credential (rather than the specific route's)
-is a deliberate simplification: a deployment with twenty routes and twenty
-tokens should not need a twenty-first for status reads. The principal check
-does the real authorization work; the token match only establishes that the
-caller is a known party at all.
+The accepting runner generates a UUIDv4 and writes it to the hub; the hub row
+is the shared medium. **Any runner can serve a status read**, because serving
+one is proxying a hub lookup — the runner that accepted the work may be dead,
+drained or replaced, and status does not care. Uniqueness comes from randomness
+rather than from a sequence the hub owns, which is exactly why a runner can
+mint one without coordinating.
+
+The alternative — routing status back to the *owning* runner via its local task
+store — was considered and rejected: runners are disposable (ADR-0038 §8), so
+nothing durable may live on one.
+
+Two details this makes load-bearing:
+
+- The finalising update must be `WHERE id = $1 AND account_id = $2`. Without the
+  account clause a buggy or compromised runner could finalise another tenant's
+  row.
+- A primary-key collision is a **409 and a fresh id**, never a silent
+  overwrite.
+
+### 3b. Anonymous routes get a capability URL
+
+A genuine webhook has no caller credential, so every request stamps
+`principal: anonymous` and a principal comparison degrades to "everyone is the
+same person". Refusing status outright was the first answer; Aaron's is better,
+because it keeps the feature and makes the secret explicit: the status URL for
+an anonymous route carries a **per-task token** as a query parameter.
+
+```
+GET /hooks/shopify/_status/{id}?t={token}
+```
+
+That is a capability URL — whoever holds it holds the read — and it is treated
+as one:
+
+- the token is stored **hashed**; the hub never holds it in plaintext
+- the gateway **redacts the parameter** in its own logs
+- it carries a TTL, so a leaked log line ages out
+- **a missing or wrong token is 404**, never 401 or 403. Same no-surfing rule
+  as the principal mismatch: a distinguishable response tells an attacker which
+  ids exist.
+
+The honest caveat, stated rather than buried: query strings leak into access
+logs — ours, any proxy's, and the customer's pipeline. Machine-to-machine
+traffic means no `Referer` exposure, but logs are real, which is what the
+hashing, redaction and TTL are for.
+
+Authenticated routes need none of this: the route's own credential already
+answers "who is asking".
+
+### 3c. Retention: two lifetimes, two tables
+
+Status is caller-facing and ephemeral. History and metering are operator-facing
+and durable. Collapsing them is how pruning quietly breaks billing, so they are
+separate:
+
+| Table | Consumer | Lifetime |
+|---|---|---|
+| `execution_status` | the caller polling a status URL | accepted → running → terminal → consumed → **pruned** |
+| `direct_executions` | dashboard history + metering export (M6d) | kept, unchanged |
+
+A successful terminal read stamps `consumed_at`; a sweeper deletes consumed
+rows after a short grace and unconsumed terminal rows after a TTL. Never before
+terminal.
+
+The grace period exists because clients poll twice. Deleting on first read makes
+the second look like a forgery, so within the window a second read is **410
+Gone** rather than 404 — no leak, since the caller already proved the
+capability, and far kinder than a 404 that reads as "you got the id wrong".
 
 ### 4. Input verification: the schema is what makes 202 mean something
 
