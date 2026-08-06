@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aaron-au/shift/hub/internal/pki"
 	"github.com/aaron-au/shift/hub/internal/ratelimit"
-	"github.com/aaron-au/shift/hub/internal/runnerca"
 	"github.com/aaron-au/shift/hub/internal/store"
 )
 
@@ -170,7 +170,7 @@ type runnerKey struct{}
 // credentials are alternatives, never a chain.
 func (a *api) authRunner(r *http.Request) (id, account string, err error) {
 	if a.opts.RunnerAuth.allowsMTLS() {
-		if certID := runnerca.RunnerID(r.TLS); certID != "" {
+		if certID := pki.Subject(r.TLS); certID != "" {
 			account, err = a.st.AuthRunnerCert(r.Context(), certID)
 			if err != nil {
 				return "", "", err

@@ -261,15 +261,23 @@ than this system.
 
 ## Not built yet
 
-- mTLS control listener + identity bundle (ADR-0038 §6a): bootstrap inverts,
-  since a gateway that cannot dial the hub cannot register with it. Until then
-  the control listener carries a shared secret and `-config` loads a local
-  file. The shared secret is one-directional — it does not let a runner verify
-  the gateway, which mTLS will.
-- Hub side: gateway records, config push, certificate lifecycle, and the
-  per-runner gateway address list. **Identity renewal must be pushed before
-  expiry** — a lapsed certificate strands a gateway permanently, because
-  requesting a new one would mean dialling.
+- **Gateway side of adoption** (ADR-0049): the state directory, the bootstrap
+  endpoint that closes once adopted, and mutual TLS on the control listener.
+  Until it lands the control listener carries a shared secret and `-config`
+  loads a local file. The shared secret is one-directional — it does not let a
+  runner verify the gateway, which mTLS will.
+- **Per-runner gateway address list**, and the config *builder* — the hub side
+  now has the records, the CA, the dial-out client and the reconcile loop
+  (`hub/internal/{pki,gwpush,gwsync}`), but `ConfigFor` is unset, so a hub
+  currently maintains gateway identities and pushes nothing. An adopted gateway
+  with a live identity and no routes serves 503, which is the correct answer
+  for a gateway with nothing to route.
+
+  Bootstrap no longer inverts: the gateway publishes a public-key fingerprint,
+  an administrator carries it to the hub, and the hub dials. Identity renewal is
+  pushed ahead of expiry by `gwsync`, and the fingerprint is *retained* after
+  adoption, so an identity that lapses anyway is recovered by falling back to
+  the pinned key rather than stranding the gateway.
 - **Caller identity inside the flow.** The gateway stamps the principal and the
   runner receives it, but nothing yet binds it into the flow document — that
   needs the flow-variable model ADR-0031 leaves open. Until then the principal

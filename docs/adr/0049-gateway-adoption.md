@@ -148,6 +148,42 @@ So the failure mode degrades from *permanently stranded, requires a human in
 the DMZ* to *self-healing on the next reconcile*. That, rather than convenience,
 is why the fingerprint is retained after adoption instead of discarded.
 
+### 7. Where the control listener has to be reachable from
+
+Adoption is not a special path. It uses the same control listener as every
+later push, so whatever route reaches it for adoption is the route the
+reconcile loop uses every thirty seconds. The decision is made once, not twice.
+
+Two ports, two very different exposures:
+
+| Port | Who reaches it | Termination |
+|---|---|---|
+| Ingress | the public | may be terminated upstream (ADR-0038 §6 `upstream-tls`) |
+| Control | the hub, and runners polling for work | **never terminated by anything in between** |
+
+The control listener must be end-to-end TLS, because the trust *is* the key
+pin. A proxy that terminates it means the hub pinned the PROXY's key and has
+adopted the proxy; everything past it is unauthenticated. Worse, the channel
+carries TLS private keys for customer domains, so a terminating appliance reads
+them. Where an appliance genuinely sits in the path, the rule for that one port
+is L4/TCP or SNI passthrough — not "disable inspection everywhere", just one
+port forwarded rather than opened.
+
+Where the hub lives changes the network conversation:
+
+- **On-prem hub** — hub → gateway is internal → DMZ, ordinary management
+  traffic. Nothing about the control listener is public.
+- **Cloud hub** — the hub is on the internet, so the control listener must be
+  internet-reachable too. ADR-0038's claim that the gateway is the sole
+  publicly reachable component still holds, but it is now **two ports public,
+  not one**, and that belongs on the network diagram rather than being
+  discovered.
+
+  The exposure is small and should be kept that way: the control listener
+  accepts mutual TLS only, from a CA the hub controls, pinned to one identity;
+  while unadopted it serves nothing but a public fingerprint; and it should be
+  source-restricted to the hub's egress addresses.
+
 ## Consequences
 
 - The hub gains gateway records (URL, fingerprint, identity serial, adoption
