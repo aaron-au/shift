@@ -7,7 +7,12 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -22,10 +27,12 @@ import (
 
 	"github.com/aaron-au/shift/hub/internal/api"
 	"github.com/aaron-au/shift/hub/internal/connpolicy"
+	"github.com/aaron-au/shift/hub/internal/gwpush"
+	"github.com/aaron-au/shift/hub/internal/gwsync"
 	"github.com/aaron-au/shift/hub/internal/kek"
 	"github.com/aaron-au/shift/hub/internal/oidcauth"
+	"github.com/aaron-au/shift/hub/internal/pki"
 	"github.com/aaron-au/shift/hub/internal/ratelimit"
-	"github.com/aaron-au/shift/hub/internal/runnerca"
 	"github.com/aaron-au/shift/hub/internal/scheduler"
 	"github.com/aaron-au/shift/hub/internal/secrets"
 	"github.com/aaron-au/shift/hub/internal/store"
@@ -47,7 +54,13 @@ func main() {
 		runnerCACert = flag.String("runner-ca-cert", os.Getenv("SHIFT_HUB_RUNNER_CA_CERT"),
 			"control-plane CA certificate — issues runner client certificates (ADR-0044)")
 		runnerCAKey   = flag.String("runner-ca-key", os.Getenv("SHIFT_HUB_RUNNER_CA_KEY"), "control-plane CA key")
-		runnerCertTTL = flag.Duration("runner-cert-ttl", envDuration("SHIFT_HUB_RUNNER_CERT_TTL", runnerca.DefaultTTL),
+		gatewayCACert = flag.String("gateway-ca-cert", os.Getenv("SHIFT_HUB_GATEWAY_CA_CERT"),
+			"PEM certificate of the gateway CA (ADR-0049); enables gateway adoption")
+		gatewayCAKey = flag.String("gateway-ca-key", os.Getenv("SHIFT_HUB_GATEWAY_CA_KEY"),
+			"PEM private key of the gateway CA")
+		gatewayCertTTL = flag.Duration("gateway-cert-ttl", envDuration("SHIFT_HUB_GATEWAY_CERT_TTL", pki.DefaultTTL),
+			"lifetime of an issued gateway identity")
+		runnerCertTTL = flag.Duration("runner-cert-ttl", envDuration("SHIFT_HUB_RUNNER_CERT_TTL", pki.DefaultTTL),
 			"lifetime of an issued runner certificate (runners renew at half of it)")
 		runnerAuth = flag.String("runner-auth", envOr("SHIFT_HUB_RUNNER_AUTH", "both"),
 			`runner credentials accepted: "mtls", "bearer" or "both"`)
@@ -111,7 +124,7 @@ func main() {
 
 	opts := api.Options{AdminToken: adminToken, LeaseTTL: *leaseTTL, RunnerAuth: api.RunnerAuthMode(*runnerAuth)}
 	if *runnerCACert != "" || *runnerCAKey != "" {
-		ca, err := runnerca.Load(*runnerCACert, *runnerCAKey, *runnerCertTTL)
+		ca, err := pki.Load("runner", *runnerCACert, *runnerCAKey, *runnerCertTTL)
 		if err != nil {
 			shiftlog.Fatalf("hubd: %v", err) //nolint:gocritic // exitAfterDefer: startup-fatal, the OS reclaims the pool
 		}
@@ -121,6 +134,37 @@ func main() {
 			shiftlog.KeyEvent, "hub.runner_mtls.enabled",
 			"cert_ttl", runnerCertTTL.String(), "ca_not_after", ca.NotAfter().UTC().Format(time.RFC3339))
 	}
+	var gwLoop *gwsync.Loop
+	if *gatewayCACert != "" || *gatewayCAKey != "" {
+		gwCA, err := pki.Load("gateway", *gatewayCACert, *gatewayCAKey, *gatewayCertTTL)
+		if err != nil {
+			shiftlog.Fatalf("hubd: %v", err) //nolint:gocritic // exitAfterDefer: startup-fatal, the OS reclaims the pool
+		}
+		// The hub mints its OWN client certificate from this CA at start-up. It
+		// already holds the CA key, so a second file to manage would buy
+		// nothing; and the identity is short-lived and in-memory, so a hub
+		// restart rotates it for free.
+		hubCert, err := selfIssue(gwCA)
+		if err != nil {
+			shiftlog.Fatalf("hubd: %v", err) //nolint:gocritic // exitAfterDefer: startup-fatal, the OS reclaims the pool
+		}
+		client := gwpush.New(gwCA, hubCert, 30*time.Second)
+		opts.Gateways = client
+		gwLoop = gwsync.New(gwsync.Options{
+			Store: st, Client: client,
+			RunnerCA: func() []byte {
+				if opts.RunnerCA == nil {
+					return nil
+				}
+				return opts.RunnerCA.CAPEM()
+			},
+		})
+		//nolint:gosec // G706: both values are our own — a parsed duration flag and the CA's own NotAfter
+		slog.Info("gateway adoption enabled",
+			shiftlog.KeyEvent, "hub.gateway_ca.enabled",
+			"cert_ttl", gatewayCertTTL.String(), "ca_not_after", gwCA.NotAfter().UTC().Format(time.RFC3339))
+	}
+
 	if policy := connpolicy.Parse(*connAllow, *connDeny); policy.Restricted() {
 		opts.ConnectorPolicy = policy
 		slog.Info("connector capability policy active", shiftlog.KeyEvent, "hub.connector_policy.active")
@@ -157,6 +201,21 @@ func main() {
 		sched.Run(schedCtx)
 	}()
 	opts.SchedStatus = sched.Status
+
+	// Gateway reconcile (ADR-0049 §6). A gateway never dials inward, so
+	// renewal and configuration are things the HUB has to notice on a timer —
+	// this loop is the gateway's whole lifeline.
+	gwCtx, stopGW := context.WithCancel(context.Background())
+	gwDone := make(chan struct{})
+	if gwLoop != nil {
+		go func() {
+			defer close(gwDone)
+			gwLoop.Run(gwCtx)
+		}()
+	} else {
+		close(gwDone)
+	}
+	defer func() { stopGW(); <-gwDone }()
 
 	// Prune caller-facing execution status (ADR-0042 §3c). Unsynchronised
 	// across replicas on purpose: this only deletes rows already past their
@@ -323,4 +382,31 @@ func envFloat(key string, def float64) float64 {
 		}
 	}
 	return def
+}
+
+// selfIssue mints the hub's own client certificate from the gateway CA
+// (ADR-0049 §2) — the credential a gateway checks before believing a
+// configuration push.
+//
+// In memory and short-lived by construction: the hub already holds the CA key,
+// so writing a second key pair to disk would add a file to protect without
+// adding a boundary. A restart rotates it.
+func selfIssue(ca *pki.CA) (*tls.Certificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("hub identity key: %w", err)
+	}
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{}, key)
+	if err != nil {
+		return nil, fmt.Errorf("hub identity request: %w", err)
+	}
+	issued, err := ca.Sign(csr, gwpush.HubSubject, pki.UsageClient)
+	if err != nil {
+		return nil, err
+	}
+	blk, _ := pem.Decode(issued.CertPEM)
+	if blk == nil {
+		return nil, errors.New("hub identity: the issued certificate is not PEM")
+	}
+	return &tls.Certificate{Certificate: [][]byte{blk.Bytes}, PrivateKey: key}, nil
 }

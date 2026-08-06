@@ -20,9 +20,10 @@ import (
 	"time"
 
 	"github.com/aaron-au/shift/hub/internal/connpolicy"
+	"github.com/aaron-au/shift/hub/internal/gwpush"
 	"github.com/aaron-au/shift/hub/internal/oidcauth"
+	"github.com/aaron-au/shift/hub/internal/pki"
 	"github.com/aaron-au/shift/hub/internal/ratelimit"
-	"github.com/aaron-au/shift/hub/internal/runnerca"
 	"github.com/aaron-au/shift/hub/internal/scheduler"
 	"github.com/aaron-au/shift/hub/internal/secrets"
 	"github.com/aaron-au/shift/hub/internal/store"
@@ -54,7 +55,11 @@ type Options struct {
 	// RunnerCA issues and anchors runner client certificates (ADR-0044).
 	// Optional; nil leaves the runner realm on bearer secrets, which is what
 	// a deployment terminating TLS at a proxy needs.
-	RunnerCA *runnerca.CA
+	RunnerCA *pki.CA
+	// Gateways dials gateways to adopt them and push configuration (ADR-0049).
+	// Nil on a hub with no gateway CA configured, which makes adoption a 503
+	// rather than a half-working trust path.
+	Gateways *gwpush.Client
 	// RunnerAuth decides which runner credentials are accepted: "mtls",
 	// "bearer" or "both" (default). A deployment that has cut over should set
 	// "mtls" — "we support both forever" is how the weaker credential stays
@@ -158,7 +163,13 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	// Admin realm.
 	mux.Handle("POST /api/v1/runner-tokens", a.admin(a.createRunnerToken))
 	mux.Handle("GET /api/v1/runners", a.admin(a.listRunners))
-	mux.Handle("DELETE /api/v1/runners/{id}", a.admin(a.deleteRunner)) // ADR-0044: decommission = revoke
+	mux.Handle("DELETE /api/v1/runners/{id}", a.admin(a.deleteRunner))                // ADR-0044: decommission = revoke
+	mux.Handle("POST /api/v1/gateways", a.admin(a.createGateway))                     // ADR-0049
+	mux.Handle("GET /api/v1/gateways", a.admin(a.listGateways))                       // ADR-0049
+	mux.Handle("GET /api/v1/gateways/{id}", a.admin(a.getGateway))                    // ADR-0049
+	mux.Handle("POST /api/v1/gateways/{id}/adopt", a.admin(a.adoptGateway))           // ADR-0049 §2
+	mux.Handle("POST /api/v1/gateways/{id}/rotate", a.admin(a.rotateGatewayAdoption)) // ADR-0049 §4
+	mux.Handle("DELETE /api/v1/gateways/{id}", a.admin(a.deleteGateway))              // deletion = revocation
 	mux.Handle("PUT /api/v1/flows/{name}", a.admin(a.deployFlow))
 	mux.Handle("GET /api/v1/flows", a.admin(a.listFlows))
 	mux.Handle("GET /api/v1/flows/{name}", a.admin(a.getFlow))

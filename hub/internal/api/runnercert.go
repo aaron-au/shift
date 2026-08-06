@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/aaron-au/shift/hub/internal/pki"
 	"github.com/aaron-au/shift/hub/internal/store"
 )
 
@@ -70,7 +71,7 @@ func (a *api) registerCert(w http.ResponseWriter, r *http.Request, token, name, 
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	issued, err := a.opts.RunnerCA.Sign(csrDER, id)
+	issued, err := a.opts.RunnerCA.Sign(csrDER, id, pki.UsageClient)
 	if err != nil {
 		// The token is spent and the row exists but cannot authenticate
 		// anything, which is the correct state for a half-finished
@@ -127,7 +128,7 @@ func (a *api) renewCertificate(w http.ResponseWriter, r *http.Request) {
 	// runner renewing on behalf of another runner is the one thing this
 	// endpoint must not permit.
 	id := runnerID(r)
-	issued, err := a.opts.RunnerCA.Sign(csrDER, id)
+	issued, err := a.opts.RunnerCA.Sign(csrDER, id, pki.UsageClient)
 	if err != nil {
 		writeErrCode(w, http.StatusBadRequest, "csr_rejected", err)
 		return

@@ -114,4 +114,6 @@ github.com/aaron-au/shift/pkg/httpsec 98
 # serial-generation arms, which need a broken crypto source; every rule that
 # decides WHAT gets issued — subject, usages, key strength, proof of possession
 # — is covered.
-github.com/aaron-au/shift/hub/internal/runnerca 83
+github.com/aaron-au/shift/hub/internal/gwpush 80
+github.com/aaron-au/shift/hub/internal/gwsync 74
+github.com/aaron-au/shift/hub/internal/pki 88

@@ -22,7 +22,7 @@ import (
 
 	"github.com/aaron-au/shift/hub/internal/api"
 	"github.com/aaron-au/shift/hub/internal/pgtest"
-	"github.com/aaron-au/shift/hub/internal/runnerca"
+	"github.com/aaron-au/shift/hub/internal/pki"
 	"github.com/aaron-au/shift/hub/internal/store"
 )
 
@@ -35,7 +35,7 @@ import (
 
 type mtlsHub struct {
 	srv *httptest.Server
-	ca  *runnerca.CA
+	ca  *pki.CA
 }
 
 // newMTLSHub starts a TLS hub that trusts a fresh control-plane CA for client
@@ -44,7 +44,7 @@ func newMTLSHub(t *testing.T, mode api.RunnerAuthMode) *mtlsHub {
 	t.Helper()
 	dir := t.TempDir()
 	writeTestCA(t, dir)
-	ca, err := runnerca.Load(filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca-key.pem"), time.Hour)
+	ca, err := pki.Load("runner", filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca-key.pem"), time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestAForeignCertificateIsRefusedAtTheHandshake(t *testing.T) {
 	// A second, untrusted CA issuing a certificate for the SAME runner id.
 	dir := t.TempDir()
 	writeTestCA(t, dir)
-	rogue, err := runnerca.Load(filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca-key.pem"), time.Hour)
+	rogue, err := pki.Load("runner", filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca-key.pem"), time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func TestAForeignCertificateIsRefusedAtTheHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	issued, err := rogue.Sign(der, id)
+	issued, err := rogue.Sign(der, id, pki.UsageClient)
 	if err != nil {
 		t.Fatal(err)
 	}
