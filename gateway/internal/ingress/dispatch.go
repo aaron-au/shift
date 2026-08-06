@@ -190,7 +190,8 @@ func (d *DispatchHandler) poll(w http.ResponseWriter, r *http.Request) {
 			// Fail closed. A runner the hub has not vouched for may be new
 			// (the roster push is seconds behind) or may not belong here at
 			// all, and the two are indistinguishable from this side.
-			d.log.Warn("poll from a runner absent from the roster", "runner", id)
+			d.log.Warn("poll from a runner absent from the roster",
+				"event", "gateway.runner.unknown", "runner", id)
 			http.Error(w, "runner not in roster", http.StatusForbidden)
 			return
 		}
@@ -226,7 +227,8 @@ func (d *DispatchHandler) poll(w http.ResponseWriter, r *http.Request) {
 			// The runner hung up, or the caller's body ended early. Either
 			// way the exchange is dead; the caller's Dispatch will time out
 			// and answer 504. Nothing to recover here.
-			d.log.Warn("poll body copy failed", "request", req.ID, "error", err)
+			d.log.Warn("poll body copy failed",
+				"event", "gateway.poll.copy_failed", "request", req.ID, "error", err)
 		}
 	}
 	if f, ok := w.(http.Flusher); ok {

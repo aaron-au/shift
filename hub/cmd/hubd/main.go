@@ -11,7 +11,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -31,6 +30,7 @@ import (
 	"github.com/aaron-au/shift/hub/internal/secrets"
 	"github.com/aaron-au/shift/hub/internal/store"
 	"github.com/aaron-au/shift/hub/internal/telemetry"
+	"github.com/aaron-au/shift/pkg/shiftlog"
 )
 
 // version is stamped via -ldflags at release build time.
@@ -79,16 +79,17 @@ func main() {
 		return
 	}
 
-	// Structured logs (issue #7): JSON to stderr, level from
-	// SHIFT_HUB_LOG_LEVEL (debug|info|warn|error, default info). The API's
-	// access log + correlation ids ride this; startup log.* lines stay plain.
-	var lvl slog.Level
-	if err := lvl.UnmarshalText([]byte(envOr("SHIFT_HUB_LOG_LEVEL", "info"))); err != nil {
-		lvl = slog.LevelInfo
-	}
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: lvl})))
+	// Structured logs on STDOUT (ADR-0046). SHIFT_LOG_LEVEL is the
+	// platform-wide knob; SHIFT_HUB_LOG_LEVEL still works for anyone who
+	// already set it.
+	shiftlog.Setup(shiftlog.Options{
+		Component: shiftlog.ComponentHub,
+		Version:   version,
+		Level:     envOr("SHIFT_HUB_LOG_LEVEL", os.Getenv("SHIFT_LOG_LEVEL")),
+		Format:    os.Getenv("SHIFT_LOG_FORMAT"),
+	})
 	if *dsn == "" {
-		log.Fatal("hubd: -db (or SHIFT_HUB_DB) is required")
+		shiftlog.Fatalf("hubd: -db (or SHIFT_HUB_DB) is required")
 	}
 	// Env only — a flag would leak the token into process listings.
 	adminToken := os.Getenv("SHIFT_HUB_ADMIN_TOKEN")
@@ -97,7 +98,7 @@ func main() {
 	st, err := store.Open(ctx, *dsn)
 	cancel()
 	if err != nil {
-		log.Fatalf("hubd: %v", err)
+		shiftlog.Fatalf("hubd: %v", err)
 	}
 	defer st.Close()
 
@@ -105,23 +106,24 @@ func main() {
 	err = st.Migrate(ctx)
 	cancel()
 	if err != nil {
-		log.Fatalf("hubd: migrate: %v", err) //nolint:gocritic // exitAfterDefer: startup-fatal; process exits and the OS reclaims the pool/fds — deferred st.Close() is moot
+		shiftlog.Fatalf("hubd: migrate: %v", err) //nolint:gocritic // exitAfterDefer: startup-fatal; process exits and the OS reclaims the pool/fds — deferred st.Close() is moot
 	}
 
 	opts := api.Options{AdminToken: adminToken, LeaseTTL: *leaseTTL, RunnerAuth: api.RunnerAuthMode(*runnerAuth)}
 	if *runnerCACert != "" || *runnerCAKey != "" {
 		ca, err := runnerca.Load(*runnerCACert, *runnerCAKey, *runnerCertTTL)
 		if err != nil {
-			log.Fatalf("hubd: %v", err) //nolint:gocritic // exitAfterDefer: startup-fatal, the OS reclaims the pool
+			shiftlog.Fatalf("hubd: %v", err) //nolint:gocritic // exitAfterDefer: startup-fatal, the OS reclaims the pool
 		}
 		opts.RunnerCA = ca
 		//nolint:gosec // G706: both values are our own — a parsed duration flag and the CA's own NotAfter
-		log.Printf("hubd: runner mTLS enabled (certificates valid %s, CA expires %s)",
-			*runnerCertTTL, ca.NotAfter().UTC().Format(time.RFC3339))
+		slog.Info("runner mTLS enabled",
+			shiftlog.KeyEvent, "hub.runner_mtls.enabled",
+			"cert_ttl", runnerCertTTL.String(), "ca_not_after", ca.NotAfter().UTC().Format(time.RFC3339))
 	}
 	if policy := connpolicy.Parse(*connAllow, *connDeny); policy.Restricted() {
 		opts.ConnectorPolicy = policy
-		log.Print("hubd: connector capability policy active")
+		slog.Info("connector capability policy active", shiftlog.KeyEvent, "hub.connector_policy.active")
 	}
 
 	if *oidcIssuer != "" {
@@ -129,7 +131,8 @@ func main() {
 		clientSecret := os.Getenv("SHIFT_HUB_OIDC_CLIENT_SECRET")
 		opts.OIDC, opts.OIDCFlow = mustOIDC(*oidcIssuer, *oidcClientID, clientSecret, *oidcRedirect)
 		if adminToken != "" {
-			log.Print("hubd: WARNING: break-glass admin token is set alongside OIDC — unset SHIFT_HUB_ADMIN_TOKEN once OIDC login works")
+			slog.Warn("break-glass admin token is set alongside OIDC — unset SHIFT_HUB_ADMIN_TOKEN once OIDC login works",
+				shiftlog.KeyEvent, "hub.breakglass.enabled")
 		}
 	}
 	if *kekFile != "" {
@@ -139,7 +142,7 @@ func main() {
 		}
 		provider, err := kek.NewLocalFiles(*kekFile, old...)
 		if err != nil {
-			log.Fatalf("hubd: %v", err)
+			shiftlog.Fatalf("hubd: %v", err)
 		}
 		opts.Secrets = secrets.New(st, provider)
 	}
@@ -201,14 +204,14 @@ func main() {
 		return out
 	})
 	if err != nil {
-		log.Fatalf("hubd: metrics: %v", err)
+		shiftlog.Fatalf("hubd: metrics: %v", err)
 	}
 	opts.MetricsHandler = metricsH.Handler
 	opts.RecordHTTP = metricsH.RecordHTTP
 
 	h, err := api.Handler(st, opts)
 	if err != nil {
-		log.Fatalf("hubd: %v (set SHIFT_HUB_ADMIN_TOKEN or configure OIDC)", err)
+		shiftlog.Fatalf("hubd: %v (set SHIFT_HUB_ADMIN_TOKEN or configure OIDC)", err)
 	}
 
 	srv := &http.Server{
@@ -229,28 +232,34 @@ func main() {
 			MinVersion: tls.VersionTLS12,
 		}
 		if *tlsCert == "" {
-			log.Print("hubd: WARNING: a runner CA is configured but this hub serves plaintext — " +
-				"client certificates cannot be presented over HTTP, so runners must use bearer secrets")
+			slog.Warn("a runner CA is configured but this hub serves plaintext — client certificates "+
+				"cannot be presented over HTTP, so runners must use bearer secrets",
+				shiftlog.KeyEvent, "hub.runner_mtls.unreachable")
 		}
 	}
 	go func() {
 		var err error
 		if *tlsCert != "" || *tlsKey != "" {
-			log.Printf("hubd %s: https://%s (lease TTL %s)", version, *listen, *leaseTTL)
+			slog.Info("hub started", shiftlog.KeyEvent, "hub.started",
+				"listen", *listen, "tls", true, "lease_ttl", leaseTTL.String(),
+				"runner_auth", string(opts.RunnerAuth))
 			err = srv.ListenAndServeTLS(*tlsCert, *tlsKey)
 		} else {
-			log.Printf("hubd %s: http://%s (lease TTL %s) — plaintext HTTP, keep it loopback/TLS-terminated", version, *listen, *leaseTTL)
+			slog.Info("hub started on plaintext HTTP — keep it loopback or TLS-terminated",
+				shiftlog.KeyEvent, "hub.started",
+				"listen", *listen, "tls", false, "lease_ttl", leaseTTL.String(),
+				"runner_auth", string(opts.RunnerAuth))
 			err = srv.ListenAndServe()
 		}
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("hubd: serve: %v", err)
+			shiftlog.Fatalf("hubd: serve: %v", err)
 		}
 	}()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
 	<-stop
-	log.Print("hubd: shutting down")
+	slog.Info("shutting down", shiftlog.KeyEvent, "hub.stopped")
 	stopSched()
 	<-schedDone
 	ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
@@ -283,9 +292,10 @@ func mustOIDC(issuer, clientID, clientSecret, redirectURL string) (*oidcauth.Ver
 		}
 		cancel()
 		if i >= attempts {
-			log.Fatalf("hubd: OIDC discovery for %s failed after %d attempts: %v", issuer, attempts, err) //nolint:gosec // G706: operator-supplied issuer flag
+			shiftlog.Fatalf("hubd: OIDC discovery for %s failed after %d attempts: %v", issuer, attempts, err) //nolint:gosec // G706: operator-supplied issuer flag
 		}
-		log.Printf("hubd: OIDC discovery (%d/%d): %v — retrying", i, attempts, err)
+		slog.Warn("OIDC discovery failed, retrying",
+			shiftlog.KeyEvent, "hub.oidc.retry", "attempt", i, "attempts", attempts, shiftlog.KeyError, err.Error())
 		time.Sleep(2 * time.Second)
 	}
 }

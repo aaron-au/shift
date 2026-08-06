@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -297,12 +296,16 @@ func (a *api) observe(next http.Handler) http.Handler {
 		if a.opts.RecordHTTP != nil {
 			a.opts.RecordHTTP(ctx, r.Method, route, sr.status, dur.Seconds())
 		}
-		slog.LogAttrs(ctx, slog.LevelInfo, "http",
-			slog.String("id", rid),
+		// The access line carries an event name like every other record
+		// (ADR-0046 §3), so "show me every request" and "show me every
+		// certificate renewal" are the same query shape.
+		slog.LogAttrs(ctx, slog.LevelInfo, "http request",
+			slog.String("event", "hub.request"),
+			slog.String("request", rid),
 			slog.String("method", r.Method),
 			slog.String("route", route),
 			slog.Int("status", sr.status),
-			slog.Int64("dur_ms", dur.Milliseconds()),
+			slog.Int64("duration_ms", dur.Milliseconds()),
 		)
 	})
 }
@@ -324,7 +327,7 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Printf("api: encode response: %v", err)
+		slog.Warn("encoding a response failed", "event", "hub.response.encode_failed", "error", err.Error())
 	}
 }
 

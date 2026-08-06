@@ -74,7 +74,14 @@ github.com/aaron-au/shift/runner/internal/hubclient 84
 # keep the gate deterministic (ADR-0022). The wire format those lines produce
 # is covered where it IS reachable, in hubclient (HeartbeatWithCheckpoint), and
 # the behaviour is covered end to end in hub/internal/store.
-github.com/aaron-au/shift/runner/internal/leaseloop 74
+# 73: a DELIBERATE lowering (ADR-0046). The task.completed / task.failed
+# lifecycle records live in that same subprocess-only region, so adding them
+# added uncovered statements — 74.0% -> 73.8% — without removing a single
+# test. Lowering a floor is normally the wrong answer and the ratchet exists to
+# prevent it; this is recorded here rather than done quietly, because the
+# alternative was to leave the runner's two most important operational records
+# unwritten in order to protect a number.
+github.com/aaron-au/shift/runner/internal/leaseloop 73
 # The gateway intake (ADR-0038). What is uncovered is the retry/backoff arms of
 # the poll loop and the secret-binding branch, which need a hub; the request
 # path itself is covered end to end against a stub gateway.

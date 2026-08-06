@@ -46,6 +46,9 @@ services:
       certgen: { condition: service_completed_successfully }
       dex: { condition: service_started }
     environment:
+      # Structured logs on stdout (ADR-0046). JSON is the default off a
+      # terminal; set SHIFT_LOG_FORMAT=text to read them by eye.
+      SHIFT_LOG_LEVEL: ${SHIFT_LOG_LEVEL:-info}
       SHIFT_HUB_LISTEN: 0.0.0.0:8400
       SHIFT_HUB_DB: postgres://shift:shift-dev-only@postgres:5432/shift
       SHIFT_HUB_TLS_CERT: /bootstrap/hub.pem
@@ -84,6 +87,7 @@ services:
     depends_on:
       bootstrap: { condition: service_completed_successfully }
     environment:
+      SHIFT_LOG_LEVEL: ${SHIFT_LOG_LEVEL:-info}
       SHIFT_HUB_URL: https://hubd:8400
       SHIFT_HUB_CA_FILE: /bootstrap/ca.pem
       # Registration tokens are single-use; the persisted identity keeps

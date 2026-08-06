@@ -27,14 +27,50 @@ read from `r.Pattern` after routing — bounded cardinality, never the raw path.
 The middleware records via a func on `api.Options` (`RecordHTTP`) so the `api`
 package stays free of the telemetry dependency.
 
-## Structured logging + correlation ids (hub, issue #7)
+## Operational logging (ADR-0046)
 
-`hubd` sets a JSON `slog` default (level via `SHIFT_HUB_LOG_LEVEL`). The
-`observe` middleware assigns each request a short correlation id, echoes it as
-`X-Request-Id`, puts it on the request context (`api.RequestID(ctx)` for
-handlers), and emits one structured access line (`id`/`method`/`route`/`status`/
-`dur_ms`). Payload/secret values never enter a log. **Not yet done:** the runner
-control API's mirror and propagating the id into runner→hub reports for full
+All three binaries emit **structured records on stdout**. The operator decides
+whether that becomes a file, a pipe or a collector; a process that writes its
+own log files has taken that decision away.
+
+- `pkg/shiftlog.Setup` configures `hubd` and `runnerd` in one call: stdout,
+  level from `SHIFT_LOG_LEVEL` (`SHIFT_HUB_LOG_LEVEL` / `SHIFT_RUNNER_LOG_LEVEL`
+  still work), format from `SHIFT_LOG_FORMAT` — **JSON when stdout is not a
+  terminal, text when it is**, so containers get machine-readable output and a
+  local `make up` stays readable.
+- **`gatewayd` does NOT import it.** Its `go.mod` has zero dependencies, an
+  auditable property of the one component that may sit in a DMZ, so it keeps
+  ~20 lines of its own setup. The contract is the output schema, enforced by
+  `pkg/shiftlog`'s conformance test — which also fails if the gateway's
+  `go.mod` ever grows a dependency, since the duplication would then have no
+  justification.
+- **The stdlib `log` package is bridged into slog**, so legacy `log.Print`
+  call sites and any third-party library using the global logger cannot write
+  prose into a JSON stream.
+
+Every record carries `component` and `version`. Lifecycle records carry a
+stable `event` name (`runner.registered`, `runner.cert.renewed`,
+`task.completed`, `hub.started`, `gateway.config.applied`, …) — **alert on
+`event`, never on `msg`**, which is prose for humans and free to change.
+Context keys are spelled one way platform-wide: `runner`, `flow`, `task`,
+`request`, `gateway`, `connector`, `account`, `duration_ms`, `error`.
+
+Per-task records are DEBUG (`task.leased`) where a busy runner would otherwise
+generate real volume; terminal ones are INFO/WARN.
+
+Payload records, secret values, tokens and private keys never enter a log — a
+credential may be *identified* (`cert_serial`) but never reproduced, and a test
+greps a captured stream to keep that true.
+
+### Correlation ids (hub, issue #7)
+
+The `observe` middleware assigns each request a short correlation id, echoes it
+as `X-Request-Id`, puts it on the request context (`api.RequestID(ctx)`), and
+emits one access line (`event: hub.request`, plus `request`/`method`/`route`/
+`status`/`duration_ms` — the platform-wide key names, so a request record
+filters like any other). The gateway and
+runner exchange a `request` id on the data plane. **Not yet done:** the runner
+control API's mirror, and propagating the id into runner→hub reports for full
 cross-plane correlation — a follow-up on #7.
 
 ### Naming convention (follow for all future metrics)

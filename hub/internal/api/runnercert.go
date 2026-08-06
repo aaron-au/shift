@@ -75,7 +75,8 @@ func (a *api) registerCert(w http.ResponseWriter, r *http.Request, token, name, 
 		// The token is spent and the row exists but cannot authenticate
 		// anything, which is the correct state for a half-finished
 		// registration: harmless, and visible.
-		slog.Warn("runner registered but its certificate could not be issued", "runner", id, "error", err)
+		slog.Warn("runner registered but its certificate could not be issued",
+			"event", "hub.runner_cert.issue_failed", "runner", id, "error", err)
 		writeErrCode(w, http.StatusBadRequest, "csr_rejected", err)
 		return
 	}
@@ -83,7 +84,8 @@ func (a *api) registerCert(w http.ResponseWriter, r *http.Request, token, name, 
 		// Bookkeeping only — the certificate is valid and the runner can use
 		// it. Failing the registration over this would be worse than an
 		// unrecorded serial.
-		slog.Warn("recording the runner certificate failed", "runner", id, "error", err)
+		slog.Warn("recording the runner certificate failed",
+			"event", "hub.runner_cert.record_failed", "runner", id, "error", err)
 	}
 	_ = a.st.Audit(r.Context(), "runner:"+id, "runner.register", name,
 		map[string]string{"auth": "mtls", "cert_serial": issued.Serial})
@@ -131,7 +133,8 @@ func (a *api) renewCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.st.RecordRunnerCertificate(r.Context(), id, issued.Serial, issued.NotAfter); err != nil {
-		slog.Warn("recording the runner certificate failed", "runner", id, "error", err)
+		slog.Warn("recording the runner certificate failed",
+			"event", "hub.runner_cert.record_failed", "runner", id, "error", err)
 	}
 	_ = a.st.Audit(r.Context(), "runner:"+id, "runner.certificate.renew", id,
 		map[string]string{"cert_serial": issued.Serial})

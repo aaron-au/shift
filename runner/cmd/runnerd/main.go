@@ -14,7 +14,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -26,6 +25,7 @@ import (
 	"time"
 
 	"github.com/aaron-au/shift/pkg/flowdoc"
+	"github.com/aaron-au/shift/pkg/shiftlog"
 	"github.com/aaron-au/shift/runner/internal/api"
 	"github.com/aaron-au/shift/runner/internal/auth"
 	"github.com/aaron-au/shift/runner/internal/bind"
@@ -66,6 +66,15 @@ func main() {
 		taskTimeout   = flag.Duration("task-timeout", envDuration("SHIFT_RUNNER_TASK_TIMEOUT", 0), "max execution time per task (0=off; streaming workloads are legitimately long)")
 	)
 	flag.Parse()
+	// Structured logs on STDOUT (ADR-0046). Before anything else logs: the
+	// runner had no structured logging at all, and the first line a runner
+	// writes should already be filterable.
+	shiftlog.Setup(shiftlog.Options{
+		Component: shiftlog.ComponentRunner,
+		Version:   version,
+		Level:     envOr("SHIFT_RUNNER_LOG_LEVEL", os.Getenv("SHIFT_LOG_LEVEL")),
+		Format:    os.Getenv("SHIFT_LOG_FORMAT"),
+	})
 	// Env only — a flag would leak the token into process listings. The
 	// token is single-use: each runner instance gets its own (ADR-0009).
 	hubRegToken := os.Getenv("SHIFT_HUB_REG_TOKEN")
@@ -74,7 +83,7 @@ func main() {
 		if p := os.Getenv("SHIFT_HUB_REG_TOKEN_FILE"); p != "" {
 			raw, err := os.ReadFile(p) //nolint:gosec // G304: operator-configured token file (env)
 			if err != nil {
-				log.Fatalf("runnerd: SHIFT_HUB_REG_TOKEN_FILE: %v", err)
+				shiftlog.Fatalf("runnerd: SHIFT_HUB_REG_TOKEN_FILE: %v", err)
 			}
 			hubRegToken = strings.TrimSpace(string(raw))
 		}
@@ -82,11 +91,11 @@ func main() {
 
 	budget, err := parseSize(*memBudget)
 	if err != nil {
-		log.Fatalf("runnerd: -mem-budget: %v", err)
+		shiftlog.Fatalf("runnerd: -mem-budget: %v", err)
 	}
 	watermark, err := parseSize(*taskWatermark)
 	if err != nil {
-		log.Fatalf("runnerd: -task-watermark: %v", err)
+		shiftlog.Fatalf("runnerd: -task-watermark: %v", err)
 	}
 
 	// Hub connection first (when configured): the connector locator and
@@ -99,7 +108,7 @@ func main() {
 	if *hubURL != "" {
 		hc, err := hubclient.HTTPClient(*hubCA)
 		if err != nil {
-			log.Fatalf("runnerd: %v", err)
+			shiftlog.Fatalf("runnerd: %v", err)
 		}
 		regCtx, regCancel := context.WithTimeout(context.Background(), 90*time.Second)
 		var runnerID string
@@ -109,7 +118,7 @@ func main() {
 			id, cl, err := hubclient.ConnectMTLS(regCtx, hc, *hubURL, *identityDir, hubRegToken, *name)
 			regCancel()
 			if err != nil {
-				log.Fatalf("runnerd: hub registration: %v", err)
+				shiftlog.Fatalf("runnerd: hub registration: %v", err)
 			}
 			// The identity trusts the system store plus the control-plane CA;
 			// an operator-supplied hub CA (self-signed bundles) is added on
@@ -118,24 +127,28 @@ func main() {
 				//nolint:gocritic // exitAfterDefer: startup-fatal; the renewal loop has not started yet
 				pemBytes, err := os.ReadFile(*hubCA) //nolint:gosec // G304: operator-configured CA path
 				if err != nil {
-					log.Fatalf("runnerd: -hub-ca: %v", err)
+					shiftlog.Fatalf("runnerd: -hub-ca: %v", err)
 				}
 				if !id.TrustAlso(pemBytes) {
-					log.Fatalf("runnerd: -hub-ca %s: no certificates found", *hubCA) //nolint:gosec // G706: operator-supplied path
+					shiftlog.Fatalf("runnerd: -hub-ca %s: no certificates found", *hubCA) //nolint:gosec // G706: operator-supplied path
 				}
 			}
 			runnerID, client = id.RunnerID, cl
 			renewIdentity = id
-			log.Printf("runnerd: registered with hub %q as %q (mTLS, certificate valid until %s)", //nolint:gosec // G706: operator-supplied flag + hub-issued id, %q-escaped
-				*hubURL, runnerID, id.NotAfter().Format(time.RFC3339))
+			slog.Info("registered with hub",
+				shiftlog.KeyEvent, "runner.registered",
+				shiftlog.KeyRunner, runnerID, "hub", *hubURL,
+				"auth", "mtls", "cert_not_after", id.NotAfter().Format(time.RFC3339))
 		} else {
 			id, cl, err := hubclient.Connect(regCtx, hc, *hubURL, *credFile, hubRegToken, *name)
 			regCancel()
 			if err != nil {
-				log.Fatalf("runnerd: hub registration: %v", err)
+				shiftlog.Fatalf("runnerd: hub registration: %v", err)
 			}
 			runnerID, client = id, cl
-			log.Printf("runnerd: registered with hub %q as %q", *hubURL, runnerID) //nolint:gosec // G706: operator-supplied flag + hub-issued id, %q-escaped
+			slog.Info("registered with hub",
+				shiftlog.KeyEvent, "runner.registered",
+				shiftlog.KeyRunner, runnerID, "hub", *hubURL, "auth", "bearer")
 		}
 
 		cache := *connCache
@@ -151,18 +164,18 @@ func main() {
 			for k := range strings.SplitSeq(raw, ",") {
 				key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(k))
 				if err != nil {
-					log.Fatalf("runnerd: SHIFT_TRUSTED_KEYS: %v", err)
+					shiftlog.Fatalf("runnerd: SHIFT_TRUSTED_KEYS: %v", err)
 				}
 				pinned = append(pinned, key)
 			}
 		}
 		cs, err := connstore.New(connstore.Options{Dir: cache, Client: client, PinnedKeys: pinned})
 		if err != nil {
-			log.Fatalf("runnerd: %v", err)
+			shiftlog.Fatalf("runnerd: %v", err)
 		}
 		locate = cs.Ensure
 	} else if *requireSigned {
-		log.Fatal("runnerd: -require-signed needs -hub (the registry is the only source of signed artifacts)")
+		shiftlog.Fatalf("runnerd: -require-signed needs -hub (the registry is the only source of signed artifacts)")
 	}
 
 	svc := service.New(service.Options{
@@ -203,11 +216,12 @@ func main() {
 	if *users != "" {
 		basic, err := auth.NewBasic(*users)
 		if err != nil {
-			log.Fatalf("runnerd: %v", err) //nolint:gocritic // exitAfterDefer: startup-fatal; process exits and the OS reclaims resources — deferred loopCancel() is moot
+			shiftlog.Fatalf("runnerd: %v", err) //nolint:gocritic // exitAfterDefer: startup-fatal; process exits and the OS reclaims resources — deferred loopCancel() is moot
 		}
 		guard = auth.NewGuard(basic)
 	} else if !strings.HasPrefix(*listen, "127.0.0.1:") && !strings.HasPrefix(*listen, "localhost:") {
-		log.Printf("runnerd: WARNING: control API is UNAUTHENTICATED on a non-loopback address %s — set SHIFT_RUNNER_USERS", *listen)
+		slog.Warn("control API is UNAUTHENTICATED on a non-loopback address — set SHIFT_RUNNER_USERS",
+			shiftlog.KeyEvent, "runner.control.unauthenticated", "listen", *listen)
 	}
 
 	// Direct (push) executions never enter the hub queue; report their
@@ -224,7 +238,8 @@ func main() {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			if err := client.ReportExecution(ctx, rep); err != nil {
-				log.Printf("runnerd: report execution: %v", err)
+				slog.Warn("reporting an execution to the hub failed",
+					shiftlog.KeyEvent, "runner.execution.report_failed", shiftlog.KeyError, err.Error())
 			}
 		}
 	}
@@ -252,9 +267,10 @@ func main() {
 		// the hub stays authoritative the moment it says anything.
 		n, err := loadFlowDir(*flowsDir, hooks)
 		if err != nil {
-			log.Fatalf("runnerd: -flows-dir: %v", err)
+			shiftlog.Fatalf("runnerd: -flows-dir: %v", err)
 		}
-		log.Printf("runnerd: loaded %d flow(s) from %q", n, *flowsDir) //nolint:gosec // G706: operator-supplied flag, %q-escaped
+		slog.Info("loaded flows from disk",
+			shiftlog.KeyEvent, "runner.flows.loaded", "flows", n, "dir", *flowsDir)
 	}
 	if client != nil {
 		go syncWebhooks(loopCtx, client, hooks)
@@ -290,7 +306,8 @@ func main() {
 			OnDone:          gatewayOnDone(report),
 		})
 		go gw.Run(loopCtx)
-		log.Printf("runnerd: gateway intake polling %d gateway(s) (placement labels come from the hub, ADR-0041)", len(addrs))
+		slog.Info("gateway intake started (placement labels come from the hub, ADR-0041)",
+			shiftlog.KeyEvent, "runner.gateway.intake", "gateways", len(addrs))
 	}
 
 	// Webhook ingress rate limit (M6c, ADR-0021), keyed {hook, source IP}.
@@ -321,7 +338,7 @@ func main() {
 		return map[string]int64{"webhook": webhookLimit.Rejected("webhook")}
 	})
 	if err != nil {
-		log.Fatalf("runnerd: metrics: %v", err)
+		shiftlog.Fatalf("runnerd: metrics: %v", err)
 	}
 
 	srv := &http.Server{
@@ -334,17 +351,18 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {
-		log.Printf("runnerd %s: dashboard on http://%s (connectors: %s, budget: %s)",
-			version, *listen, *connectorDir, *memBudget)
+		slog.Info("runner started",
+			shiftlog.KeyEvent, "runner.started",
+			"listen", *listen, "connectors", *connectorDir, "budget", *memBudget)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("runnerd: serve: %v", err)
+			shiftlog.Fatalf("runnerd: serve: %v", err)
 		}
 	}()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
 	<-stop
-	log.Print("runnerd: draining (SIGTERM)")
+	slog.Info("draining (SIGTERM)", shiftlog.KeyEvent, "runner.draining")
 	loopCancel() // stop leasing; in-flight leased tasks report before Run returns
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -352,10 +370,12 @@ func main() {
 	select {
 	case <-loopDone:
 	case <-time.After(25 * time.Second):
-		log.Print("runnerd: lease loop drain timed out")
+		slog.Warn("lease loop drain timed out", shiftlog.KeyEvent, "runner.drain.timeout")
 	}
 	if err := svc.Close(25 * time.Second); err != nil {
-		log.Printf("runnerd: close: %v", err)
+		slog.Warn("shutdown incomplete", shiftlog.KeyEvent, "runner.stopped", shiftlog.KeyError, err.Error())
+	} else {
+		slog.Info("runner stopped", shiftlog.KeyEvent, "runner.stopped")
 	}
 }
 
@@ -528,7 +548,7 @@ func syncWebhooks(ctx context.Context, client *hubclient.Client, hooks *webhook.
 		cfgs, err := client.SyncWebhooks(sctx)
 		cancel()
 		if err != nil {
-			log.Printf("runnerd: webhook sync: %v", err)
+			slog.Warn("webhook sync failed", shiftlog.KeyEvent, "runner.webhook.sync_failed", shiftlog.KeyError, err.Error())
 		} else {
 			hs := make([]webhook.Hook, 0, len(cfgs))
 			for _, c := range cfgs {
@@ -537,7 +557,8 @@ func syncWebhooks(ctx context.Context, client *hubclient.Client, hooks *webhook.
 				// is skipped and logged rather than aborting the replace.
 				h, err := webhook.NewHook(c.Name, c.Document, c.TokenHash)
 				if err != nil {
-					log.Printf("runnerd: webhook sync: hook %q has an invalid document, skipping: %v", c.Name, err)
+					slog.Warn("skipping a webhook with an invalid document",
+						shiftlog.KeyEvent, "runner.webhook.invalid", "hook", c.Name, shiftlog.KeyError, err.Error())
 					continue
 				}
 				hs = append(hs, h)

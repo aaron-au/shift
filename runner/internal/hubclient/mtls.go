@@ -14,7 +14,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -401,7 +401,8 @@ func registerWithRetry(ctx context.Context, hc *http.Client, hubURL, token, name
 		if time.Now().After(deadline) || ctx.Err() != nil {
 			return nil, fmt.Errorf("hubclient: registration failed after %d attempts: %w", attempt, lastErr)
 		}
-		log.Printf("hubclient: registration attempt %d: %v — retrying", attempt, err)
+		slog.Warn("registration attempt failed, retrying",
+			"event", "runner.register.retry", "attempt", attempt, "error", err.Error())
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -430,18 +431,22 @@ func (i *Identity) RenewLoop(ctx context.Context, hubURL string) {
 		rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		err := i.Renew(rctx, hc, hubURL)
 		cancel()
+		notAfter := i.NotAfter().Format(time.RFC3339)
 		switch {
 		case err == nil:
-			log.Printf("hubclient: certificate renewed, valid until %s", i.NotAfter().Format(time.RFC3339))
+			slog.Info("certificate renewed",
+				"event", "runner.cert.renewed", "runner", i.RunnerID, "cert_not_after", notAfter)
 		case time.Until(i.NotAfter()) < time.Hour:
 			// The last hour is when "renewal has been failing quietly" turns
 			// into "this runner is about to go silent", so it stops being a
-			// warning.
-			log.Printf("hubclient: ERROR: certificate renewal failed and the certificate expires at %s: %v",
-				i.NotAfter().Format(time.RFC3339), err)
+			// warning (ADR-0044: "the fleet went quiet overnight").
+			slog.Error("certificate renewal is failing and the certificate is about to expire",
+				"event", "runner.cert.renew_failed", "runner", i.RunnerID,
+				"cert_not_after", notAfter, "error", err.Error())
 		default:
-			log.Printf("hubclient: certificate renewal failed (expires %s, will retry): %v",
-				i.NotAfter().Format(time.RFC3339), err)
+			slog.Warn("certificate renewal failed, will retry",
+				"event", "runner.cert.renew_failed", "runner", i.RunnerID,
+				"cert_not_after", notAfter, "error", err.Error())
 		}
 	}
 }

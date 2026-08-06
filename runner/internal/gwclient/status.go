@@ -70,7 +70,7 @@ func (l *Loop) serveStatus(ctx context.Context, in *inbound) (int, []byte, strin
 			problem(http.StatusGone, "status_consumed",
 				"this status has already been read", nil), "application/json"
 	case err != nil:
-		l.log.Error("reading execution status failed", "task", taskID, "error", err)
+		l.log.Error("reading execution status failed", "event", "request.status_read_failed", "task", taskID, "error", err)
 		return http.StatusBadGateway,
 			problem(http.StatusBadGateway, "status_unavailable",
 				"the status could not be read", nil), "application/json"
