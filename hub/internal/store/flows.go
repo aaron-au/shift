@@ -118,6 +118,22 @@ func (s *Store) GetFlow(ctx context.Context, name string, version int) (Flow, js
 	return f, doc, nil
 }
 
+// FlowByName returns the flow record alone — its version numbers, without
+// fetching a document. Design-time callers need it because their default
+// version is the LATEST one (you review a draft in order to decide whether to
+// publish it), which is a different question from GetFlow's default.
+func (s *Store) FlowByName(ctx context.Context, name string) (Flow, error) {
+	var f Flow
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, name, latest_version, published_version, created_at FROM flows
+		 WHERE account_id = $1 AND name = $2`,
+		accountID(ctx), name).Scan(&f.ID, &f.Name, &f.LatestVersion, &f.PublishedVersion, &f.Created)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Flow{}, ErrNotFound
+	}
+	return f, err
+}
+
 // Flows lists deployed flows, newest first.
 func (s *Store) Flows(ctx context.Context) ([]Flow, error) {
 	rows, err := s.pool.Query(ctx,

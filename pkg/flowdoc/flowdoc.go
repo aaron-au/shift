@@ -88,6 +88,14 @@ type Step struct {
 	Connection string          `json:"connection,omitempty"`
 	Config     json.RawMessage `json:"config,omitempty"`
 
+	// Input verifies the inbound request before the flow accepts it
+	// (ADR-0042). Valid only on a @webhook source step; see input.go.
+	Input *Input `json:"input,omitempty"`
+
+	// Ack decides what an ASYNCHRONOUS caller gets back (ADR-0042 §3d).
+	// Valid only on a @webhook source step; see input.go.
+	Ack string `json:"ack,omitempty"`
+
 	// Outcome edges (step ids). A non-terminal step has exactly one happy
 	// edge (OnSuccess XOR OnComplete); the two are structurally identical
 	// (both name the next step on the happy path) — the distinction is
@@ -156,7 +164,7 @@ const (
 func (s *Step) Endpoint() Endpoint {
 	return Endpoint{
 		Connector: s.Connector, Action: s.Action,
-		Connection: s.Connection, Config: s.Config,
+		Connection: s.Connection, Config: s.Config, Input: s.Input, Ack: s.Ack,
 	}
 }
 
@@ -263,6 +271,15 @@ type Endpoint struct {
 	Action     string          `json:"action"`
 	Connection string          `json:"connection,omitempty"`
 	Config     json.RawMessage `json:"config,omitempty"`
+
+	// Input verifies the inbound request before the flow accepts it
+	// (ADR-0042). Valid only on a @webhook source; see input.go.
+	Input *Input `json:"input,omitempty"`
+
+	// Ack decides what an ASYNCHRONOUS caller gets back: a task id and a
+	// status URL (AckStatus, the default) or nothing to poll (AckNone,
+	// fire-and-forget). Valid only on a @webhook source; see input.go.
+	Ack string `json:"ack,omitempty"`
 }
 
 // Op is one transform step. Type selects which of the option blocks apply.
@@ -394,6 +411,12 @@ func (d *Document) Validate() error {
 	case "", DeliveryAtLeastOnce, DeliveryAtMostOnce:
 	default:
 		return fmt.Errorf("flow: delivery %q must be %q or %q", d.Delivery, DeliveryAtLeastOnce, DeliveryAtMostOnce)
+	}
+	if err := d.validateInputs(); err != nil {
+		return err
+	}
+	if err := d.validateAck(); err != nil {
+		return err
 	}
 	if len(d.Steps) > 0 {
 		if d.Source.Connector != "" || len(d.Ops) > 0 || d.Sink.Connector != "" {

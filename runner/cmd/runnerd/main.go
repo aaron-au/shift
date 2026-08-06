@@ -7,23 +7,30 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/aaron-au/shift/pkg/flowdoc"
 	"github.com/aaron-au/shift/runner/internal/api"
 	"github.com/aaron-au/shift/runner/internal/auth"
 	"github.com/aaron-au/shift/runner/internal/bind"
 	"github.com/aaron-au/shift/runner/internal/connstore"
+	"github.com/aaron-au/shift/runner/internal/gwclient"
 	"github.com/aaron-au/shift/runner/internal/hubclient"
 	"github.com/aaron-au/shift/runner/internal/leaseloop"
 	"github.com/aaron-au/shift/runner/internal/ratelimit"
@@ -45,6 +52,9 @@ func main() {
 		spillDir      = flag.String("spill-dir", os.Getenv("SHIFT_SPILL_DIR"), "scratch dir (default: OS temp)")
 		name          = flag.String("name", envOr("SHIFT_RUNNER_NAME", hostname()), "runner display name")
 		hubURL        = flag.String("hub", os.Getenv("SHIFT_HUB_URL"), "hub base URL; enables the lease intake (M3b)")
+		gatewayAddrs  = flag.String("gateways", os.Getenv("SHIFT_GATEWAYS"), "comma-separated gateway control-listener URLs to poll for inbound work (ADR-0038); empty = no gateway intake")
+		flowsDir      = flag.String("flows-dir", os.Getenv("SHIFT_FLOWS_DIR"), "directory of {\"document\":<flow>} JSON files to register as webhooks at start-up (the hub is authoritative when attached)")
+		gatewayPolls  = flag.Int("gateway-polls", envInt("SHIFT_GATEWAY_POLLS", 16), "parked polls per gateway; bounds concurrent inbound requests from one gateway (the resource governor is still the real ceiling)")
 		hubCA         = flag.String("hub-ca", os.Getenv("SHIFT_HUB_CA_FILE"), "extra CA certificate for the hub (self-signed bundles)")
 		credFile      = flag.String("cred-file", os.Getenv("SHIFT_HUB_CRED_FILE"), "persist/reuse the runner's hub identity here (reg tokens are single-use)")
 		connCache     = flag.String("connector-cache", envOr("SHIFT_CONNECTOR_CACHE", ""), "cache dir for registry-fetched connectors (default <spill-dir or temp>/shift-connectors)")
@@ -195,8 +205,52 @@ func main() {
 	// periodic sync (the hub is authoritative for config); standalone
 	// runners populate it via the local PUT /api/webhooks endpoint.
 	hooks := webhook.NewRegistry()
+	if *flowsDir != "" {
+		// Seed from a local directory. Useful for a standalone runner and for
+		// container deployments where the flow ships as a mounted file, and
+		// harmless alongside a hub: the sync below REPLACES the registry, so
+		// the hub stays authoritative the moment it says anything.
+		n, err := loadFlowDir(*flowsDir, hooks)
+		if err != nil {
+			log.Fatalf("runnerd: -flows-dir: %v", err)
+		}
+		log.Printf("runnerd: loaded %d flow(s) from %q", n, *flowsDir) //nolint:gosec // G706: operator-supplied flag, %q-escaped
+	}
 	if client != nil {
 		go syncWebhooks(loopCtx, client, hooks)
+	}
+
+	// Gateway intake (ADR-0038). Optional and absent by default: a deployment
+	// whose flows are all scheduled or polled never runs a gateway, and
+	// carries zero inbound attack surface as a result. The runner reaches OUT
+	// to each gateway, so it needs no inbound reachability of its own — which
+	// is what lets it sit behind a deny-all ingress policy.
+	if addrs := splitList(*gatewayAddrs); len(addrs) > 0 {
+		gw := gwclient.New(gwclient.Options{
+			Addrs:   addrs,
+			Service: svc,
+			Lookup: func(name string) (*flowdoc.Document, bool) {
+				h, ok := hooks.Get(name)
+				if !ok {
+					return nil, false
+				}
+				return h.Parsed, true
+			},
+			Bind: func(ctx context.Context, doc *flowdoc.Document) (*flowdoc.Document, []string, error) {
+				return binder.Apply(ctx, doc)
+			},
+			// Caller-facing async status (ADR-0042 §3). Present only with a
+			// hub: without one there is nowhere to record an accept, so the
+			// runner still serves async requests and simply hands out no
+			// status URL rather than one that would 404.
+			Status:          statusReader(client),
+			PollConcurrency: *gatewayPolls,
+			Token:           os.Getenv("SHIFT_GATEWAY_TOKEN"),
+			Log:             slog.Default(),
+			OnDone:          gatewayOnDone(report),
+		})
+		go gw.Run(loopCtx)
+		log.Printf("runnerd: gateway intake polling %d gateway(s) (placement labels come from the hub, ADR-0041)", len(addrs))
 	}
 
 	// Webhook ingress rate limit (M6c, ADR-0021), keyed {hook, source IP}.
@@ -271,6 +325,107 @@ func hostname() string {
 		return "runner"
 	}
 	return h
+}
+
+// loadFlowDir registers every *.json file in dir as a webhook, named after
+// the file. It returns how many it registered.
+//
+// The hub remains authoritative: syncWebhooks REPLACES the registry wholesale,
+// so anything seeded here survives only until the hub first speaks. That
+// ordering is deliberate — a locally-mounted file must never be able to
+// override, or silently resurrect, a flow the hub has retired.
+func loadFlowDir(dir string, hooks *webhook.Registry) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name())) //nolint:gosec // G304: operator-configured directory
+		if err != nil {
+			return n, err
+		}
+		var req struct {
+			Document json.RawMessage `json:"document"`
+			Token    string          `json:"token"`
+		}
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return n, fmt.Errorf("%s: %w", e.Name(), err)
+		}
+		name := strings.TrimSuffix(e.Name(), ".json")
+		// Validate at load, not at first request: a malformed flow mounted
+		// into a container should fail the pod, not the caller who happens to
+		// trigger it first.
+		h, err := webhook.NewHook(name, req.Document, hashToken(req.Token))
+		if err != nil {
+			return n, fmt.Errorf("%s: %w", e.Name(), err)
+		}
+		hooks.Put(h)
+		n++
+	}
+	return n, nil
+}
+
+// hashToken mirrors the API's per-hook token hashing: the plaintext is never
+// stored, only its digest.
+func hashToken(tok string) string {
+	if tok == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(tok))
+	return hex.EncodeToString(sum[:])
+}
+
+// gatewayOnDone adapts the hub reporter to the gateway intake's completion
+// hook, and returns NIL when there is nothing to report to.
+//
+// The nil matters more than it looks. OnDone runs on its own goroutine, so a
+// closure that called a nil reporter would panic THERE — and a panic in a
+// goroutine takes the whole process down, on the first request a caller makes.
+// A hub-less runner would serve exactly one gateway request and die.
+// statusReader returns the hub-backed status recorder, or nil when this runner
+// has no hub.
+//
+// The nil check is load-bearing rather than tidy: a typed nil wrapped in a
+// non-nil interface would pass every `!= nil` test and panic on first use, on
+// a goroutine, which takes the whole process down rather than failing one
+// request. That exact shape has bitten this file once already (gatewayOnDone).
+func statusReader(client *hubclient.Client) gwclient.StatusReader {
+	if client == nil {
+		return nil
+	}
+	return client
+}
+
+func gatewayOnDone(report api.ExecReporter) func(task.Task) {
+	if report == nil {
+		return nil
+	}
+	return func(t task.Task) { report(t, "gateway") }
+}
+
+// splitList parses a comma-separated list, dropping empties so a trailing
+// comma or a blank env var does not become an address of "".
+func splitList(s string) []string {
+	var out []string
+	for part := range strings.SplitSeq(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
 }
 
 func envOr(key, def string) string {

@@ -25,26 +25,43 @@ type Config struct {
 	// from the hub, which is where the administrator actually is.
 	Version int64   `json:"version"`
 	Routes  []Route `json:"routes"`
+	// Runners is the hub's roster: which runners may serve this gateway and
+	// what each one IS (ADR-0041 §3). Labels come from here, never from a
+	// runner's poll — see roster.go.
+	Runners []Runner `json:"runners,omitempty"`
 	// TrustedProxies are the CIDRs whose X-Forwarded-* headers are believed.
 	// Empty means believe none, which is the safe default: a spoofable
 	// forwarded header would defeat every per-route IP allowlist below.
 	TrustedProxies []string `json:"trusted_proxies,omitempty"`
 }
 
-// Route maps a public path to a flow, and to the runner group allowed to run
-// it (ADR-0030 placement — eligibility is the hub's, availability is whoever
-// is polling).
+// Route maps a public path to a flow, and to the runners allowed to run it
+// (ADR-0030 placement — eligibility is the hub's, availability is whoever is
+// polling).
 type Route struct {
 	Path   string `json:"path"`
 	Flow   string `json:"flow"`
-	Group  string `json:"group"`
 	Method string `json:"method,omitempty"` // empty = any
+
+	// Selector names the runners eligible to serve this route by LABEL SET
+	// rather than by a single group name (ADR-0038 §5): a single string
+	// cannot express "any production API runner", which is the shape real
+	// fleets have. Empty matches any runner.
+	Selector Selector `json:"selector,omitempty"`
 
 	// AuthTokenSHA256 is the hex SHA-256 of the caller's bearer token. The
 	// token itself is never stored or logged, and comparison is
 	// constant-time — the gateway authenticates callers, it does not mint
 	// identities.
 	AuthTokenSHA256 string `json:"auth_token_sha256,omitempty"`
+
+	// AuthPrincipal is WHO that credential belongs to — the name stamped on
+	// X-Shift-Principal for the runner (ADR-0038 §4b). It travels with the
+	// verification material so "who" is a configured fact rather than
+	// something each auth method has to derive its own way; that is what lets
+	// a certificate-authenticated caller be identified without the runner
+	// touching any PKI.
+	AuthPrincipal string `json:"auth_principal,omitempty"`
 
 	// AllowCIDRs restricts callers by source address. Empty allows any.
 	AllowCIDRs []string `json:"allow_cidrs,omitempty"`
@@ -71,8 +88,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: route %d: path must start with /", i)
 		case r.Flow == "":
 			return fmt.Errorf("config: route %q: no flow", r.Path)
-		case r.Group == "":
-			return fmt.Errorf("config: route %q: no runner group", r.Path)
+		}
+		if err := r.Selector.Validate(); err != nil {
+			return fmt.Errorf("config: route %q: %w", r.Path, err)
 		}
 		key := r.Method + " " + r.Path
 		if seen[key] {
@@ -96,7 +114,10 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: bad trusted proxy CIDR %q: %w", p, err)
 		}
 	}
-	return nil
+	if err := c.validateStatusPaths(); err != nil {
+		return err
+	}
+	return c.validateRunners()
 }
 
 // Lookup finds the route serving a request, or nil. Method-specific routes win

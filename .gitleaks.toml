@@ -1,0 +1,25 @@
+# gitleaks configuration (ADR-0006: `make leaks` is part of the push gate).
+#
+# The default ruleset is inherited wholesale — this file only ADDS narrowly
+# scoped allowlist entries. Nothing here disables a rule, and nothing here
+# allowlists a directory or a file wholesale: each entry names the exact
+# literal it permits, so a genuine secret introduced into the same file still
+# fails the gate.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Non-secret demo material, permitted by exact value."
+regexTarget = "match"
+regexes = [
+  # The k8s DMZ walkthrough's demo bearer token (deploy/k8s/README.md) and its
+  # SHA-256 (deploy/k8s/20-gateway.yaml). Both are deliberately public dev
+  # defaults, exactly like every value in deploy/compose.yml.
+  #
+  # The digest in particular is not a secret in any sense: the gateway stores
+  # only the SHA-256 of a caller token SO THAT the stored form is useless as a
+  # credential (ADR-0038). Treating it as one would mean the design had failed.
+  '''demo-token''',
+  '''7c43ef5ae21d43ce2743f770c68e24def1a43ee2f416d2438410c8af7af2ff2c''',
+]

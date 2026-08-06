@@ -64,3 +64,42 @@ func TestEscJSDefeatsQuoteBreakout(t *testing.T) {
 		t.Error("escJS must wrap esc() so the HTML layer stays escaped")
 	}
 }
+
+// TestStudioSurfacesDesignNotices guards the wiring of the design-time review
+// (ADR-0042 §7) in a studio that has no build step and therefore no compiler.
+//
+// The point of the review is that a developer learns their route is
+// asynchronous, or unverified, at design time rather than from a caller. Every
+// piece of that is a string in this file: if one is renamed or dropped, the
+// notices silently stop appearing and nothing else fails.
+func TestStudioSurfacesDesignNotices(t *testing.T) {
+	ui := string(uiHTML)
+	for _, want := range []struct{ frag, why string }{
+		{`'/api/v1/flows/review'`, "the live canvas review call"},
+		{`/review?version=`, "the pre-publish review of a specific version"},
+		{`function confirmPublish`, "publish is the last cheap moment to change your mind"},
+		{`if (!await confirmPublish(name, v)) return;`, "publish must actually go through the confirmation"},
+		{`res.notices`, "the deploy response's notices"},
+		{`function showNotices`, "rendering the notices"},
+		{`function noticesByStep`, "badging the node a notice is about"},
+		{`class="b-notices"`, "the panel the notices render into"},
+		// The builder is not the only way to author a webhook's request
+		// contract, so a round trip through it must not delete one. A studio
+		// that silently dropped an input schema would be the thing that made
+		// an endpoint unsafe (ADR-0042 §4, §3d).
+		{`if (s.input !== undefined) out.input = s.input;`, "cleanStep must preserve an input schema"},
+		{`if (s.ack) out.ack = s.ack;`, "cleanStep must preserve the acknowledgement mode"},
+		{`function webhookPickers`, "editing ack + input on a @webhook source"},
+	} {
+		if !strings.Contains(ui, want.frag) {
+			t.Errorf("ui.html no longer contains %q — %s", want.frag, want.why)
+		}
+	}
+	// A notice is server-authored text rendered with innerHTML; it must go
+	// through the HTML escaper like every other dynamic string in the studio.
+	for _, field := range []string{"esc(n.title || n.code)", "esc(n.detail)", "esc(n.step)"} {
+		if !strings.Contains(ui, field) {
+			t.Errorf("notice rendering must escape its fields; %q is missing", field)
+		}
+	}
+}

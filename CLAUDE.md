@@ -83,11 +83,23 @@ gateway/    gatewayd (ADR-0038, in progress — see docs/dev/09-gateway.md): the
                                       the set available (no liveness table, no dead backends, and
                                       admission+load-balancing from one mechanism). No runner ⇒ 503,
                                       never a queue. Built: config model, poll registry, ingress
-                                      (auth/allowlist/headers/route/stream). Not yet: mTLS control
-                                      listener + identity bundle, hub push side, runner poll side.
+                                      (auth/allowlist/headers/route/stream), runner-facing control
+                                      listener (poll/deliver), label-selector placement, strip-then-
+                                      stamp identity, and the runner side (runner/internal/gwclient).
+                                      Proven end to end: deploy/k8s runs the gateway under a deny-ALL
+                                      -egress NetworkPolicy and it still serves. Benchmarked
+                                      (docs/bench-gateway.md): 0.26ms p50 overhead, 26.8k req/s on one
+                                      gateway, 0 errors. Control listener carries a shared secret and
+                                      FAILS CLOSED if bound non-loopback without one (runner
+                                      impersonation = payload interception). Not yet: mTLS control
+                                      listener + identity bundle, hub push side, proxy routes
+                                      (ADR-0040 draft).
 runner/     runnerd (M3a+M3b+M4b, done — see docs/dev/04-runner.md): flow docs → engine pipelines,
   internal/{flow,connpool,task,service,api}   resource-governed admission (ADR-0005), connector pool,
+  internal/gwclient                           gateway intake (ADR-0038): polls each gateway OUTBOUND,
                                               capacity benchmark (ADR-0008), embedded dashboard on :8340
+                                              runs the named flow, delivers the response — so a runner
+                                              behind deny-all ingress still serves public HTTP
   internal/{hubclient,leaseloop,connstore}    hub lease intake (M3b): capacity-gated claims, heartbeats;
                                               M4b: per-task secret resolution, signed-artifact fetch+verify
                                               (fail closed), persisted credentials (SHIFT_HUB_CRED_FILE)

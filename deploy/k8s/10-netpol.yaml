@@ -1,0 +1,86 @@
+# The network policies ARE the demonstration.
+#
+# ADR-0038 claims that nothing in the DMZ ever initiates a connection inward.
+# A claim like that is worth exactly as much as the test behind it, so this
+# bundle denies the gateway ALL egress — it cannot open a connection to
+# anything, anywhere — and then runs inbound traffic through it end to end.
+#
+# If the claim were wrong, the demo would not work.
+
+---
+# 1. The gateway may not initiate ANY connection. Not to the hub, not to a
+#    runner, not to the internet, not to DNS.
+#
+#    This is stronger than "no path into the internal network" and deliberately
+#    so: a policy that blocks one CIDR is a policy someone can get subtly wrong.
+#    Denying egress outright leaves nothing to get wrong, and the gateway does
+#    not need egress — the hub pushes configuration TO it and runners poll IT.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-no-egress
+  namespace: shift-dmz
+spec:
+  podSelector:
+    matchLabels:
+      app: shift-gateway
+  policyTypes:
+    - Egress
+  # An empty egress list with Egress in policyTypes means DENY ALL.
+  egress: []
+
+---
+# 2. The gateway accepts inbound from the internet (its public listener) and
+#    from the internal namespace (the control listener). Nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-ingress
+  namespace: shift-dmz
+spec:
+  podSelector:
+    matchLabels:
+      app: shift-gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    # Public listener: anyone. This is the one publicly reachable component in
+    # the whole system, which is the entire reason it is a separate binary in a
+    # separate namespace.
+    - ports:
+        - port: 8443
+          protocol: TCP
+    # Control listener: the internal zone only. An unauthenticated caller able
+    # to reach /poll could intercept inbound payloads by impersonating a
+    # runner, so this port must never be exposed publicly.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              zone: internal
+      ports:
+        - port: 8444
+          protocol: TCP
+
+---
+# 3. The internal namespace accepts NOTHING from the DMZ.
+#
+#    This is the assertion under test. The runner is serving public HTTP
+#    traffic while being unreachable from the zone that faces the public.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-ingress-from-dmz
+  namespace: shift-internal
+spec:
+  podSelector: {} # every pod in the namespace
+  policyTypes:
+    - Ingress
+  ingress:
+    # Intra-namespace traffic only: runner → hub, hub → postgres.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              zone: internal
+    # Explicitly NOT: anything from zone: dmz. Omission is the rule — a
+    # NetworkPolicy with Ingress in policyTypes denies whatever it does not
+    # allow.

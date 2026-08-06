@@ -87,6 +87,18 @@
   .gtoolbar{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;margin:.4rem 0}
   .gtoolbar button{padding:.15rem .5rem;font-size:.75rem}
   .b-err{min-height:1rem;margin:.2rem 0}
+  /* design-time review (ADR-0042 §7): advisory, never a refusal — styled apart
+     from .err so "this deploys asynchronously" never reads as a rejection */
+  .b-notices{display:flex;flex-direction:column;gap:.3rem;margin:.2rem 0 .5rem}
+  .notice{display:flex;gap:.5rem;align-items:flex-start;font-size:.76rem;border-radius:8px;
+          padding:.35rem .55rem;border:1px solid var(--line);background:var(--input-bg)}
+  .notice.warn{border-color:color-mix(in srgb,var(--warn) 45%,var(--line));
+               background:color-mix(in srgb,var(--warn) 10%,transparent)}
+  .notice .nmark{font-weight:700;line-height:1.35}
+  .notice.warn .nmark{color:var(--warn)} .notice.info .nmark{color:var(--accent)}
+  .notice .ntitle{font-weight:600}
+  .notice .ndetail{color:var(--dim);margin-top:.1rem}
+  .notice .nstep{color:var(--dim);font-family:ui-monospace,Menlo,monospace}
   /* builder canvas: grid-backed scroll surface; the grid itself is drawn in the SVG */
   .b-graph{background:var(--canvas);border:1px solid var(--line);border-radius:8px;overflow:auto;max-height:62vh}
   .b-editor{margin-top:.8rem}
@@ -484,8 +496,27 @@ function renderFlows(flows, scheds) {
 }
 
 async function publish(name, v) { await api(`/api/v1/flows/${encodeURIComponent(name)}/versions/${v}/publish`, {method: 'POST'}); refresh(); }
+
+// confirmPublish shows the design-time review BEFORE publishing (ADR-0042 §7):
+// publish is the last point at which changing your mind is cheap, and "this
+// deploys as an asynchronous web call" is exactly the fact a developer would
+// otherwise discover from a caller. It never blocks — the review is advisory,
+// so a failed review call publishes as before rather than standing in the way.
+async function confirmPublish(name, v) {
+  let notices = [];
+  try {
+    const res = await api(`/api/v1/flows/${encodeURIComponent(name)}/review?version=${encodeURIComponent(v)}`);
+    notices = (res && res.notices) || [];
+  } catch (e) { return true; }
+  if (!notices.length) return true;
+  const lines = notices.map(n => (n.severity === 'warn' ? '!  ' : 'i  ') + n.title
+    + (n.step ? '  [' + n.step + ']' : '') + (n.detail ? '\n     ' + n.detail : ''));
+  return confirm(`Publishing ${name} v${v}:\n\n${lines.join('\n\n')}\n\nPublish anyway?`);
+}
+
 async function publishSel(i, name) {
   const v = ($('pv-' + i) || {}).value; if (!v) return;
+  if (!await confirmPublish(name, v)) return;
   try { await publish(name, v); } catch (e) { alert('publish failed: ' + e.message); }
 }
 async function runNow(name) {
@@ -731,6 +762,7 @@ function openBuilder(key, doc, conns, secrets) {
     key, name: (doc && doc.name) || key, winId, uid,
     graphEl: w.querySelector('.b-graph'), editorEl: w.querySelector('.b-editor'),
     errEl: w.querySelector('.b-err'), titleEl: w.querySelector('.wtitle'),
+    noticeEl: w.querySelector('.b-notices'), notices: [], reviewed: '', reviewTimer: null,
     model: toModel(doc || {name: key}), catalog: buildCatalog(conns || []),
     secrets: (secrets || []).map(s => s.name),
     pos: {}, sel: null, drag: null, connect: null,
@@ -782,6 +814,7 @@ function createBuilderWindow(winId, key, uid) {
          <span class="hint"><b style="color:var(--ok)">▸</b> success · <b style="color:var(--bad)">▸</b> failure · <b style="color:var(--n-branch)">▸</b> tee branch (concurrent) · <b style="color:var(--edge-route)">▸</b> router route · drag a right port onto a node to wire · into a merge to fan-in · click an edge to remove</span>
        </div>
        <div class="b-err err"></div>
+       <div class="b-notices"></div>
        <div class="b-graph"></div>
        <div class="b-editor"></div>
      </div>
@@ -899,7 +932,10 @@ function drawStudio() {
   for (const id in studio.pos) if (!ids.has(id)) delete studio.pos[id];
   const auto = layoutPositions(g, studio.pos);
   g.nodes.forEach(n => { if (!studio.pos[n.id]) studio.pos[n.id] = auto[n.id]; });
-  studio.graphEl.innerHTML = renderGraph(g, studio.pos, studio.sel, studio.uid);
+  studio.graphEl.innerHTML = renderGraph(g, studio.pos, studio.sel, studio.uid, noticesByStep(studio));
+  // Keep the review current with the canvas. Debounced and deduplicated on the
+  // serialized document, so a drag (layout only) never costs a request.
+  scheduleReview(studio);
 
   const svg = studio.graphEl.querySelector('svg');
   // Output ports (right edge) start an edge-wiring drag.
@@ -1222,7 +1258,67 @@ function connectorPickers(s) {
     actCtl = `<input value="${esc(s.action ?? '')}" onchange="setAction('${escJS(s.id)}',this.value)">`;
   }
   return `<div class="efield"><label>connector</label>${connSel}</div>` +
-         `<div class="efield"><label>verb</label>${actCtl}</div>`;
+         `<div class="efield"><label>verb</label>${actCtl}</div>` +
+         webhookPickers(s);
+}
+
+// webhookPickers edits the two request-shaped decisions a @webhook source owns
+// (ADR-0042): what the caller gets back, and what is checked before they get
+// it. Both are only meaningful where there is a CALLER, so they appear only on
+// a @webhook source.
+function webhookPickers(s) {
+  if (s.connector !== '@webhook' || s.type !== 'source') return '';
+  const ack = s.ack || 'status';
+  const scope = (s.input && s.input.scope) || 'body';
+  const ackSel = `<select onchange="setAck('${escJS(s.id)}',this.value)">` +
+    `<option value="status"${ack === 'status' ? ' selected' : ''}>status — 202 + a status URL to poll</option>` +
+    `<option value="none"${ack === 'none' ? ' selected' : ''}>none — fire-and-forget, nothing to poll</option>` +
+    `</select>`;
+  const scopeSel = `<select onchange="setInputScope('${escJS(s.id)}',this.value)">` +
+    `<option value="body"${scope === 'body' ? ' selected' : ''}>body — verify the whole request</option>` +
+    `<option value="records"${scope === 'records' ? ' selected' : ''}>records — verify the first record only</option>` +
+    `</select>`;
+  return `<div class="efield"><label>acknowledge</label>${ackSel}</div>` +
+    `<div class="efield"><label>verify scope</label>${scopeSel}</div>` +
+    `<div class="efield"><label>input schema</label><textarea placeholder="JSON Schema — empty accepts anything" ` +
+    `onchange="setInputSchema('${escJS(s.id)}',this.value)">${esc(jsonStr(s.input && s.input.schema))}</textarea></div>`;
+}
+
+function setAck(id, val) {
+  const s = stepById(id); if (!s) return;
+  // "status" is the default, so it is stored as an absence rather than as a
+  // value — a document should not carry a field that says what would happen
+  // anyway.
+  if (val === 'status') { delete s.ack; } else { s.ack = val; }
+  drawStudio(); renderEditor();
+}
+
+function setInputScope(id, val) {
+  const s = stepById(id); if (!s) return;
+  if (!s.input) { if (val === 'body') return; s.input = {}; }
+  if (val === 'body') { delete s.input.scope; } else { s.input.scope = val; }
+  if (!s.input.schema && !s.input.scope) delete s.input;
+  drawStudio(); renderEditor();
+}
+
+// setInputSchema parses here so a malformed schema is reported while the author
+// is looking at it. flowdoc still validates it server-side — this is the early
+// word, never the authority.
+function setInputSchema(id, val) {
+  const s = stepById(id); if (!s) return;
+  const raw = (val || '').trim();
+  if (!raw) {
+    if (s.input) { delete s.input.schema; if (!s.input.scope) delete s.input; }
+    studio.errEl.textContent = '';
+  } else {
+    let parsed;
+    try { parsed = JSON.parse(raw); }
+    catch (e) { studio.errEl.textContent = 'input schema is not valid JSON: ' + e.message; return; }
+    studio.errEl.textContent = '';
+    if (!s.input) s.input = {};
+    s.input.schema = parsed;
+  }
+  drawStudio(); renderEditor();
 }
 function setConnector(id, val) {
   const s = stepById(id); if (!s) return;
@@ -1355,14 +1451,14 @@ async function saveLayout() {
   return deployModel(true);
 }
 
-// deployModel serializes the editable model to a clean flow document and
-// PUTs it (a new draft). Server-side flowdoc validation is authoritative;
-// a 422 is surfaced inline rather than re-implemented here.
-async function deployModel(layoutOnly) {
-  if (!studio.name || !studio.model) return;
-  const m = studio.model;
+// buildDoc serializes the editable model to the exact flow document the hub
+// would be sent. Deploy and review share it, so what is reviewed is what would
+// be deployed — a review of a slightly different document would be worse than
+// no review at all.
+function buildDoc(st) {
+  const m = st.model;
   reconcileMerges(m);
-  const doc = {name: m.name || studio.name, layout: Object.assign({}, studio.pos)};
+  const doc = {name: m.name || st.name, layout: Object.assign({}, st.pos)};
   if (m.start) doc.start = m.start;
   doc.steps = m.steps.map(cleanStep);
   // Auto-terminate: a flow's happy path must end at a sink. Any non-sink step
@@ -1380,13 +1476,99 @@ async function deployModel(layoutOnly) {
     const xs = Object.values(doc.layout).map(p => p.x);
     doc.layout[tid] = {x: (xs.length ? Math.max(...xs) : 20) + 60, y: 30};
   }
+  return doc;
+}
+
+// deployModel PUTs the serialized document (a new draft). Server-side flowdoc
+// validation is authoritative; a 422 is surfaced inline rather than
+// re-implemented here.
+async function deployModel(layoutOnly) {
+  if (!studio.name || !studio.model) return;
+  const st = studio;
+  const doc = buildDoc(st);
   try {
-    await api('/api/v1/flows/' + encodeURIComponent(studio.name),
+    const res = await api('/api/v1/flows/' + encodeURIComponent(st.name),
       {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(doc)});
-    studio.errEl.textContent = '';
-    alert((layoutOnly ? 'Saved' : 'Deployed') + ' as a new draft version — publish it to keep.');
+    st.errEl.textContent = '';
+    // The deploy response carries the review, so a developer is told what they
+    // just shipped without a second round trip (ADR-0042 §7).
+    if (res && res.notices) showNotices(st, res.notices);
+    alert((layoutOnly ? 'Saved' : 'Deployed') + ' as a new draft version — publish it to keep.'
+      + noticeSummary(st.notices));
     refresh();
-  } catch (e) { studio.errEl.textContent = 'deploy rejected: ' + e.message; }
+  } catch (e) { st.errEl.textContent = 'deploy rejected: ' + e.message; }
+}
+
+// --- design-time review (ADR-0042 §7) ---------------------------------------
+//
+// The checks live in pkg/flowdoc and are served, never duplicated here: a
+// studio that decided for itself which flows are asynchronous would be a second
+// source of truth, and the two would drift.
+
+// scheduleReview re-reviews the canvas after edits settle. It is debounced and
+// deduplicated on the serialized document, so dragging a node — which changes
+// only layout — costs nothing.
+function scheduleReview(st) {
+  if (!st) return;
+  clearTimeout(st.reviewTimer);
+  st.reviewTimer = setTimeout(() => reviewModel(st), 700);
+}
+
+async function reviewModel(st) {
+  if (!st || !st.model || !document.getElementById(st.winId)) return;
+  let body;
+  try { body = JSON.stringify(buildDoc(st)); } catch (e) { return; }
+  if (body === st.reviewed) return;
+  st.reviewed = body;
+  try {
+    const res = await api('/api/v1/flows/review',
+      {method: 'POST', headers: {'Content-Type': 'application/json'}, body});
+    showNotices(st, (res && res.notices) || []);
+  } catch (e) {
+    // A half-built canvas does not validate, and saying so on every keystroke
+    // would be noise: deploy is where a 422 is reported. Just clear.
+    showNotices(st, []);
+  }
+}
+
+// showNotices renders the strip and re-badges the canvas.
+function showNotices(st, notices) {
+  st.notices = notices || [];
+  if (!st.noticeEl) return;
+  // A background builder keeps its notices in state; only the focused canvas
+  // is redrawn, since drawStudio draws whichever builder is active.
+  st.noticeEl.innerHTML = st.notices.map(n => {
+    const warn = n.severity === 'warn';
+    return `<div class="notice ${warn ? 'warn' : 'info'}" title="${esc(n.code)}">
+      <span class="nmark">${warn ? '!' : 'i'}</span>
+      <span><span class="ntitle">${esc(n.title || n.code)}</span>` +
+      (n.step ? ` <span class="nstep">${esc(n.step)}</span>` : '') +
+      (n.detail ? `<div class="ndetail">${esc(n.detail)}</div>` : '') +
+      `</span></div>`;
+  }).join('');
+  if (st === studio) drawStudio();
+}
+
+// noticesByStep groups the current notices for the canvas badge.
+function noticesByStep(st) {
+  const by = {};
+  (st && st.notices || []).forEach(n => {
+    if (!n.step) return;
+    (by[n.step] || (by[n.step] = [])).push(n);
+  });
+  return by;
+}
+
+// noticeSummary is the one-line tail on the deploy/publish alert — the place a
+// developer actually looks at that moment.
+function noticeSummary(notices) {
+  const warns = (notices || []).filter(n => n.severity === 'warn').length;
+  const infos = (notices || []).length - warns;
+  if (!warns && !infos) return '';
+  const parts = [];
+  if (warns) parts.push(warns + ' warning' + (warns > 1 ? 's' : ''));
+  if (infos) parts.push(infos + ' note' + (infos > 1 ? 's' : ''));
+  return '\n\n' + parts.join(', ') + ' — see the review panel.';
 }
 
 // cleanStep emits only the fields relevant to a step's type, dropping stale
@@ -1396,6 +1578,13 @@ function cleanStep(s) {
   if (s.type === 'source' || s.type === 'sink') {
     out.connector = s.connector || ''; out.action = s.action || '';
     if (s.config !== undefined) out.config = s.config;
+    // A @webhook source's request contract (ADR-0042). These MUST be carried
+    // through even though the canvas is not the only way to author them: a
+    // flow whose input schema was written by hand and then opened in the
+    // builder would otherwise be deployed with its verification silently
+    // removed — the studio would be the thing that made an endpoint unsafe.
+    if (s.input !== undefined) out.input = s.input;
+    if (s.ack) out.ack = s.ack;
   } else if (s.type === 'filter') {
     out.path = s.path || ''; out.op = s.op || 'eq';
     if (s.value !== undefined) out.value = s.value;
@@ -1466,8 +1655,9 @@ function nodeSummary(n) {
 }
 function clip(s, n) { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
 
-function renderGraph(g, pos, sel, uid) {
+function renderGraph(g, pos, sel, uid, noticesBy) {
   uid = uid || 'x';
+  noticesBy = noticesBy || {};
   const W = NODE_W, H = NODE_H, HDR = NODE_HDR, X0 = 20;
   const xs = Object.values(pos).map(p => p.x), ys = Object.values(pos).map(p => p.y);
   const width = (xs.length ? Math.max(...xs) : X0) + W + X0;
@@ -1497,6 +1687,15 @@ function renderGraph(g, pos, sel, uid) {
     const outPorts = isHandler ? '' :
       `<circle data-id="${esc(n.id)}" data-port="happy" cx="${p.x+W}" cy="${outSy(p)}" r="6" fill="var(--ok)" stroke="var(--canvas)" stroke-width="1.5" style="cursor:crosshair"><title>success →</title></circle>
        <circle data-id="${esc(n.id)}" data-port="fail" cx="${p.x+W}" cy="${outFy(p)}" r="6" fill="var(--bad)" stroke="var(--canvas)" stroke-width="1.5" style="cursor:crosshair"><title>failure →</title></circle>`;
+    // Design-time notices badge the node they are about, so "this deploys
+    // asynchronously" is visible on the canvas and not only in the panel.
+    const ns = noticesBy[n.id] || [];
+    const warn = ns.some(x => x.severity === 'warn');
+    const badge = ns.length
+      ? `<circle cx="${p.x+W-11}" cy="${p.y+HDR+13}" r="8" fill="${warn ? 'var(--warn)' : 'var(--accent)'}" opacity=".9" style="pointer-events:none"/>
+         <text x="${p.x+W-11}" y="${p.y+HDR+17}" text-anchor="middle" font-size="11" font-weight="700" fill="#04101f" style="pointer-events:none">${warn ? '!' : 'i'}</text>
+         <circle cx="${p.x+W-11}" cy="${p.y+HDR+13}" r="9" fill="transparent"><title>${esc(ns.map(x => x.title).join(' · '))}</title></circle>`
+      : '';
     return `<g data-id="${esc(n.id)}">
       <rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="9" fill="var(--node-bg)" stroke="${selStroke}" stroke-width="${sel===n.id?2:1}" filter="url(#nsh-${uid})" style="cursor:grab"/>
       <path d="M${p.x},${p.y+HDR} L${p.x},${p.y+9} Q${p.x},${p.y} ${p.x+9},${p.y} L${p.x+W-9},${p.y} Q${p.x+W},${p.y} ${p.x+W},${p.y+9} L${p.x+W},${p.y+HDR} Z" fill="${hdr}" style="pointer-events:none"/>
@@ -1505,7 +1704,7 @@ function renderGraph(g, pos, sel, uid) {
       <text x="${p.x+11}" y="${p.y+HDR+18}" fill="var(--text)" font-size="12" font-weight="600" style="pointer-events:none">${esc(clip(n.id,24))}</text>
       <text x="${p.x+11}" y="${p.y+HDR+34}" fill="var(--dim)" font-size="10.5" style="pointer-events:none">${esc(clip(nodeSummary(n),27))}</text>
       <circle cx="${p.x}" cy="${inY(p)}" r="5" fill="var(--canvas)" stroke="var(--dim)" stroke-width="1.5"><title>input</title></circle>
-      ${outPorts}</g>`;
+      ${badge}${outPorts}</g>`;
   }).join('');
   // Marker + grid ids are namespaced per builder window so multiple open
   // canvases don't cross-reference each other's <defs>.

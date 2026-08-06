@@ -602,6 +602,50 @@ intake over the same `service.Submit` path, exactly as ADR-0008 promised:
 
 See [06-hub.md](06-hub.md) for the hub side of the protocol.
 
+## Gateway intake (`internal/gwclient`, ADR-0038)
+
+`runnerd -gateways <url,url> -labels environment=production,workload=api`
+starts a **third** intake over the same task service: one long-poll loop per
+gateway.
+
+The direction is the whole point. The gateway sits in a DMZ and never dials
+inward — the runner reaches **out** to it, so a runner behind NAT, a firewall,
+or a Kubernetes policy that denies all ingress is still serving inbound HTTP
+traffic. It is not reachable; it is a client.
+
+```
+poll (park) → gateway hands over a request → look up the flow by NAME
+            → RunSync with the body as @webhook, output to @response
+            → POST it back to /api/v1/gw/deliver/{id}
+```
+
+Four properties worth stating because each is load-bearing:
+
+- **The gateway sends a flow NAME, never a document.** A DMZ component that
+  could hand a runner arbitrary code to execute would be a remote-execution
+  primitive with extra steps. The name resolves against the hub-synced webhook
+  registry; an unknown name is a 404 delivered back, not a hang.
+- **Every exit path delivers something.** A caller is blocked on the gateway,
+  so a runner that returns nothing costs them the full delivery timeout.
+  Unknown flow, secret-resolution failure and execution failure all deliver a
+  status.
+- **Delivery survives shutdown.** It runs on `context.WithoutCancel` with its
+  own deadline: abandoning it on SIGTERM would turn a completed execution into
+  a 504 for someone who is still waiting.
+- **A gateway being down must not take the runner with it.** Poll failures back
+  off exponentially per gateway; the hub lease loop and the other gateways
+  carry on.
+
+Labels are what the runner **is**; the gateway matches route selectors against
+them. A malformed label is skipped rather than fatal — labels widen what a
+runner is eligible for, never what it may do, so a typo costing eligibility is
+the safe direction.
+
+Because capacity is checked when the runner decides to poll rather than when
+work lands, a runner parked on several gateways can be handed several requests
+at once. That overshoot falls through to the existing ADR-0005 admission path —
+tested behaviour, not a new failure mode.
+
 ## What's deliberately NOT here yet
 
 - Step-level error routing (`onFailure` handlers) landed in M5a (ADR-0013);

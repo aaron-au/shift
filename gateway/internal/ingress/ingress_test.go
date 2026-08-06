@@ -16,7 +16,7 @@ import (
 )
 
 func route() config.Route {
-	return config.Route{Path: "/hook", Flow: "orders", Group: "prod"}
+	return config.Route{Path: "/hook", Flow: "orders"}
 }
 
 func serve(t *testing.T, routes []config.Route, trusted ...string) (*ingress.Handler, *runners.Registry) {
@@ -36,7 +36,7 @@ func parkRunner(t *testing.T, reg *runners.Registry, reply string) chan *runners
 	t.Helper()
 	got := make(chan *runners.Request, 1)
 	go func() {
-		req := reg.Poll(t.Context(), "prod", 3*time.Second)
+		req := reg.Poll(t.Context(), nil, 3*time.Second)
 		if req == nil {
 			got <- nil
 			return
@@ -57,12 +57,12 @@ func waitAvailable(t *testing.T, reg *runners.Registry, n int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if reg.Available("prod") == n {
+		if reg.Parked() == n {
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatalf("runner did not park (available=%d)", reg.Available("prod"))
+	t.Fatalf("runner did not park (available=%d)", reg.Parked())
 }
 
 // The happy path, end to end: request in, runner serves it, response streams
@@ -255,8 +255,8 @@ func TestRequiredHeadersAreEnforced(t *testing.T) {
 
 // A method-specific route must not be shadowed by a method-agnostic one.
 func TestMethodSpecificRouteWinsOverWildcard(t *testing.T) {
-	specific := config.Route{Path: "/hook", Flow: "post-flow", Group: "prod", Method: http.MethodPost}
-	wildcard := config.Route{Path: "/hook", Flow: "any-flow", Group: "prod"}
+	specific := config.Route{Path: "/hook", Flow: "post-flow", Method: http.MethodPost}
+	wildcard := config.Route{Path: "/hook", Flow: "any-flow"}
 	h, reg := serve(t, []config.Route{wildcard, specific})
 	got := parkRunner(t, reg, "ok")
 

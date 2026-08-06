@@ -1,0 +1,169 @@
+# The gateway: the sole publicly reachable component (ADR-0038).
+#
+# Its configuration comes from a ConfigMap here because the hub's config push
+# is not built yet (ADR-0038 §6a). In a real deployment the hub owns all of
+# this and the gateway holds nothing on disk.
+---
+# The control-listener shared secret. gatewayd REFUSES TO START if the control
+# listener is non-loopback (as it is here) and this is unset — an
+# unauthenticated /poll on a routable address lets anyone park a fake runner
+# and be handed real inbound payloads.
+#
+# Interim measure: ADR-0038 §6a replaces it with mutual TLS and a per-gateway
+# identity bundle, which also authenticates the gateway TO the runner.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shift-gateway-control
+  namespace: shift-dmz
+stringData:
+  # A non-secret dev default, like everything in deploy/compose.yml. Generate a
+  # real one per deployment: openssl rand -hex 32
+  token: dev-control-secret-not-for-production
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shift-gateway-config
+  namespace: shift-dmz
+data:
+  gateway.json: |
+    {
+      "version": 1,
+      "routes": [
+        {
+          "path": "/orders",
+          "method": "POST",
+          "flow": "echo",
+          "selector": {"environment": "production", "workload": "api"},
+          "auth_token_sha256": "7c43ef5ae21d43ce2743f770c68e24def1a43ee2f416d2438410c8af7af2ff2c",
+          "auth_principal": "acme-erp",
+          "max_body_bytes": 1048576
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: shift-gateway
+  namespace: shift-dmz
+spec:
+  # A StatefulSet rather than a Deployment, for one reason: STABLE PER-POD DNS.
+  #
+  # A runner must address each gateway individually (a poll parked on replica 1
+  # is only usable by replica 1), so it needs a name per replica —
+  # shift-gateway-0.shift-gateway-control, shift-gateway-1.… — not a single
+  # rotating VIP. Nothing here is stateful; the gateway holds no disk at all.
+  #
+  # It is also not a misuse of the abstraction: under ADR-0038 §6a each gateway
+  # has a real identity (its mTLS bundle), which is exactly what a StatefulSet
+  # models.
+  serviceName: shift-gateway-control
+  # Two replicas, because HA is a property worth demonstrating rather than
+  # asserting: each holds its OWN poll registry, and the runner polls both.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: shift-gateway
+  template:
+    metadata:
+      labels:
+        app: shift-gateway
+    spec:
+      # The DMZ box runs as little as possible: no service account token (it
+      # has no reason to talk to the API server), read-only root, no
+      # privileges to drop later.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gatewayd
+          image: shift/gatewayd:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - -public=:8443
+            # Binds all interfaces because runners reach it from another pod.
+            # The NetworkPolicy above is what keeps this port internal-only —
+            # in production this listener gets mutual TLS as well (not built).
+            - -control=:8444
+            - -config=/etc/shift/gateway.json
+          env:
+            # Env rather than a flag: a flag puts the secret into every process
+            # listing on the host.
+            - name: SHIFT_GATEWAY_CONTROL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: shift-gateway-control
+                  key: token
+          ports:
+            - name: public
+              containerPort: 8443
+            - name: control
+              containerPort: 8444
+          volumeMounts:
+            - name: config
+              mountPath: /etc/shift
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: control
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 50m, memory: 32Mi}
+            limits: {memory: 128Mi}
+      volumes:
+        - name: config
+          configMap:
+            name: shift-gateway-config
+---
+# The public front door. NodePort so `minikube service` can reach it without
+# a cloud load balancer.
+apiVersion: v1
+kind: Service
+metadata:
+  name: shift-gateway
+  namespace: shift-dmz
+spec:
+  type: NodePort
+  selector:
+    app: shift-gateway
+  ports:
+    - name: public
+      port: 8443
+      targetPort: public
+      nodePort: 30443
+---
+# A HEADLESS service for the control listener, and the reason is the one
+# non-obvious thing in this whole bundle.
+#
+# A poll parked on gateway replica 1 is only usable by replica 1. A normal
+# ClusterIP would load-balance each poll to one arbitrary replica, so a runner
+# would end up parked on one gateway and invisible to the other — and requests
+# arriving at the other would 503 while a perfectly good runner sat idle.
+#
+# Headless gives the runner the individual pod addresses, so it can park on
+# every replica. Runners address each gateway INDIVIDUALLY, never a VIP
+# (ADR-0038 §4a).
+apiVersion: v1
+kind: Service
+metadata:
+  name: shift-gateway-control
+  namespace: shift-dmz
+spec:
+  clusterIP: None
+  selector:
+    app: shift-gateway
+  ports:
+    - name: control
+      port: 8444
+      targetPort: control
