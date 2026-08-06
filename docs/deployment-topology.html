@@ -1,0 +1,767 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SHIFT — Deployment &amp; Communication Channels</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -moz-text-size-adjust: none; -webkit-text-size-adjust: none; text-size-adjust: none; }
+  body, h1, h2, h3, p, figure, blockquote, dl, dd { margin: 0; }
+  img, picture, video, canvas, svg { display: block; max-width: 100%; }
+  input, button, textarea, select { font: inherit; }
+</style>
+<style>
+  :root {
+    --ink:        #12161c;
+    --ink-soft:   #3d4653;
+    --slate:      #5b6472;
+    --paper:      #f6f7f9;
+    --card:       #ffffff;
+    --rule:       #dbe0e6;
+    --rule-soft:  #e8ebef;
+    --control:    #0d6f70;
+    --control-bg: #e4f1f1;
+    --public:     #a85408;
+    --public-bg:  #fbeee2;
+    --never:      #8b2f3f;
+    --never-bg:   #f9e9eb;
+
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink:        #e7eaee;
+      --ink-soft:   #b3bcc8;
+      --slate:      #8b94a1;
+      --paper:      #0e1116;
+      --card:       #161b22;
+      --rule:       #2a313b;
+      --rule-soft:  #1f252d;
+      --control:    #4fc4c2;
+      --control-bg: #12302f;
+      --public:     #e0954a;
+      --public-bg:  #331f0e;
+      --never:      #e08d99;
+      --never-bg:   #331a1f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink:        #e7eaee;
+    --ink-soft:   #b3bcc8;
+    --slate:      #8b94a1;
+    --paper:      #0e1116;
+    --card:       #161b22;
+    --rule:       #2a313b;
+    --rule-soft:  #1f252d;
+    --control:    #4fc4c2;
+    --control-bg: #12302f;
+    --public:     #e0954a;
+    --public-bg:  #331f0e;
+    --never:      #e08d99;
+    --never-bg:   #331a1f;
+  }
+  :root[data-theme="light"] {
+    --ink:        #12161c;
+    --ink-soft:   #3d4653;
+    --slate:      #5b6472;
+    --paper:      #f6f7f9;
+    --card:       #ffffff;
+    --rule:       #dbe0e6;
+    --rule-soft:  #e8ebef;
+    --control:    #0d6f70;
+    --control-bg: #e4f1f1;
+    --public:     #a85408;
+    --public-bg:  #fbeee2;
+    --never:      #8b2f3f;
+    --never-bg:   #f9e9eb;
+  }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 60rem;
+    margin: 0 auto;
+    padding: 3.5rem 1.5rem 6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 3rem;
+  }
+
+  /* ---- masthead ---- */
+  .masthead { display: flex; flex-direction: column; gap: .9rem; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .7rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--slate);
+  }
+  h1 {
+    font-size: clamp(1.9rem, 4.5vw, 2.7rem);
+    font-weight: 660;
+    letter-spacing: -.025em;
+    line-height: 1.1;
+    text-wrap: balance;
+    margin: 0;
+  }
+  .standfirst {
+    font-size: 1.06rem;
+    color: var(--ink-soft);
+    max-width: 62ch;
+    margin: 0;
+  }
+
+  .rule-card {
+    border: 1px solid var(--control);
+    background: var(--control-bg);
+    border-radius: 3px;
+    padding: 1.1rem 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: .4rem;
+  }
+  .rule-card .label {
+    font-family: var(--mono);
+    font-size: .68rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--control);
+  }
+  .rule-card p { margin: 0; font-size: 1.05rem; font-weight: 550; }
+  .rule-card .why { font-size: .92rem; font-weight: 400; color: var(--ink-soft); }
+
+  /* ---- sections ---- */
+  section { display: flex; flex-direction: column; gap: 1.1rem; }
+  h2 {
+    font-size: 1.28rem;
+    font-weight: 640;
+    letter-spacing: -.015em;
+    margin: 0;
+    padding-bottom: .5rem;
+    border-bottom: 1px solid var(--rule);
+  }
+  h3 { font-size: 1rem; font-weight: 620; margin: 0; }
+  p { margin: 0; max-width: 72ch; }
+  .muted { color: var(--ink-soft); }
+
+  code, .mono { font-family: var(--mono); font-size: .87em; }
+  code {
+    background: var(--rule-soft);
+    padding: .1em .35em;
+    border-radius: 2px;
+  }
+
+  /* ---- component cards ---- */
+  .grid-3 {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: 1rem;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 1.1rem 1.15rem;
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+  }
+  .card h3 { display: flex; align-items: baseline; gap: .5rem; }
+  .card .bin { font-family: var(--mono); font-size: .78rem; color: var(--slate); font-weight: 400; }
+  .card p { font-size: .93rem; color: var(--ink-soft); }
+  .tag {
+    align-self: flex-start;
+    font-family: var(--mono);
+    font-size: .66rem;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    padding: .18em .55em;
+    border-radius: 2px;
+    border: 1px solid currentColor;
+  }
+  .tag.required { color: var(--control); }
+  .tag.optional { color: var(--slate); }
+
+  /* ---- topology ---- */
+  .topology { display: flex; flex-direction: column; gap: 0; }
+  .zone {
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 1rem 1.1rem 1.15rem;
+    background: var(--card);
+    display: flex;
+    flex-direction: column;
+    gap: .75rem;
+  }
+  .zone-label {
+    font-family: var(--mono);
+    font-size: .68rem;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--slate);
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+  .zone.public { border-color: var(--public); background: var(--public-bg); }
+  .zone.public .zone-label { color: var(--public); }
+  .zone-body { display: flex; flex-wrap: wrap; gap: .6rem; }
+  .node {
+    border: 1px solid var(--rule);
+    background: var(--paper);
+    border-radius: 2px;
+    padding: .5rem .7rem;
+    font-family: var(--mono);
+    font-size: .8rem;
+    display: flex;
+    flex-direction: column;
+    gap: .15rem;
+    min-width: 9rem;
+  }
+  .node b { font-weight: 620; font-size: .84rem; }
+  .node span { color: var(--slate); font-size: .72rem; }
+
+  .link {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    padding: .55rem .2rem;
+    font-family: var(--mono);
+    font-size: .76rem;
+    color: var(--ink-soft);
+  }
+  .link .arrow { color: var(--control); font-size: 1rem; letter-spacing: -.05em; }
+  .link.inbound .arrow { color: var(--public); }
+
+  /* ---- tables ---- */
+  .scroll { overflow-x: auto; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 44rem;
+    font-size: .89rem;
+  }
+  thead th {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: .68rem;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--slate);
+    font-weight: 500;
+    padding: 0 .75rem .5rem 0;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  tbody td {
+    padding: .6rem .75rem .6rem 0;
+    border-bottom: 1px solid var(--rule-soft);
+    vertical-align: top;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.dir { font-family: var(--mono); font-size: .8rem; white-space: nowrap; }
+  td.port { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pill {
+    font-family: var(--mono);
+    font-size: .68rem;
+    letter-spacing: .06em;
+    padding: .15em .5em;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .pill.out { color: var(--control); background: var(--control-bg); }
+  .pill.in  { color: var(--public);  background: var(--public-bg); }
+  .pill.no  { color: var(--never);   background: var(--never-bg); }
+
+  /* ---- decision pair ---- */
+  .grid-2 {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+    gap: 1rem;
+  }
+  .verdict {
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--control);
+    background: var(--card);
+    border-radius: 3px;
+    padding: 1.1rem 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: .55rem;
+  }
+  .verdict.soft { border-left-color: var(--slate); }
+  .verdict .answer {
+    font-family: var(--mono);
+    font-size: .72rem;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--control);
+  }
+  .verdict.soft .answer { color: var(--slate); }
+  .verdict p { font-size: .93rem; color: var(--ink-soft); }
+
+  /* ---- install steps ---- */
+  ol.steps { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 1.4rem; counter-reset: step; }
+  ol.steps > li {
+    counter-increment: step;
+    display: grid;
+    grid-template-columns: 2rem 1fr;
+    gap: .1rem 1rem;
+    align-items: start;
+  }
+  ol.steps > li::before {
+    content: counter(step);
+    font-family: var(--mono);
+    font-size: .8rem;
+    color: var(--control);
+    border: 1px solid var(--control);
+    border-radius: 50%;
+    width: 1.7rem; height: 1.7rem;
+    display: grid; place-items: center;
+    margin-top: .05rem;
+  }
+  ol.steps .body { display: flex; flex-direction: column; gap: .5rem; }
+  pre {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: .8rem .9rem;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: .8rem;
+    line-height: 1.65;
+    margin: 0;
+  }
+  pre .c { color: var(--slate); }
+
+  ul.plain { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: .4rem; }
+  ul.plain li { font-size: .93rem; color: var(--ink-soft); }
+  ul.plain li b { color: var(--ink); font-weight: 600; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 1rem;
+    font-size: .82rem;
+    color: var(--slate);
+    font-family: var(--mono);
+    display: flex;
+    flex-wrap: wrap;
+    gap: .35rem 1.2rem;
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <header class="masthead">
+    <div class="eyebrow">SHIFT · deployment reference · one page</div>
+    <h1>Who talks to whom, and what you actually have to install</h1>
+    <p class="standfirst">
+      SHIFT is hub-and-spoke. A <b>hub</b> holds the control plane, <b>runners</b> execute flows and touch
+      your data, and an optional <b>gateway</b> is the only thing that ever accepts an inbound request.
+      This page is the whole communication picture and the install order that follows from it.
+    </p>
+  </header>
+
+  <div class="rule-card">
+    <div class="label">The rule everything else follows</div>
+    <p>Nothing at the edge ever initiates a connection inward.</p>
+    <p class="why">
+      Runners dial the hub. Runners dial the gateway. The hub dials the gateway. Nothing dials
+      a runner, and nothing at the edge dials the hub — so the boxes closest to the internet hold
+      no database connection, no encryption key and no credential worth stealing.
+    </p>
+  </div>
+
+  <section>
+    <h2>The three components</h2>
+    <div class="grid-3">
+
+      <div class="card">
+        <h3>Hub <span class="bin">hubd</span></h3>
+        <span class="tag required">required</span>
+        <p>
+          Control plane: identity, the flow designer, the durable task queue, the connector registry,
+          schedules and audit. Needs PostgreSQL. <b>Never sees your payload data.</b>
+        </p>
+        <p class="mono muted">:8400 · loopback by default</p>
+      </div>
+
+      <div class="card">
+        <h3>Runner <span class="bin">runnerd</span></h3>
+        <span class="tag required">required</span>
+        <p>
+          Executes flows, streams the data, runs connectors as subprocesses. Stateless and disposable —
+          run one or fifty. This is the only component that touches your systems and your records.
+        </p>
+        <p class="mono muted">:8340 · loopback by default</p>
+      </div>
+
+      <div class="card">
+        <h3>Gateway <span class="bin">gatewayd</span></h3>
+        <span class="tag optional">only for inbound</span>
+        <p>
+          Accepts public HTTP requests and hands them to an available runner. Holds no database, no keys
+          and no queue. Absent by default — and if you have no inbound traffic, you never install it.
+        </p>
+        <p class="mono muted">:8443 public · :8444 control</p>
+      </div>
+
+    </div>
+    <p class="muted">
+      Connectors are not a fourth component. They ship as signed binaries the runner launches as
+      local subprocesses over a unix socket, and they never listen on a network port.
+    </p>
+  </section>
+
+  <section>
+    <h2>Topology</h2>
+    <p class="muted">
+      Zones are network boundaries, not products. Every arrow points the way the connection is
+      <em>opened</em> — which is the only direction a firewall rule cares about.
+    </p>
+
+    <div class="topology">
+
+      <div class="zone public">
+        <div class="zone-label"><span>Internet / callers</span><span>untrusted</span></div>
+        <div class="zone-body">
+          <div class="node"><b>API caller</b><span>webhook, partner, app</span></div>
+          <div class="node"><b>Browser</b><span>studio &amp; dashboard</span></div>
+        </div>
+      </div>
+
+      <div class="link inbound"><span class="arrow">▼</span> HTTPS request to <code>:8443</code> — the only inbound connection in the system</div>
+
+      <div class="zone">
+        <div class="zone-label"><span>Edge — a DMZ, or just your private network</span><span>gateway only</span></div>
+        <div class="zone-body">
+          <div class="node"><b>gatewayd</b><span>:8443 public · :8444 control</span></div>
+        </div>
+      </div>
+
+      <div class="link"><span class="arrow">▲</span> runner long-polls the gateway for work <span class="mono">(outbound, from below)</span></div>
+      <div class="link"><span class="arrow">▼</span> hub pushes config and identity to the gateway <span class="mono">(outbound, from below)</span></div>
+
+      <div class="zone">
+        <div class="zone-label"><span>Private network</span><span>your data lives here</span></div>
+        <div class="zone-body">
+          <div class="node"><b>runnerd</b><span>×N, stateless</span></div>
+          <div class="node"><b>connectors</b><span>local subprocesses</span></div>
+          <div class="node"><b>your systems</b><span>SFTP, DB, SaaS, files</span></div>
+        </div>
+      </div>
+
+      <div class="link"><span class="arrow">▲</span> runner long-polls the hub for tasks <span class="mono">(outbound)</span></div>
+
+      <div class="zone">
+        <div class="zone-label"><span>Control plane</span><span>no payload data, ever</span></div>
+        <div class="zone-body">
+          <div class="node"><b>hubd</b><span>:8400</span></div>
+          <div class="node"><b>PostgreSQL</b><span>queue, flows, secrets</span></div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <h2>Every connection</h2>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>From → to</th>
+            <th>Port</th>
+            <th>Opened by</th>
+            <th>Carries</th>
+            <th>Credential</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="dir">runner → hub</td>
+            <td class="port">443 / 8400</td>
+            <td><span class="pill out">outbound</span></td>
+            <td>lease tasks, heartbeat, report results. Metadata only.</td>
+            <td>mutual TLS, 24h certificate, self-renewing</td>
+          </tr>
+          <tr>
+            <td class="dir">runner → gateway</td>
+            <td class="port">8444</td>
+            <td><span class="pill out">outbound</span></td>
+            <td>poll for inbound requests, deliver the response</td>
+            <td>mutual TLS</td>
+          </tr>
+          <tr>
+            <td class="dir">hub → gateway</td>
+            <td class="port">8444</td>
+            <td><span class="pill out">outbound</span></td>
+            <td>adoption, then routes, allowlists, TLS material</td>
+            <td>pinned key at adoption, mutual TLS after</td>
+          </tr>
+          <tr>
+            <td class="dir">caller → gateway</td>
+            <td class="port">8443</td>
+            <td><span class="pill in">inbound</span></td>
+            <td>the actual request body</td>
+            <td>bearer token or mutual TLS, per route</td>
+          </tr>
+          <tr>
+            <td class="dir">browser → hub</td>
+            <td class="port">8400</td>
+            <td><span class="pill in">inbound</span></td>
+            <td>studio, dashboard, admin API</td>
+            <td>OIDC (any IdP) + break-glass token</td>
+          </tr>
+          <tr>
+            <td class="dir">runner → your systems</td>
+            <td class="port">yours</td>
+            <td><span class="pill out">outbound</span></td>
+            <td>the data itself</td>
+            <td>your credentials, pulled per task</td>
+          </tr>
+          <tr>
+            <td class="dir">hub → runner</td>
+            <td class="port">—</td>
+            <td><span class="pill no">never</span></td>
+            <td>the hub cannot reach a runner; runners ask for work</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td class="dir">gateway → hub</td>
+            <td class="port">—</td>
+            <td><span class="pill no">never</span></td>
+            <td>the gateway holds no hub credential at all</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td class="dir">gateway → runner</td>
+            <td class="port">—</td>
+            <td><span class="pill no">never</span></td>
+            <td>runners poll; the set that is polling <em>is</em> the set available</td>
+            <td>—</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Do you need a DMZ? Do you need a gateway?</h2>
+    <div class="grid-2">
+
+      <div class="verdict soft">
+        <div class="answer">DMZ — not required</div>
+        <p>
+          The gateway is <em>deployable</em> into a DMZ, and that is the strongest posture because the
+          box in the DMZ holds nothing worth taking. But it is a placement, not a requirement. Put it
+          on your private network behind an existing load balancer and everything works identically.
+        </p>
+        <p>
+          Nothing in SHIFT assumes a DMZ exists. If you have no inbound traffic at all, there is no
+          edge to harden — see the pull-only shape below.
+        </p>
+      </div>
+
+      <div class="verdict">
+        <div class="answer">Gateway — required for web requests</div>
+        <p>
+          Runners bind privately in every deployment. They do not accept connections from callers, and
+          that is deliberate rather than a limitation. So if something outside needs to
+          <em>call</em> a flow — a webhook, a partner API, an app — a gateway is how the request
+          reaches a runner.
+        </p>
+        <p>
+          No gateway means no inbound path. Flows still run on schedules, on polls, and on the hub queue.
+        </p>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <h2>Three deployment shapes</h2>
+    <div class="grid-3">
+
+      <div class="card">
+        <h3>Pull-only</h3>
+        <span class="tag optional">hub + runners</span>
+        <p>
+          Schedules, polling sources, queue-driven work. <b>Zero inbound attack surface</b> — nothing in
+          the deployment accepts a connection from outside. No gateway installed.
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>Gateway, no DMZ</h3>
+        <span class="tag optional">+ gateway, private</span>
+        <p>
+          Gateway on the private network behind your existing ingress or load balancer. Inbound flows
+          work. Common for internal APIs and for teams without a DMZ to deploy into.
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>Gateway in a DMZ</h3>
+        <span class="tag required">recommended for public</span>
+        <p>
+          The public internet calls your flows. The DMZ box holds no database, no encryption key, no
+          user secret and no durable payload — losing it loses nothing.
+        </p>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <h2>Install order</h2>
+    <p class="muted">
+      Sequential because each step hands the next one a credential. Nothing works out of order.
+    </p>
+
+    <ol class="steps">
+
+      <li>
+        <div class="body">
+          <h3>Hub — the only thing that needs a database</h3>
+          <p class="muted">
+            Point it at PostgreSQL; it runs its own migrations. Configure OIDC for humans, and keep the
+            break-glass admin token for the first login.
+          </p>
+<pre><span class="c"># control-plane certificate authorities — the hub is the only signer</span>
+hubd \
+  -db "postgres://…" \
+  -listen 0.0.0.0:8400 \
+  -runner-ca-cert  runner-ca.pem  -runner-ca-key  runner-ca-key.pem \
+  -gateway-ca-cert gateway-ca.pem -gateway-ca-key gateway-ca-key.pem</pre>
+          <p class="muted">
+            The runner CA and gateway CA are separate on purpose: a runner certificate must never
+            authenticate anything on a gateway, and the reverse.
+          </p>
+        </div>
+      </li>
+
+      <li>
+        <div class="body">
+          <h3>Runners — one single-use token each</h3>
+          <p class="muted">
+            Mint a registration token in the hub, hand it to the runner by environment variable, and the
+            runner generates its own private key and gets a short-lived certificate back. The key never
+            leaves the runner and the token is spent on first use.
+          </p>
+<pre><span class="c"># token by env, never a flag — flags show up in process listings</span>
+SHIFT_HUB_REG_TOKEN=srt_… \
+runnerd \
+  -hub https://hub.example:8400 \
+  -name edge-runner-1 \
+  -cred-file /var/lib/shift/hub.cred</pre>
+          <p class="muted">
+            Add <code>-gateways https://gw.example:8444</code> once a gateway exists, so this runner also
+            polls it for inbound work. Repeat for as many runners as you want; they need nothing from
+            each other.
+          </p>
+        </div>
+      </li>
+
+      <li>
+        <div class="body">
+          <h3>Gateway — only if you need inbound</h3>
+          <p class="muted">
+            Start it with no configuration at all. It comes up <em>inert</em>: no routes, no certificates,
+            serving nothing but a public key fingerprint printed to its own log.
+          </p>
+<pre>gatewayd -public :8443 -control 0.0.0.0:8444
+
+<span class="c">{"event":"gateway.awaiting_adoption",
+ "fingerprint":"9f2c…a11b"}</span></pre>
+          <p class="muted">
+            Copy that fingerprint into the hub along with the gateway's URL. The hub then dials the
+            gateway and accepts it only if the key matches — so the value you carried by hand is what
+            establishes trust. Adoption then closes, and a restart comes back already adopted.
+          </p>
+        </div>
+      </li>
+
+    </ol>
+  </section>
+
+  <section>
+    <h2>Firewall rules you actually need</h2>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Rule</th><th>Needed when</th><th>Note</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="dir">runners → hub :8400</td>
+            <td>always</td>
+            <td>outbound from the runner network</td>
+          </tr>
+          <tr>
+            <td class="dir">runners → your systems</td>
+            <td>always</td>
+            <td>whatever your flows talk to</td>
+          </tr>
+          <tr>
+            <td class="dir">internet → gateway :8443</td>
+            <td>inbound flows</td>
+            <td>terminate TLS upstream if you prefer</td>
+          </tr>
+          <tr>
+            <td class="dir">hub → gateway :8444</td>
+            <td>inbound flows</td>
+            <td><b>must not be TLS-terminated in between</b></td>
+          </tr>
+          <tr>
+            <td class="dir">runners → gateway :8444</td>
+            <td>inbound flows</td>
+            <td>same port, same passthrough requirement</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted">
+      The control port carries certificate material and is verified by pinning the gateway's key, so an
+      appliance that terminates it would be the thing the hub trusts instead of the gateway. If one sits
+      in that path, forward the port at L4 rather than inspecting it. The public port has no such
+      constraint — terminate it wherever you like.
+    </p>
+  </section>
+
+  <section>
+    <h2>What never happens</h2>
+    <ul class="plain">
+      <li><b>Your payload never reaches the hub.</b> Records stream runner-side. The hub sees counts, timings and step names.</li>
+      <li><b>Secrets are never in the queue.</b> A task carries <code>{"$secret":"name"}</code>; the runner resolves it at execution and never logs the value.</li>
+      <li><b>The gateway stores nothing.</b> No database, no encryption key, no user secret, no durable payload. No runner available means a clean 503, never a queue.</li>
+      <li><b>Nothing at the edge dials inward.</b> Not during adoption, not at startup, not on renewal.</li>
+      <li><b>No shared filesystem.</b> Runners coordinate through the hub's queue, never through disk.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <span>ADR-0002 hub owns durability</span>
+    <span>ADR-0009 control API</span>
+    <span>ADR-0038 inbound gateway</span>
+    <span>ADR-0044 runner mTLS</span>
+    <span>ADR-0049 gateway adoption</span>
+  </footer>
+
+</div>
+
+</body>
+</html>
