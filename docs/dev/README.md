@@ -45,3 +45,10 @@ is wrong in the same PR.
   restarted, and the lessons register. Read §3 before "improving" anything
   back toward v0 patterns.
 - `09-gateway.md` — the inbound gateway: the optional, DMZ-deployable public front door (ADR-0038).
+
+Alongside these, `../deployment-topology.html` is a **one-page operator
+reference**: every communication channel and the direction it is opened in,
+the install order, the firewall rules, and why a DMZ is optional while a
+gateway is required for inbound requests. Open it in a browser. It is aimed at
+whoever has to draw the network diagram, so keep it true — if a port, a
+direction or a credential changes, it changes there too.
