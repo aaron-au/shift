@@ -173,3 +173,23 @@ func (d *Document) InputSpec() (*Input, bool) {
 	}
 	return nil, false
 }
+
+// TerminatesAtResponse reports whether the flow returns its output to the
+// caller — that is, whether it is SYNCHRONOUS (ADR-0042 §1).
+//
+// The choice is made by placing a node on the canvas rather than by a flag.
+// A separate mode field would be a second source of truth about a question the
+// graph already answers, and the two could disagree: a route marked "sync"
+// pointing at a flow with no @response has no defined meaning. Making the
+// terminal node the declaration keeps them from ever disagreeing.
+func (d *Document) TerminatesAtResponse() bool {
+	if d.Sink.Connector == ResponseSink {
+		return true
+	}
+	for i := range d.Steps {
+		if d.Steps[i].Type == "sink" && d.Steps[i].Connector == ResponseSink {
+			return true
+		}
+	}
+	return false
+}

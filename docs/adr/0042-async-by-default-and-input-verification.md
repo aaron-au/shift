@@ -2,7 +2,7 @@
 
 Date: 2026-08-05
 
-Status: **Designed.** Amends ADR-0038 (the gateway's request/response
+Status: **Partially built.** Amends ADR-0038 (the gateway's request/response
 lifecycle) and extends ADR-0024 (`@response` and synchronous run). Nothing in
 either is retracted: `@response` remains the synchronous path, and it becomes
 the explicit opt-in rather than the accident of how the exchange happens to be
@@ -93,6 +93,14 @@ client library will follow or surface, and an explicit body field is what a
 human reading the response in a terminal will find. Neither is a redirect — a
 202 with a `Location` is defined as "here is where the status lives", which is
 what this is.
+
+> **Build status (2026-08-06).** §1 (async default), §4 (input verification,
+> `engine/schema` + `flowdoc.Input`) and §5 (read before answering) are built.
+> The 202 carries the task id but **no `status_url`**: §3 needs a hub record
+> created at accept time and looked up by id, and `direct_executions` today is
+> written only once an execution is terminal, under an id the hub mints rather
+> than one the runner can quote. Advertising a URL that 404s would be worse
+> than omitting the field, which is additive when §3 and §6 land.
 
 ### 3. The status endpoint is a built-in gateway route
 

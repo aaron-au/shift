@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -375,6 +376,18 @@ func (l *Loop) execute(ctx context.Context, in *inbound) (status int, body []byt
 		doc, secretValues = bound, vals
 	}
 
+	// ASYNC IS THE DEFAULT (ADR-0042 §1). A flow terminating at @response has
+	// something to say to the caller and keeps the exchange open; anything else
+	// is acknowledged immediately and executes with the caller already gone.
+	//
+	// The gateway does not know which mode it is serving and must not: it hands
+	// over work and streams back whatever comes. Only the TIMING of the delivery
+	// changes, which is why the exchange lifetime collapses from "flow duration"
+	// to "validate and accept" without the gateway gaining a single code path.
+	if !doc.TerminatesAtResponse() {
+		return l.accept(doc, in, secretValues)
+	}
+
 	out := &boundedBuffer{limit: maxResponseBody}
 	t, err := l.opts.Service.RunSync(doc, service.SubmitOpts{
 		WebhookBody:  in.body,
@@ -400,6 +413,58 @@ func (l *Loop) execute(ctx context.Context, in *inbound) (status int, body []byt
 		return http.StatusUnprocessableEntity, []byte(`{"error":"execution failed"}`), "application/json"
 	}
 	return http.StatusOK, out.buf.Bytes(), "application/x-ndjson"
+}
+
+// accept answers 202 and lets the flow run without the caller (ADR-0042 §1).
+//
+// The body must already be fully read by this point, and it is: the @webhook
+// source binds a byte slice, so the request is in memory before we get here.
+// That ordering is not incidental — delivering a response ENDS the exchange, so
+// anything unread at that moment is gone (ADR-0042 §5).
+func (l *Loop) accept(doc *flowdoc.Document, in *inbound, secretValues []string) (int, []byte, string) {
+	taskID, err := l.opts.Service.SubmitWith(doc, service.SubmitOpts{
+		WebhookBody:  in.body,
+		SecretValues: secretValues,
+		// The completion hook belongs HERE rather than on the response path:
+		// the caller is already gone, and nobody is waiting on the metadata.
+		OnDone: l.opts.OnDone,
+	})
+	if err != nil {
+		// Admission refused it (draining, or the document is unrunnable). The
+		// caller has NOT been promised anything, so this is an honest failure
+		// rather than an accepted-then-lost task.
+		l.log.Error("gateway flow rejected at admission", "flow", in.flow, "request", in.id, "error", err)
+		return http.StatusServiceUnavailable,
+			problem(http.StatusServiceUnavailable, "runner_unavailable",
+				"this runner cannot accept work right now", nil), "application/json"
+	}
+
+	body, err := json.Marshal(accepted{
+		Task:       taskID,
+		Flow:       doc.Name,
+		Status:     "accepted",
+		AcceptedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		// Unreachable with these field types, but a marshalling failure must
+		// not lose a task that is already running.
+		l.log.Error("encoding the accept response failed", "flow", in.flow, "task", taskID, "error", err)
+		return http.StatusAccepted, []byte(`{"status":"accepted"}`), "application/json"
+	}
+	return http.StatusAccepted, body, "application/json"
+}
+
+// accepted is the 202 body (ADR-0042 §2).
+//
+// It carries NO status_url yet. The status endpoint needs a hub record created
+// at accept time and looked up by id — neither exists — and advertising a URL
+// that 404s would be worse than omitting it. The field is additive when the
+// endpoint lands, so no caller breaks by its arrival.
+type accepted struct {
+	Task       string `json:"task"`
+	Flow       string `json:"flow"`
+	Status     string `json:"status"`
+	AcceptedAt string `json:"accepted_at"`
 }
 
 func (l *Loop) deliver(ctx context.Context, addr, id string, status int, ctype string, body []byte) error {

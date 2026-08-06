@@ -58,6 +58,25 @@ available the answer is **503 with Retry-After**, never a wait: a gateway that
 holds work is a gateway with durable state, and durable state in the DMZ is
 what this component exists to avoid.
 
+**Async is the default (ADR-0042).** A flow terminating at `@response` keeps
+the caller's exchange open and returns the flow's output; anything else is
+answered `202 Accepted` with a task id as soon as the request is verified, and
+executes with the caller gone. The gateway does not know which mode it is
+serving and must not — it hands over work and streams back whatever comes. Only
+the *timing* of the delivery changes, which is why the exchange lifetime
+collapses from "flow duration" to "validate and accept" without the gateway
+gaining a single code path.
+
+That matters for capacity: the `legacy-200ms` row in `docs/bench-gateway.md`
+(239 req/s, because each request held an exchange for 200 ms) is bounded by the
+backend only while the flow is synchronous.
+
+**Requests are verified before they are accepted (ADR-0042 §4).** A flow may
+declare an input schema on its `@webhook` source; the runner checks the request
+against it and answers `400` with the offending field named, rather than `202`
+followed by a dead letter. Validation runs on the RUNNER, never here: a schema
+evaluator is a parser fed attacker-shaped input, and this is the box in the DMZ.
+
 Three behaviours that are correctness, not polish:
 
 - **A blocked caller gets the same 404 as an unknown path.** Distinguishable
@@ -251,3 +270,9 @@ than this system.
 - Rate limiting (reuse ADR-0021's token bucket), HMAC provider signatures.
 - **Pass-through proxy routes** (ADR-0040, drafted): fronting an internal API
   with no runner and no flow.
+- **The status URL** (ADR-0042 §2/§3). Async requests return a task id but no
+  `status_url` yet: serving `GET /_shift/tasks/{id}` needs a hub record created
+  at ACCEPT time and looked up by id, and neither exists — `direct_executions`
+  is written only when an execution is already terminal, with an id the hub
+  mints rather than one the runner can quote. Advertising a URL that 404s would
+  be worse than omitting the field, and adding it later is additive.
