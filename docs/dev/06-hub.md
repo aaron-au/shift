@@ -349,6 +349,54 @@ directory ignores the pin, deliberately: that is the dev path where an
 operator drops in a binary and vouches for it, and `SHIFT_REQUIRE_SIGNED`
 removes it entirely.
 
+## Connector currency (ADR-0047 §4/§5/§6)
+
+Pinning froze what a flow runs; retention decided what may be deleted. This is
+the third question: how does a flow ever move **forward**?
+
+**Every version declares what kind of change it is** (§6, migration 0019).
+`?compat=compatible|behaviour-change|breaking` at publish, plus optional
+`X-Shift-Release-Notes`. The default is **`unknown`, never `compatible`** —
+defaulting to compatible would make every version published before the column
+existed, and every publisher who forgot, claim to be safe. The class is
+deliberately **not signed**: a publisher's own declaration is weak evidence
+whatever we do with it, which is why §8 backs it with a compatibility suite in
+CI rather than by minting a v3 manifest format for a field only humans read.
+
+**Age advises; it never refuses** (§5). `connector-currency.behind` rides on
+the deploy and publish responses and folds the **whole span**, not the last
+hop — *"gen is 3 versions behind … 1 BREAKING (3.0.0), 1 behaviour change
+(2.0.0), 1 undeclared (1.5.0)"* — because somebody crossing three releases
+wants to know what is in all of them. An undeclared version is named as
+undeclared: it is not a safe one, it is one nobody said anything about.
+
+These notices live in `hub/internal/api`, **not** in `flowdoc`'s check
+registry, and the split is load-bearing. A flowdoc check answers a question the
+document answers on its own and gives the same answer everywhere, which is what
+lets the runner, the CLI and the hub agree. "Is this pin three releases old?"
+is a fact about the *registry at this moment*: it changes without the flow
+changing, and it differs on two hubs holding different artifacts. In flowdoc it
+would be a check that needs a database, or one that silently does nothing
+wherever there is no registry.
+
+**Publishing forward drags a flow forward** (§4). A version being published may
+not pin a build that has fallen outside the support window (current and n-1);
+the refusal names the step, the version and how far behind it is. This is where
+the version limitation actually lives — bounded by the last time somebody
+edited the flow rather than by a calendar, landing at the one moment a
+developer already has it open.
+
+Two exemptions, both deliberate:
+
+- **A rollback is never gated.** Publishing a version at or below the current
+  published one is an emergency action, taken when the current version is
+  misbehaving, and it deliberately keeps its original pins (§1). Refusing it on
+  currency grounds would deny somebody the one thing they need at the worst
+  possible moment.
+- **An unplaceable pin is not a stale one.** A connector provisioned outside
+  the registry, or a version since collected, cannot be ranked — and "unknown"
+  must not read as "old" and block a publish.
+
 ## Connector retention (ADR-0047 §2/§3)
 
 Pinning made a published flow immutable about which build it runs, which

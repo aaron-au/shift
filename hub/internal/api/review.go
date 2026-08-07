@@ -74,15 +74,3 @@ func (a *api) listReviewChecks(w http.ResponseWriter, _ *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"checks": out})
 }
-
-// noticesFor reviews a stored version for a response that is primarily about
-// something else (deploy, publish). Best-effort by construction: a document
-// that has just been stored parses, and if it somehow does not, the deploy is
-// still what happened and is still what gets reported.
-func (a *api) noticesFor(r *http.Request, name string, version int) []flowdoc.Notice {
-	_, raw, err := a.st.GetFlow(r.Context(), name, version)
-	if err != nil {
-		return nil
-	}
-	return flowdoc.ReviewRaw(raw)
-}

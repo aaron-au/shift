@@ -484,7 +484,12 @@ func (a *api) deployFlow(w http.ResponseWriter, r *http.Request) {
 	// "this deploys as an asynchronous web call" (ADR-0042 §7). They never
 	// block — the deploy above has already happened.
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"name": name, "version": version, "notices": flowdoc.Review(doc),
+		"name": name, "version": version,
+		// Plus the registry-derived ones: how far behind each pinned connector
+		// is, and what crossing that span would mean (ADR-0047 §5/§6). A draft
+		// is usually unpinned, so this is normally silent — it speaks when an
+		// author has pinned deliberately, or is editing a published flow.
+		"notices": append(flowdoc.Review(doc), a.currencyNotices(r.Context(), doc)...),
 	})
 }
 
@@ -588,6 +593,20 @@ func (a *api) publishFlow(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("version must be a positive integer"))
 		return
 	}
+	// Publishing drags a flow forward (ADR-0047 §4): a version being published
+	// may not pin a connector build that has fallen outside the support
+	// window. That is where the version limitation lives — bounded by the last
+	// time somebody edited the flow rather than by a calendar, and landing at
+	// the one moment a developer is already in the builder with it open.
+	if stale, err := a.staleUpgradePins(r, name, version); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	} else if len(stale) > 0 {
+		writeErrCode(w, http.StatusUnprocessableEntity, "connector_out_of_window",
+			fmt.Errorf("%s — unpin the step (or set a version inside the window) and publish again",
+				strings.Join(stale, "; ")))
+		return
+	}
 	err = a.st.PublishFlow(r.Context(), name, version)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, err)
@@ -602,7 +621,7 @@ func (a *api) publishFlow(w http.ResponseWriter, r *http.Request) {
 	// notices are repeated here even though deploy already showed them: the
 	// two are often days apart, and often different people.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name": name, "published_version": version, "notices": a.noticesFor(r, name, version),
+		"name": name, "published_version": version, "notices": a.noticesWithCurrency(r, name, version),
 	})
 }
 

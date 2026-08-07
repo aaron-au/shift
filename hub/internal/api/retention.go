@@ -92,3 +92,17 @@ func (a *api) yankReferences(r *http.Request, name, version string) []store.Flow
 	}
 	return refs
 }
+
+// maxReleaseNotes bounds a publisher's free text. Generous — it is release
+// notes, not a manifest — but bounded, because it is served back to a browser.
+const maxReleaseNotes = 4 << 10
+
+// compatOrUnknown states the class actually recorded, so a publisher who
+// omitted it sees "unknown" in the response rather than an empty field they
+// can read as "fine".
+func compatOrUnknown(c string) string {
+	if c == "" {
+		return store.CompatUnknown
+	}
+	return c
+}

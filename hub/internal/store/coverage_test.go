@@ -298,7 +298,10 @@ func TestQueriesFailLoudlyWhenDBIsDown(t *testing.T) {
 	if _, err := s.AddPublisherKey(ctx, "pub1", make([]byte, 32)); err == nil {
 		t.Error("AddPublisherKey during outage returned no error")
 	}
-	if err := s.PutConnectorVersion(ctx, "c", "1", "linux", "amd64", []byte("d"), []byte("s"), "00000000-0000-0000-0000-000000000000", []byte("x"), nil); err == nil {
+	if err := s.PutConnectorVersion(ctx, store.NewVersion{
+		Name: "c", Version: "1", OS: "linux", Arch: "amd64",
+		Digest: []byte("d"), Signature: []byte("s"),
+		PublisherKeyID: "00000000-0000-0000-0000-000000000000", Data: []byte("x")}); err == nil {
 		t.Error("PutConnectorVersion during outage returned no error")
 	}
 	if err := s.Migrate(ctx); err == nil {
