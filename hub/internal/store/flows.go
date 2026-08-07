@@ -96,17 +96,65 @@ func (s *Store) PublishFlow(ctx context.Context, name string, version int) error
 		return err
 	}
 	if pinned != nil {
+		raw = pinned
 		if _, err := tx.Exec(ctx,
 			`UPDATE flow_versions SET document = $3 WHERE flow_id = $1 AND version = $2`,
 			flowID, version, pinned); err != nil {
 			return err
 		}
 	}
+	// published_at orders the flow's publish history, which is what makes "the
+	// version it would roll back to" answerable — and therefore what retention
+	// keeps (ADR-0047 §2). A rollback republishes, so it moves to the front of
+	// that history, which is correct: it is the current version now.
+	if _, err := tx.Exec(ctx,
+		`UPDATE flow_versions SET published_at = now() WHERE flow_id = $1 AND version = $2`,
+		flowID, version); err != nil {
+		return err
+	}
+	if err := indexPins(ctx, tx, accountID(ctx), flowID, version, raw); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE flows SET published_version = $2 WHERE id = $1`, flowID, version); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// indexPins rewrites this flow version's rows in the pin reference index
+// (ADR-0047 §2).
+//
+// Derived from the document that was just stored, in the same transaction, so
+// the index cannot disagree with what the flow actually runs. Rewritten rather
+// than merged: a step deleted from the flow must lose its reference, or a
+// connector build stays retained by a step that no longer exists.
+func indexPins(ctx context.Context, tx pgx.Tx, account, flowID string, version int, raw []byte) error {
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM flow_connector_pins WHERE flow_id = $1 AND flow_version = $2`,
+		flowID, version); err != nil {
+		return err
+	}
+	doc, err := flowdoc.Parse(raw)
+	if err != nil {
+		//nolint:nilerr // an unparseable legacy row publishes with no pins, exactly as it ran before
+		return nil
+	}
+	for _, p := range doc.ConnectorPins() {
+		if p.Version == "" {
+			// Nothing pinned means nothing to retain: the step resolves to
+			// newest, so no particular build is keeping it alive.
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO flow_connector_pins
+			   (account_id, flow_id, flow_version, step_id, connector, version)
+			 VALUES ($1,$2,$3,$4,$5,$6)`,
+			account, flowID, version, p.StepID, p.Connector, p.Version); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // pinDocument resolves every unpinned connector step to a concrete version,

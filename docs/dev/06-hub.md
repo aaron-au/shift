@@ -349,6 +349,51 @@ directory ignores the pin, deliberately: that is the dev path where an
 operator drops in a binary and vouches for it, and `SHIFT_REQUIRE_SIGNED`
 removes it entirely.
 
+## Connector retention (ADR-0047 §2/§3)
+
+Pinning made a published flow immutable about which build it runs, which
+raises the next question: when may a build ever be deleted? "Never" means
+supporting v0.0.1 forever; "after N months" is a time bomb that breaks a flow
+nobody edited. So retention is by **reference**, with a floor.
+
+`flow_connector_pins` is the index (migration 0018), written from the pinned
+document inside the publish transaction. It is derived state — the document
+stays authoritative — which is the right way round: a disagreement is resolved
+by re-reading the flow, never by trusting a table that drifted. Four features
+read it and therefore cannot disagree about what "in use" means: yank warnings,
+GC, EOL notices (§7) and bulk locate (§9).
+
+**What is retained**
+
+- The pins of each flow's **current published version and the one before it**.
+  Counting every version ever published would keep everything forever — a
+  superseded version keeps its `published` status on purpose, so it stays
+  runnable — and counting only the current one would let a rollback land on a
+  build that had been collected. `flow_versions.published_at` orders that
+  history; a rollback republishes, so it moves to the front, which is correct.
+- The newest **two versions of every connector**, referenced or not, so a
+  rollback has somewhere to land.
+
+**Two verbs, deliberately not conflated**
+
+| | What it does | Effect on a running flow |
+|---|---|---|
+| `yank` | withdraws a version from **new** pins | none — existing pins keep resolving |
+| collect | deletes the artifact | none by construction — it only takes what nothing references |
+
+A yank response now carries `still_pinned_by`: the published flows still on
+that version. Yanking does not stop them, which is what makes yank safe — but
+the person yanking almost always believes it does, and reading it there beats
+reading it in a support ticket.
+
+`POST /api/v1/connectors/collect` **reports** and deletes nothing;
+`?apply=1` deletes. The destructive-by-default version would have been a
+mistake worth naming: publisher private keys are never server-side (ADR-0011),
+so an artifact deleted by accident cannot be regenerated from anything the hub
+holds. Blobs are content-addressed and shared, so bytes go only once no version
+row points at them — deleting row and bytes together would destroy a build
+another version deduped against.
+
 ## Direct executions (M5d-2, ADR-0016)
 
 Push-triggered runs (webhook / direct API) execute entirely on a runner and
