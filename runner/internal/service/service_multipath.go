@@ -48,7 +48,7 @@ func (s *Service) bindSourceInfo(step *flow.Step, o SubmitOpts) (stream.Source, 
 		}
 		return ndjson.NewReader(bytes.NewReader(o.WebhookBody), ndjson.ReaderOptions{}), func() {}, host.Info{}, nil
 	}
-	proc, err := s.pool.Get(s.baseCtx, step.Connector)
+	proc, err := s.pool.Get(s.baseCtx, step.Connector, step.Version)
 	if err != nil {
 		return nil, nil, host.Info{}, err
 	}
@@ -69,7 +69,7 @@ func (s *Service) bindSourceInfo(step *flow.Step, o SubmitOpts) (stream.Source, 
 				"connector", proc.Info().Name, "version", proc.Info().Version)
 		}
 	}
-	return src, func() { s.pool.Put(step.Connector) }, proc.Info(), nil
+	return src, func() { s.pool.Put(step.Connector, step.Version) }, proc.Info(), nil
 }
 
 // bindSink binds a sink step: a built-in terminal (@discard / @response) or a
@@ -86,12 +86,12 @@ func (s *Service) bindSink(step *flow.Step, o SubmitOpts) (stream.Sink, func() i
 	case flowdoc.StopSink:
 		return &stopSink{}, func() int64 { return 0 }, func() {}, nil
 	default:
-		proc, err := s.pool.Get(s.baseCtx, step.Connector)
+		proc, err := s.pool.Get(s.baseCtx, step.Connector, step.Version)
 		if err != nil {
 			return nil, nil, nil, err
 		}
 		ss := proc.Sink(step.Action, step.Config)
-		return ss, func() int64 { return ss.Records }, func() { s.pool.Put(step.Connector) }, nil
+		return ss, func() int64 { return ss.Records }, func() { s.pool.Put(step.Connector, step.Version) }, nil
 	}
 }
 

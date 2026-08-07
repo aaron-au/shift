@@ -30,6 +30,41 @@ func init() {
 		Summary: "a synchronous flow that must consume its whole stream before answering",
 		Fn:      checkSyncBlocking,
 	})
+	RegisterCheck(Check{
+		Code:    "connector-pin",
+		Summary: "a connector step with no pinned version runs whatever is newest",
+		Fn:      checkConnectorPin,
+	})
+}
+
+// checkConnectorPin reports steps that will resolve to "newest" at dispatch
+// (ADR-0047 §1).
+//
+// On a DRAFT that is expected and says so. On a PUBLISHED flow it means the
+// registry had nothing to pin — usually a connector nobody published, or a
+// name with a typo in it — and the consequence is the one pinning exists to
+// remove: the next release of that connector changes what this flow does,
+// without an edit, against live data.
+func checkConnectorPin(d *Document) []Notice {
+	var out []Notice
+	for _, p := range d.ConnectorPins() {
+		if p.Version != "" {
+			continue
+		}
+		out = append(out, Notice{
+			Code:     "connector-pin.unpinned",
+			Severity: SeverityWarn,
+			Title:    "This step is not pinned to a connector version",
+			Detail: fmt.Sprintf("The %q step runs whichever build of %q is newest when the task starts, "+
+				"so publishing a new version of it changes what this flow does with no edit here. "+
+				"Publishing pins every connector the registry knows about — this one it did not, "+
+				"which usually means %q has no published artifact, or the name is misspelt.",
+				p.StepID, p.Connector, p.Connector),
+			Step: p.StepID,
+			Docs: "docs/adr/0047-connector-versioning-and-retention.md",
+		})
+	}
+	return out
 }
 
 // checkAsyncResponse is the notice the developer asked for by name: a webhook

@@ -20,6 +20,10 @@ import (
 // nameRE restricts connector names to safe path components.
 var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
+// versionRE restricts pinned versions the same way (ADR-0047 §1): the string
+// reaches a cache path component on the way to the registry.
+var versionRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
+
 // Options tune the pool.
 type Options struct {
 	// Dir holds operator-provisioned connector binaries named
@@ -29,7 +33,7 @@ type Options struct {
 	// Locate resolves a connector to a VERIFIED executable path when Dir
 	// doesn't have it (wired to connstore.Ensure when a hub registry is
 	// configured). Optional.
-	Locate func(ctx context.Context, name string) (string, error)
+	Locate func(ctx context.Context, name, version string) (string, error)
 	// RequireSigned disables the Dir fallback entirely: every binary
 	// must come through Locate (SHIFT_REQUIRE_SIGNED).
 	RequireSigned bool
@@ -73,19 +77,33 @@ func New(opts Options) *Pool {
 	return p
 }
 
-// Get returns a live process for the named connector, spawning or
-// relaunching as needed. Callers must Put when done with it for this task.
-func (p *Pool) Get(ctx context.Context, name string) (*host.Process, error) {
+// Get returns a live process for the named connector at the pinned version,
+// spawning or relaunching as needed. Callers must Put the same name and
+// version when done with it for this task.
+//
+// An empty version means "whatever is newest", which is what a DRAFT flow
+// means (ADR-0047 §1). Published flows always arrive pinned.
+//
+// Processes are keyed by name AND version, because two published flows may
+// legitimately pin different builds of the same connector. Keying by name
+// alone would hand the second flow whichever build the first happened to
+// start — the exact silent-substitution the pin exists to prevent, moved from
+// the registry into the process pool.
+func (p *Pool) Get(ctx context.Context, name, version string) (*host.Process, error) {
 	if !nameRE.MatchString(name) {
 		return nil, fmt.Errorf("connpool: invalid connector name %q", name)
 	}
+	if version != "" && !versionRE.MatchString(version) {
+		return nil, fmt.Errorf("connpool: invalid connector version %q", version)
+	}
+	key := poolKey(name, version)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stopped {
 		return nil, errors.New("connpool: pool is closed")
 	}
 
-	if e, ok := p.entries[name]; ok {
+	if e, ok := p.entries[key]; ok {
 		// Reuse if the process still answers; otherwise relaunch.
 		hctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		err := e.proc.Health(hctx)
@@ -96,10 +114,10 @@ func (p *Pool) Get(ctx context.Context, name string) (*host.Process, error) {
 			return e.proc, nil
 		}
 		_ = e.proc.Close()
-		delete(p.entries, name)
+		delete(p.entries, key)
 	}
 
-	binary, err := p.locate(ctx, name)
+	binary, err := p.locate(ctx, name, version)
 	if err != nil {
 		return nil, err
 	}
@@ -108,15 +126,27 @@ func (p *Pool) Get(ctx context.Context, name string) (*host.Process, error) {
 		return nil, fmt.Errorf("connpool: launch %s: %w", name, err)
 	}
 	p.launches++
-	p.entries[name] = &entry{proc: proc, refs: 1, lastUsed: time.Now()}
+	p.entries[key] = &entry{proc: proc, refs: 1, lastUsed: time.Now()}
 	return proc, nil
+}
+
+// poolKey identifies one running connector build.
+func poolKey(name, version string) string {
+	if version == "" {
+		return name
+	}
+	return name + "@" + version
 }
 
 // locate finds the connector binary: operator Dir first (unless signed
 // artifacts are required), then the registry locator. Verification of
 // registry artifacts happens inside Locate (connstore) — a path
 // returned here is cleared to execute.
-func (p *Pool) locate(ctx context.Context, name string) (string, error) {
+func (p *Pool) locate(ctx context.Context, name, version string) (string, error) {
+	// The Dir fallback ignores the pinned version, deliberately: Dir is the
+	// local-trust dev path where an operator drops in a binary and vouches for
+	// it, and there is no version to check. A deployment that cares runs with
+	// SHIFT_REQUIRE_SIGNED, which removes this branch entirely.
 	if !p.opts.RequireSigned && p.opts.Dir != "" {
 		binary := filepath.Join(p.opts.Dir, "shift-connector-"+name)
 		if _, err := os.Stat(binary); err == nil {
@@ -124,7 +154,7 @@ func (p *Pool) locate(ctx context.Context, name string) (string, error) {
 		}
 	}
 	if p.opts.Locate != nil {
-		path, err := p.opts.Locate(ctx, name)
+		path, err := p.opts.Locate(ctx, name, version)
 		if err != nil {
 			return "", fmt.Errorf("connpool: connector %q: %w", name, err)
 		}
@@ -138,10 +168,10 @@ func (p *Pool) locate(ctx context.Context, name string) (string, error) {
 }
 
 // Put releases a task's use of the named connector.
-func (p *Pool) Put(name string) {
+func (p *Pool) Put(name, version string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if e, ok := p.entries[name]; ok && e.refs > 0 {
+	if e, ok := p.entries[poolKey(name, version)]; ok && e.refs > 0 {
 		e.refs--
 		e.lastUsed = time.Now()
 	}

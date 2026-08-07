@@ -77,6 +77,14 @@ type Step struct {
 	// Connector steps (source|sink).
 	Connector string `json:"connector,omitempty"`
 	Action    string `json:"action,omitempty"`
+	// Version pins the connector build this step runs (ADR-0047 §1).
+	//
+	// Empty in a DRAFT means "newest", which is what a draft should mean —
+	// it has no promise to keep. PUBLISHING fills it in, and from then on the
+	// flow runs the builds it was published against. Without that, publishing
+	// a new connector version silently changes behaviour for every flow using
+	// it, on the next task, against live data.
+	Version string `json:"version,omitempty"`
 	// Connection names a reusable Connection supplying this step's
 	// connection-level config — host, credentials, TLS (ADR-0034). Optional
 	// and additive: a step with inline Config and no Connection compiles
@@ -163,7 +171,7 @@ const (
 // runner can bind it exactly like a linear-form endpoint.
 func (s *Step) Endpoint() Endpoint {
 	return Endpoint{
-		Connector: s.Connector, Action: s.Action,
+		Connector: s.Connector, Action: s.Action, Version: s.Version,
 		Connection: s.Connection, Config: s.Config, Input: s.Input, Ack: s.Ack,
 	}
 }
@@ -267,8 +275,10 @@ func isReservedType(t string) bool {
 // optionally the reusable Connection supplying its connection-level settings
 // (ADR-0034).
 type Endpoint struct {
-	Connector  string          `json:"connector"`
-	Action     string          `json:"action"`
+	Connector string `json:"connector"`
+	Action    string `json:"action"`
+	// Version pins the connector build (ADR-0047 §1); see Step.Version.
+	Version    string          `json:"version,omitempty"`
 	Connection string          `json:"connection,omitempty"`
 	Config     json.RawMessage `json:"config,omitempty"`
 
@@ -429,6 +439,16 @@ func (d *Document) Validate() error {
 		// Built-ins (@webhook source, @discard sink) need no action.
 		if ep.Connector == "" || (ep.Action == "" && !IsBuiltinConnector(ep.Connector)) {
 			return fmt.Errorf("flow: %s needs connector and action", label)
+		}
+		if ep.Version != "" {
+			// A built-in is compiled into the runner: no artifact to pin
+			// (ADR-0047 §1).
+			if IsBuiltinConnector(ep.Connector) {
+				return fmt.Errorf("flow: %s: built-in connector %q takes no version", label, ep.Connector)
+			}
+			if !ConnectorVersionPattern.MatchString(ep.Version) {
+				return fmt.Errorf("flow: %s: version %q must match %s", label, ep.Version, ConnectorVersionPattern)
+			}
 		}
 		if ep.Connection == "" {
 			continue

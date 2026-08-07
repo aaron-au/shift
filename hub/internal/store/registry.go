@@ -164,6 +164,30 @@ func (s *Store) ResolveConnector(ctx context.Context, name, version, osName, arc
 	return cv, err
 }
 
+// LatestConnectorVersion reports the version a new pin should record
+// (ADR-0047 §1): the newest publish of this connector, yanked versions and
+// revoked keys excluded — fail closed, exactly as resolution does.
+//
+// Deliberately platform-independent. A pin says which BUILD a flow runs, and
+// the same version exists for every platform it was published for; which
+// os/arch artifact to fetch is a question for the runner that ends up with the
+// task, not for the person publishing the flow.
+func (s *Store) LatestConnectorVersion(ctx context.Context, name string) (string, error) {
+	var version string
+	err := s.pool.QueryRow(ctx,
+		`SELECT v.version
+		   FROM connector_versions v
+		   JOIN connectors c ON c.id = v.connector_id
+		   JOIN publisher_keys k ON k.id = v.publisher_key_id AND k.revoked_at IS NULL
+		  WHERE c.account_id = $1 AND c.name = $2 AND v.yanked_at IS NULL
+		  ORDER BY v.created_at DESC LIMIT 1`,
+		accountID(ctx), name).Scan(&version)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return version, err
+}
+
 // ConnectorVersions lists every published version of one connector (all
 // os/arch), newest first, including yanked ones (the Yanked field is set) so
 // the marketplace can show full history. Excludes revoked-key rows only for

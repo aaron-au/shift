@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/aaron-au/shift/pkg/flowdoc"
 )
 
 // ErrNotFound is a missing flow or task.
@@ -57,6 +59,17 @@ func (s *Store) DeployFlow(ctx context.Context, name string, document json.RawMe
 // PublishFlow marks a version as the flow's published version — the one
 // version-0 execution and the scheduler run. Publishing an older
 // version is a rollback.
+//
+// It also PINS the version's connector steps (ADR-0047 §1): every unpinned
+// registry connector resolves to a concrete version, and the rewritten
+// document is stored. A published flow runs the builds it was published
+// against for as long as it exists, so publishing a connector can no longer
+// change what a flow does on its next task.
+//
+// The rewrite happens in the SAME transaction as the status flip. Pinning and
+// publishing separately would leave a window where a flow is published and
+// unpinned — which is precisely the state this exists to make unreachable —
+// and a crash in that window would leave it there permanently.
 func (s *Store) PublishFlow(ctx context.Context, name string, version int) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -65,23 +78,81 @@ func (s *Store) PublishFlow(ctx context.Context, name string, version int) error
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var flowID string
+	var raw []byte
 	err = tx.QueryRow(ctx,
 		`UPDATE flow_versions v SET status = 'published'
 		 FROM flows f
 		 WHERE v.flow_id = f.id AND f.account_id = $1 AND f.name = $2 AND v.version = $3
-		 RETURNING f.id`,
-		accountID(ctx), name, version).Scan(&flowID)
+		 RETURNING f.id, v.document`,
+		accountID(ctx), name, version).Scan(&flowID, &raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return err
 	}
+	pinned, err := s.pinDocument(ctx, raw)
+	if err != nil {
+		return err
+	}
+	if pinned != nil {
+		if _, err := tx.Exec(ctx,
+			`UPDATE flow_versions SET document = $3 WHERE flow_id = $1 AND version = $2`,
+			flowID, version, pinned); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE flows SET published_version = $2 WHERE id = $1`, flowID, version); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// pinDocument resolves every unpinned connector step to a concrete version,
+// returning the rewritten document (nil when nothing needed pinning).
+//
+// A connector the REGISTRY does not know is left unpinned rather than refused.
+// The registry is optional — a self-hosted deployment may provision connector
+// binaries into the runner's directory and never publish an artifact — and a
+// hub that refused to publish those flows would make the registry mandatory by
+// accident. What it must not be is silent: `connector-pin` (ADR-0042 §7)
+// raises a notice naming every step still resolving to "newest", and that is
+// where an author sees a typo or a connector they forgot to publish.
+func (s *Store) pinDocument(ctx context.Context, raw []byte) ([]byte, error) {
+	doc, err := flowdoc.Parse(raw)
+	if err != nil {
+		// A stored document that no longer parses — an older schema, a
+		// hand-edited row — is left exactly as it is. Publishing was possible
+		// before pinning existed and must stay possible, or adding this would
+		// have quietly made a class of existing rows unpublishable. The
+		// document is still readable for repair, and /graph already answers
+		// 422 for it.
+		//nolint:nilerr // deliberate: an unparseable legacy row publishes unpinned rather than becoming unpublishable
+		return nil, nil
+	}
+	before := doc.ConnectorPins()
+	if err := doc.PinConnectors(func(connector string) (string, error) {
+		v, err := s.LatestConnectorVersion(ctx, connector)
+		if errors.Is(err, ErrNotFound) {
+			return "", nil // nothing published to pin; stays unpinned, reported by review
+		}
+		return v, err
+	}); err != nil {
+		return nil, err
+	}
+	after := doc.ConnectorPins()
+	changed := false
+	for i := range after {
+		if before[i].Version != after[i].Version {
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		return nil, nil
+	}
+	return json.Marshal(doc)
 }
 
 // GetFlow returns the flow record and the requested version's document.

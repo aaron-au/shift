@@ -68,10 +68,16 @@ func New(opts Options) (*Store, error) {
 	return s, nil
 }
 
-// Ensure returns a verified executable path for the named connector,
-// fetching from the hub registry on cache miss. Safe for concurrent use.
-func (s *Store) Ensure(ctx context.Context, name string) (string, error) {
-	m, err := s.opts.Client.ResolveConnector(ctx, name, "")
+// Ensure returns a verified executable path for the named connector at the
+// pinned version, fetching from the hub registry on cache miss. Safe for
+// concurrent use.
+//
+// An empty version resolves to newest, which is what an unpinned DRAFT flow
+// means (ADR-0047 §1). A published flow always arrives pinned, so what runs is
+// the build the flow was published against rather than whatever was newest at
+// the moment the task dispatched.
+func (s *Store) Ensure(ctx context.Context, name, version string) (string, error) {
+	m, err := s.opts.Client.ResolveConnector(ctx, name, version)
 	if err != nil {
 		return "", err
 	}

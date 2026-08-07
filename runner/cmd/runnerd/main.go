@@ -101,7 +101,7 @@ func main() {
 	// Hub connection first (when configured): the connector locator and
 	// the lease intake both hang off the registered client.
 	var client *hubclient.Client
-	var locate func(ctx context.Context, name string) (string, error)
+	var locate func(ctx context.Context, name, version string) (string, error)
 	// Held so the renewal loop can start alongside the lease loop, on the
 	// context SIGTERM already cancels.
 	var renewIdentity *hubclient.Identity
