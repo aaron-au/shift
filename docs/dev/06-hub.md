@@ -535,6 +535,54 @@ recent tasks with attempt/telemetry drill-down, runners, registry,
 secret names. Login via OIDC redirect or break-glass token prompt
 (sessionStorage). The page is static; every data call is authenticated.
 
+## Management windows
+
+Everything the hub owns is now administrable from the shell rather than only
+from `curl`. Four surfaces, all plain tables plus one inline form — this is
+administration, not a canvas:
+
+| Window | Covers |
+|---|---|
+| **Connections** | reusable connector config (ADR-0034); credentials stay `{"$secret":…}` references |
+| **Gateways** | register (one-time install token), adoption state, **config drift**, certificate expiry, re-adopt, trusted proxies (ADR-0049) |
+| **Routes** | public path → flow, caller token, runner selector, source allowlist, body cap (ADR-0038 §5) |
+| **Runners** | hub-asserted labels, certificate expiry, revoke, registration tokens (ADR-0041/0044) |
+
+Three details are load-bearing rather than cosmetic:
+
+- **One-time credentials get a surface, not an `alert()`.** A registration
+  token, a gateway install token and a route's caller token are each served
+  exactly once; a dismissed dialog is an unrecoverable loss of the only copy.
+  They render into `#once-host` with a copy button and stay until dismissed.
+- **Gateway drift is the number to read.** `config_version` is what the hub
+  intends, `pushed_version` is what the gateway last acknowledged, and the two
+  differ exactly while a push is outstanding or failing.
+- **Certificate expiry is shown in days.** An expired runner certificate looks
+  identical to a runner that simply stopped polling, so the window that lists
+  runners is the right place to distinguish them.
+
+`store.Runner` grew `labels` and `cert_not_after` for this: a manager that
+writes a value it cannot read back is a guess with a button on it.
+
+**Marketplace** gained the retention half of ADR-0047: **Used by** lists the
+published flows pinning a version (and whether each is running now or is a
+rollback target), and **Housekeeping** reports unreferenced builds before
+deleting any.
+
+**Builder** now shows what a step actually runs: a **connection** picker
+(filtered to connections for that connector — one for another connector is
+config that cannot apply) and the **pinned version**, read-only with an unpin
+action. The pin is recorded by publishing, never typed: a free-text version
+would be a claim about an artifact nobody checked, and the registry is the only
+thing that knows which builds exist.
+
+The serialiser fix matters more than the pickers. `cleanStep` was dropping
+`connection` — so opening a flow in the builder and redeploying it silently
+stripped its host and credentials, moving the step back to inline config it did
+not have. `version` would have gone the same way. `TestBuilderSerialiserCarries
+EveryStoredField` now guards the whole set, because this is not an editing bug
+class, it is silent data loss that reads as "the flow changed behaviour".
+
 ## Testing
 
 `pgtest.DSN(t)` gives every test a fresh database: against

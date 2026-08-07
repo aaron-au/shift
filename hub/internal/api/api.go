@@ -497,9 +497,28 @@ func (a *api) listFlows(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"flows": flows})
 }
 
+// getFlow returns a flow and one version's document.
+//
+// The default stays the PUBLISHED version — that is what "the flow" means to
+// anything running it — but a design-time caller wants a different one.
+// `?version=latest` opens the newest draft, which is what the builder needs:
+// a flow deployed and not yet published could otherwise not be opened for
+// editing at all, and the error said "no published version" to somebody who
+// was trying to create the first one. `?version=N` opens a specific one, so
+// the version picker can show what it is about to roll back to.
 func (a *api) getFlow(w http.ResponseWriter, r *http.Request) {
-	f, doc, err := a.st.GetFlow(r.Context(), r.PathValue("name"), 0)
-	if errors.Is(err, store.ErrNotFound) {
+	name := r.PathValue("name")
+	version, err := a.flowVersionParam(r, name)
+	if errors.Is(err, errBadVersionParam) {
+		writeErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	if err != nil {
+		writeLookupErr(w, err)
+		return
+	}
+	f, doc, err := a.st.GetFlow(r.Context(), name, version)
+	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrNotPublished) {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
@@ -509,6 +528,32 @@ func (a *api) getFlow(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"flow": f, "document": json.RawMessage(doc)})
 }
+
+// flowVersionParam resolves the ?version= selector: absent = published (0),
+// "latest" = the newest version whether or not it is published, or an explicit
+// number.
+func (a *api) flowVersionParam(r *http.Request, name string) (int, error) {
+	raw := r.URL.Query().Get("version")
+	switch raw {
+	case "", "0", "published":
+		return 0, nil
+	case "latest":
+		f, err := a.st.FlowByName(r.Context(), name)
+		if err != nil {
+			return 0, err
+		}
+		return f.LatestVersion, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < 0 {
+		return 0, fmt.Errorf("%w: %q", errBadVersionParam, raw)
+	}
+	return v, nil
+}
+
+// errBadVersionParam separates "you asked for a version that is not a version"
+// (422 — the request is wrong) from "that version does not exist" (404).
+var errBadVersionParam = errors.New(`version must be a number, "latest" or "published"`)
 
 // getFlowGraph returns the published flow's render graph (nodes + typed
 // outcome edges) for the studio — data-free, no payload.

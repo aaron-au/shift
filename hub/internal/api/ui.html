@@ -78,6 +78,28 @@
   .tag.cat{background:color-mix(in srgb,var(--n-transform) 22%,transparent);color:var(--n-transform)}
   .mvlist td{font-size:.78rem}
   .mvlist .yk{color:var(--warn)}
+  /* --- management windows (connections, gateways, routes, runners) --- */
+  .pill{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent);
+        border-radius:6px;padding:.05rem .4rem;font-size:.7rem;white-space:nowrap}
+  .rowacts{white-space:nowrap;text-align:right}
+  .rowacts button{padding:.1rem .45rem;font-size:.72rem;margin-left:.25rem}
+  .warn{color:var(--warn);font-size:.78rem;font-family:ui-monospace,Menlo,monospace}
+  .bad{color:var(--bad);font-size:.78rem;font-weight:600}
+  .good{color:var(--ok);font-size:.78rem}
+  .mform{background:var(--input-bg);border:1px solid var(--line);border-radius:10px;padding:.7rem;margin:.5rem 0;
+         display:flex;flex-direction:column;gap:.4rem}
+  .mform h4{margin:0 0 .2rem;font-size:.85rem}
+  .mrow{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+  .mrow label{min-width:8.5rem;font-size:.76rem;color:var(--dim)}
+  .mform input,.mform select,.mform textarea{background:var(--canvas);color:var(--text);border:1px solid var(--line);
+         border-radius:6px;padding:.28rem .45rem;font-size:.8rem;flex:1;min-width:8rem}
+  .mform textarea{font-family:ui-monospace,Menlo,monospace;min-height:5rem}
+  /* A one-time secret is shown once and never served again, so it gets a
+     surface that looks like something to copy rather than something to read. */
+  .once{border:1px solid var(--warn);background:color-mix(in srgb,var(--warn) 10%,transparent);
+        border-radius:10px;padding:.7rem;margin:.5rem 0}
+  .once code{display:block;font-family:ui-monospace,Menlo,monospace;font-size:.8rem;word-break:break-all;
+        background:var(--canvas);border-radius:6px;padding:.4rem;margin:.35rem 0;user-select:all}
   .ops{background:var(--input-bg);border-radius:8px;margin:.3rem 0 .6rem;padding:.5rem .7rem;font-size:.78rem}
   .ops td{border:0;padding:.15rem .5rem;color:var(--dim)} .ops td:first-child{color:var(--text)}
   #login{max-width:420px;margin:4rem auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1.5rem;display:none}
@@ -163,6 +185,9 @@
   </div>
   <div id="dock"></div>
   <div id="desktop">
+    <!-- Credentials the hub serves exactly once land here rather than in an
+         alert(): a dismissed dialog is an unrecoverable loss of the only copy. -->
+    <div id="once-host" style="position:absolute;left:1rem;right:1rem;top:.5rem;z-index:9999"></div>
     <!-- Each tool is a window; render targets keep their original ids. -->
     <div class="win" id="win-overview" data-title="Overview" data-icon="▦">
       <div class="titlebar"><span class="wtitle">Overview</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
@@ -195,13 +220,52 @@
     </div>
     <div class="win" id="win-runners" data-title="Runners" data-icon="◎">
       <div class="titlebar"><span class="wtitle">Runners</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
-      <div class="winbody"><table><thead><tr><th>Name</th><th>Registered</th><th>Last seen</th></tr></thead><tbody id="runners"></tbody></table></div>
+      <div class="winbody">
+        <div class="gtoolbar"><button onclick="newRunnerToken()">+ Registration token</button>
+          <span class="hint">single-use — one per runner</span></div>
+        <table><thead><tr><th>Name</th><th>Labels</th><th>Certificate</th><th>Last seen</th><th></th></tr></thead><tbody id="runners"></tbody></table>
+        <div class="hint">Labels are asserted HERE, never by the runner (ADR-0041): a runner that could label itself could claim production traffic.</div>
+      </div>
+      <div class="resize"></div>
+    </div>
+    <div class="win" id="win-connections" data-title="Connections" data-icon="🔌">
+      <div class="titlebar"><span class="wtitle">Connections</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
+      <div class="winbody">
+        <div class="gtoolbar"><button onclick="editConnection('')">+ New connection</button>
+          <span class="hint">reusable connector config — host, credentials, TLS (ADR-0034)</span></div>
+        <table><thead><tr><th>Name</th><th>Connector</th><th>v</th><th>Updated</th><th></th></tr></thead><tbody id="connections"></tbody></table>
+        <div id="conn-editor"></div>
+        <div class="hint">Credentials belong in Secrets and are referenced as {"$secret":"name"} — the hub stores the reference, the runner resolves it.</div>
+      </div>
+      <div class="resize"></div>
+    </div>
+    <div class="win" id="win-gateways" data-title="Gateways" data-icon="🛡">
+      <div class="titlebar"><span class="wtitle">Gateways</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
+      <div class="winbody">
+        <div class="gtoolbar"><button onclick="newGateway()">+ Register gateway</button>
+          <span class="hint">optional — needed only for inbound web traffic (ADR-0038)</span></div>
+        <table><thead><tr><th>Name</th><th>URL</th><th>State</th><th>Config</th><th>Certificate</th><th></th></tr></thead><tbody id="gateways"></tbody></table>
+        <div id="gw-detail"></div>
+        <div class="hint">Registering mints a one-time install token. The gateway generates its own key; the hub dials out and learns it (ADR-0049).</div>
+      </div>
+      <div class="resize"></div>
+    </div>
+    <div class="win" id="win-routes" data-title="Routes" data-icon="🌐">
+      <div class="titlebar"><span class="wtitle">Ingress routes</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
+      <div class="winbody">
+        <div class="gtoolbar"><button onclick="editRouteForm()">+ New route</button>
+          <span class="hint">a public path, the flow it runs, and the policy around it</span></div>
+        <table><thead><tr><th>Method</th><th>Path</th><th>Flow</th><th>Gateway</th><th>Caller</th><th>Selector</th><th></th></tr></thead><tbody id="routes"></tbody></table>
+        <div id="route-editor"></div>
+        <div class="hint">Ingress policy lives here, not in the flow: rotating a caller's token should never mean editing a flow.</div>
+      </div>
       <div class="resize"></div>
     </div>
     <div class="win" id="win-connectors" data-title="Marketplace" data-icon="🛒">
       <div class="titlebar"><span class="wtitle">Connector marketplace</span><button class="wbtn" data-act="min">–</button><button class="wbtn" data-act="close">×</button></div>
       <div class="winbody">
         <div class="gtoolbar"><input id="mkt-search" placeholder="search name, category, tag…" oninput="renderMarketplace()">
+          <button class="ghost" onclick="collectConnectors()" title="Report unreferenced builds (ADR-0047 §2)">Housekeeping</button>
           <span class="hint" id="mkt-count"></span></div>
         <div class="mgrid" id="connectors"></div>
         <div id="mkt-detail"></div>
@@ -437,7 +501,12 @@ async function boot() {
 
 async function refresh() {
   try {
-    const [ov, flows, tasks, runners, conns, secrets, scheds, execs, audit, usage] = await Promise.all([
+    // Each management surface tolerates its own absence: a hub with no KEK
+    // serves no secrets, and one with no gateway CA serves no gateways. A
+    // whole dashboard that went blank because one optional subsystem is not
+    // configured would be the wrong failure.
+    const [ov, flows, tasks, runners, conns, secrets, scheds, execs, audit, usage,
+           connections, gateways, routes] = await Promise.all([
       api('/api/v1/stats'), api('/api/v1/flows'), api('/api/v1/tasks?limit=30'),
       api('/api/v1/runners'), api('/api/v1/connectors'),
       api('/api/v1/secrets').catch(() => ({secrets: []})),
@@ -445,14 +514,31 @@ async function refresh() {
       api('/api/v1/executions?limit=20').catch(() => ({executions: []})),
       api('/api/v1/audit?limit=100').catch(() => ({audit: []})),
       api('/api/v1/usage').catch(() => null),
+      api('/api/v1/connections').catch(() => ({connections: []})),
+      api('/api/v1/gateways').catch(() => ({gateways: []})),
+      api('/api/v1/routes').catch(() => ([])),
     ]);
     if (ov.oidc_login) $('oidcbox').style.display = 'block';
+    window._flows = flows.flows || [];
     renderOverview(ov); renderFlows(flows.flows || [], scheds.schedules || []);
     renderTasks(tasks.tasks || []); renderRunners(runners.runners || []);
     renderConnectors(conns.connectors || []); renderSecrets(secrets.secrets || []);
     renderExecutions(execs.executions || []); renderAudit(audit.audit || []);
     renderUsage(usage);
+    renderConnections(connections.connections || []);
+    // Gateways are rendered before routes: a route names its gateway by id,
+    // and the routes table resolves that to a name from this list.
+    renderGateways(asList(gateways, 'gateways'));
+    renderRoutes(asList(routes, 'routes'));
   } catch (e) { /* auth handled in api() */ }
+}
+
+// asList normalises the two shapes the API uses for a collection — a bare
+// array, or an object with one named field. Both are honest; the studio should
+// not have to remember which endpoint chose which.
+function asList(v, field) {
+  if (Array.isArray(v)) return v;
+  return (v && v[field]) || [];
 }
 
 function stat(v, label) { return `<div class="stat"><b>${esc(v)}</b><span>${esc(label)}</span></div>`; }
@@ -558,10 +644,69 @@ async function toggleTask(row, id) {
 }
 
 function renderRunners(rs) {
-  $('runners').innerHTML = rs.map(r =>
-    `<tr><td>${esc(r.name)}</td><td class="mono">${new Date(r.registered_at).toLocaleString()}</td>
-     <td class="mono">${r.last_seen_at ? new Date(r.last_seen_at).toLocaleTimeString() : '—'}</td></tr>`
-  ).join('') || '<tr><td colspan="3" class="hint">no runners registered</td></tr>';
+  window._runnerLabels = Object.fromEntries(rs.map(r => [r.id, r.labels || {}]));
+  $('runners').innerHTML = rs.map(r => {
+    const labels = Object.entries(r.labels || {});
+    // A runner with no certificate is authenticating with its bearer secret
+    // (ADR-0009); a gateway with none has not been adopted yet.
+    const cert = certCell(r.cert_not_after, 'bearer secret');
+    return `<tr><td>${esc(r.name)}<div class="hint mono">${esc(r.id.slice(0, 8))}</div></td>
+     <td>${labels.length ? labels.map(([k, v]) => `<span class="pill mono">${esc(k)}=${esc(v)}</span>`).join(' ') : '<span class="hint">none</span>'}</td>
+     <td>${cert}</td>
+     <td class="mono">${r.last_seen_at ? new Date(r.last_seen_at).toLocaleTimeString() : '—'}</td>
+     <td class="rowacts"><button class="ghost" onclick="editLabels('${escJS(r.id)}','${escJS(r.name)}')">Labels</button>
+       <button class="ghost" onclick="revokeRunner('${escJS(r.id)}','${escJS(r.name)}')">Revoke</button></td></tr>`;
+  }).join('') || '<tr><td colspan="5" class="hint">no runners registered</td></tr>';
+}
+
+// certCell states expiry in the terms an operator acts on. A certificate that
+// has quietly run out looks identical to a runner that stopped polling, so the
+// window that shows runners is the right place to say which it is.
+function certCell(notAfter, absent) {
+  if (!notAfter) return `<span class="hint">${esc(absent || 'none')}</span>`;
+  const days = Math.floor((new Date(notAfter) - Date.now()) / 86400000);
+  if (days < 0) return `<span class="bad">EXPIRED</span>`;
+  const cls = days <= 7 ? 'warn' : 'mono';
+  return `<span class="${cls}">${days}d left</span>`;
+}
+
+async function editLabels(id, name) {
+  // Prompted as key=value pairs because that is how a selector is written and
+  // how an operator says it out loud.
+  const cur = (window._runnerLabels || {})[id] || {};
+  const asText = Object.entries(cur).map(([k, v]) => k + '=' + v).join(', ');
+  const raw = prompt(`Labels for ${name} — comma-separated key=value.\n\nThese decide which routes and gateways this runner is eligible for.`, asText);
+  if (raw === null) return;
+  const labels = {};
+  for (const part of raw.split(',')) {
+    const t = part.trim(); if (!t) continue;
+    const i = t.indexOf('=');
+    if (i < 1) { alert(`"${t}" is not key=value`); return; }
+    labels[t.slice(0, i).trim()] = t.slice(i + 1).trim();
+  }
+  try {
+    await api('/api/v1/runners/' + encodeURIComponent(id) + '/labels',
+      {method: 'PUT', body: JSON.stringify({labels})});
+    refresh();
+  } catch (e) { alert('labels: ' + e.message); }
+}
+
+// revokeRunner is deletion, and under mTLS deletion IS revocation (ADR-0044):
+// the identity the certificate carries stops resolving. Worth spelling out in
+// the confirmation, because "delete" reads as tidying up a list.
+async function revokeRunner(id, name) {
+  if (!confirm(`Revoke ${name}?\n\nIts credential stops being honoured immediately and any task it still holds will be re-dispatched when the lease expires.`)) return;
+  try { await api('/api/v1/runners/' + encodeURIComponent(id), {method: 'DELETE'}); refresh(); }
+  catch (e) { alert('revoke: ' + e.message); }
+}
+
+async function newRunnerToken() {
+  try {
+    const r = await api('/api/v1/runner-tokens', {method: 'POST', body: '{}'});
+    // Shown once. It is single-use, so a second runner needs a second token.
+    showOnce('Runner registration token', r.token,
+      'Single-use. Hand it to the runner as SHIFT_HUB_REG_TOKEN — an environment variable, never a flag, so it stays out of process listings.');
+  } catch (e) { alert('token: ' + e.message); }
 }
 
 // renderConnectors caches the latest registry list, then paints the
@@ -615,13 +760,61 @@ async function openVersions(name) {
       const btn = yanked
         ? `<button class="ghost" onclick="yankVersion('${escJS(name)}','${escJS(v.version)}','${escJS(v.os)}','${escJS(v.arch)}',false)">Restore</button>`
         : `<button class="ghost" onclick="yankVersion('${escJS(name)}','${escJS(v.version)}','${escJS(v.os)}','${escJS(v.arch)}',true)">Yank</button>`;
+      const uses = `<button class="ghost" onclick="showReferences('${escJS(name)}','${escJS(v.version)}')">Used by</button>`;
       return `<tr><td>${esc(v.version)}</td><td class="mono">${esc(v.os)}/${esc(v.arch)}</td>
-        <td class="mono">${(v.size_bytes / 1048576).toFixed(1)} MiB</td><td>${state}</td><td>${btn}</td></tr>`;
+        <td class="mono">${(v.size_bytes / 1048576).toFixed(1)} MiB</td><td>${state}</td><td class="rowacts">${uses}${btn}</td></tr>`;
     }).join('');
     box.innerHTML = `<div class="ops"><b>${esc(name)}</b> — versions
       <table class="mvlist"><thead><tr><th>Version</th><th>Platform</th><th>Size</th><th>State</th><th></th></tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
+      <tbody>${rows}</tbody></table>
+      <div class="hint" style="margin:.4rem 0 0">Yank withdraws a version from NEW pins; flows already pinned to it keep running (ADR-0047 §3). "Used by" lists those flows.</div></div>`;
   } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+// showReferences answers "who would this break?" by name. A count is not an
+// answer when the next step is telling someone (ADR-0047 §2).
+async function showReferences(name, version) {
+  const box = $('mkt-detail');
+  try {
+    const r = await api(`/api/v1/connectors/${encodeURIComponent(name)}/versions/${encodeURIComponent(version)}/references`);
+    const refs = r.references || [];
+    box.innerHTML = `<div class="ops"><b>${esc(name)} ${esc(version)}</b> — used by
+      ${refs.length ? `<table class="mvlist"><thead><tr><th>Flow</th><th>Version</th><th>Steps</th><th></th></tr></thead><tbody>` +
+        refs.map(f => `<tr><td>${esc(f.flow)}</td><td class="mono">v${esc(f.version)}</td>
+          <td class="mono">${esc((f.steps || []).join(', '))}</td>
+          <td>${f.current ? '<span class="chip published">running now</span>' : '<span class="hint">rollback target</span>'}</td></tr>`).join('') +
+        `</tbody></table>`
+        : '<div class="hint" style="margin:.3rem 0 0">No published flow pins this version.</div>'}
+      <div class="mrow" style="margin-top:.4rem"><button class="ghost" onclick="openVersions('${escJS(name)}')">← versions</button></div></div>`;
+  } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+// collectConnectors reports first and only deletes when told to. The report is
+// not a formality: publisher private keys are never held server-side, so an
+// artifact deleted by mistake cannot be regenerated from anything the hub has.
+async function collectConnectors() {
+  const box = $('mkt-detail');
+  try {
+    const r = await api('/api/v1/connectors/collect', {method: 'POST'});
+    const vs = r.versions || [];
+    if (!vs.length) {
+      box.innerHTML = `<div class="ops">Nothing to collect. Every stored build is either pinned by a published flow, or within the latest-and-previous floor kept for rollback.</div>`;
+      return;
+    }
+    box.innerHTML = `<div class="ops"><b>${vs.length} unreferenced build${vs.length === 1 ? '' : 's'}</b> — no published flow pins these, and they are below the rollback floor
+      <table class="mvlist"><tbody>${vs.map(v => `<tr><td>${esc(v.name)}</td><td class="mono">${esc(v.version)}</td><td class="mono">${esc(v.os)}/${esc(v.arch)}</td></tr>`).join('')}</tbody></table>
+      <div class="hint">Deleting a signed artifact is irreversible here: the publisher's private key is never server-side, so the hub cannot re-create one.</div>
+      <div class="mrow"><button onclick="applyCollect()">Delete these ${vs.length}</button>
+        <button class="ghost" onclick="document.getElementById('mkt-detail').innerHTML=''">Cancel</button></div></div>`;
+  } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+async function applyCollect() {
+  try {
+    const r = await api('/api/v1/connectors/collect?apply=1', {method: 'POST'});
+    $('mkt-detail').innerHTML = `<div class="ops">Collected ${(r.versions || []).length} build(s). Audited by name, not by count.</div>`;
+    refresh();
+  } catch (e) { $('mkt-detail').innerHTML = `<div class="err">${esc(e.message)}</div>`; }
 }
 
 // yankVersion withdraws (or restores) one artifact version, then refreshes the
@@ -633,6 +826,251 @@ async function yankVersion(name, version, os, arch, yank) {
        body: JSON.stringify({os, arch, yanked: yank})});
     openVersions(name);
   } catch (e) { alert('yank failed: ' + e.message); }
+}
+
+// --- management windows: connections, gateways, routes -----------------------
+//
+// Every one of these exists because the hub already owned the state and the
+// only way to touch it was curl. They are deliberately plain tables plus one
+// inline form: this is administration, not a canvas.
+
+// showOnce renders a credential the hub will never serve again.
+//
+// Given a surface of its own rather than an alert() because that is the whole
+// contract: a registration token, an install token and a caller token are all
+// returned exactly once, and a dismissed dialog is an unrecoverable loss of
+// the only copy.
+function showOnce(title, value, detail) {
+  const box = document.createElement('div');
+  box.className = 'once';
+  box.innerHTML = `<b>${esc(title)}</b> — shown once, never served again
+    <code>${esc(value)}</code>
+    <div class="hint" style="margin:0">${esc(detail || '')}</div>`;
+  const btn = document.createElement('button');
+  btn.className = 'ghost'; btn.textContent = 'Copy';
+  btn.onclick = () => { navigator.clipboard?.writeText(value); btn.textContent = 'Copied'; };
+  const dis = document.createElement('button');
+  dis.className = 'ghost'; dis.textContent = 'Dismiss';
+  dis.onclick = () => box.remove();
+  box.append(btn, dis);
+  const host = $('once-host');
+  if (host) { host.prepend(box); } else { document.querySelector('#desktop').prepend(box); }
+}
+
+// --- connections (ADR-0034) ---
+function renderConnections(cs) {
+  window._connections = cs;
+  $('connections').innerHTML = cs.map(c =>
+    `<tr><td class="mono">${esc(c.name)}</td><td>${esc(c.connector)}</td><td class="mono">${esc(c.version)}</td>
+     <td class="mono">${new Date(c.updated_at).toLocaleString()}</td>
+     <td class="rowacts"><button class="ghost" onclick="editConnection('${escJS(c.name)}')">Edit</button>
+       <button class="ghost" onclick="deleteConnection('${escJS(c.name)}')">Delete</button></td></tr>`
+  ).join('') || '<tr><td colspan="5" class="hint">no connections — a flow can still hold its config inline</td></tr>';
+}
+
+async function editConnection(name) {
+  const el = $('conn-editor');
+  let cur = {name: '', connector: '', config: {}};
+  if (name) {
+    try { cur = await api('/api/v1/connections/' + encodeURIComponent(name)); }
+    catch (e) { alert('load: ' + e.message); return; }
+  }
+  const options = (window._conns || []).map(c => c.name)
+    .map(n => `<option${n === cur.connector ? ' selected' : ''}>${esc(n)}</option>`).join('');
+  el.innerHTML = `<div class="mform">
+    <h4>${name ? 'Edit ' + esc(name) : 'New connection'}</h4>
+    <div class="mrow"><label>name</label>
+      <input id="cn-name" value="${esc(cur.name)}" ${name ? 'readonly' : 'placeholder="erp-prod"'}></div>
+    <div class="mrow"><label>connector</label>
+      <select id="cn-connector"><option value="">— choose —</option>${options}</select></div>
+    <div class="mrow" style="align-items:flex-start"><label>config (JSON)</label>
+      <textarea id="cn-config">${esc(JSON.stringify(cur.config || {}, null, 2))}</textarea></div>
+    <div class="hint" style="margin:0">Credentials go in Secrets and are referenced here as {"$secret":"name"}. The hub stores the reference; only the runner ever resolves it.</div>
+    <div class="mrow"><label></label><button onclick="saveConnection()">Save</button>
+      <button class="ghost" onclick="document.getElementById('conn-editor').innerHTML=''">Cancel</button>
+      <span class="err" id="cn-err"></span></div>
+  </div>`;
+}
+
+async function saveConnection() {
+  const name = $('cn-name').value.trim();
+  const connector = $('cn-connector').value;
+  let config;
+  try { config = JSON.parse($('cn-config').value || '{}'); }
+  catch (e) { $('cn-err').textContent = 'config: invalid JSON'; return; }
+  if (!name || !connector) { $('cn-err').textContent = 'name and connector are required'; return; }
+  try {
+    await api('/api/v1/connections/' + encodeURIComponent(name),
+      {method: 'PUT', body: JSON.stringify({connector, config})});
+    $('conn-editor').innerHTML = ''; refresh();
+  } catch (e) { $('cn-err').textContent = e.message; }
+}
+
+async function deleteConnection(name) {
+  // A connection is referenced BY NAME from flow documents, so deleting one
+  // breaks every flow that names it — at its next task, not here.
+  if (!confirm(`Delete connection ${name}?\n\nFlows referencing it by name will fail when they next run.`)) return;
+  try { await api('/api/v1/connections/' + encodeURIComponent(name), {method: 'DELETE'}); refresh(); }
+  catch (e) { alert('delete: ' + e.message); }
+}
+
+// --- gateways (ADR-0049) ---
+function renderGateways(gs) {
+  window._gateways = gs;
+  $('gateways').innerHTML = gs.map(g => {
+    const state = g.adopted_at
+      ? '<span class="good">adopted</span>'
+      : (g.token_expires_at && new Date(g.token_expires_at) < Date.now()
+          ? '<span class="bad">token expired</span>'
+          : '<span class="warn">awaiting install</span>');
+    // Drift is the number that matters: what the hub intends versus what the
+    // gateway last acknowledged. They differ exactly while a push is
+    // outstanding or failing.
+    const drift = g.config_version > g.pushed_version
+      ? `<span class="warn">v${esc(g.pushed_version)} → v${esc(g.config_version)}</span>`
+      : `<span class="mono">v${esc(g.config_version)}</span>`;
+    return `<tr><td>${esc(g.name)}</td><td class="mono">${esc(g.url)}</td><td>${state}</td>
+      <td>${drift}${g.last_push_error ? `<div class="err">${esc(clip(g.last_push_error, 60))}</div>` : ''}</td>
+      <td>${certCell(g.cert_not_after, 'not issued')}</td>
+      <td class="rowacts">
+        <button class="ghost" onclick="gatewayProxies('${escJS(g.id)}')">Proxies</button>
+        <button class="ghost" onclick="rotateGateway('${escJS(g.id)}','${escJS(g.name)}')">Re-adopt</button>
+        <button class="ghost" onclick="deleteGateway('${escJS(g.id)}','${escJS(g.name)}')">Delete</button>
+      </td></tr>`;
+  }).join('') || '<tr><td colspan="6" class="hint">no gateways — a pull-only deployment needs none, and carries no inbound attack surface</td></tr>';
+}
+
+async function newGateway() {
+  const name = prompt('Gateway name (how you will refer to it):');
+  if (!name) return;
+  const url = prompt('Control-listener URL the HUB will dial (https://gw.example:8444):', 'https://');
+  if (!url) return;
+  try {
+    const g = await api('/api/v1/gateways', {method: 'POST', body: JSON.stringify({name: name.trim(), url: url.trim()})});
+    showOnce('Gateway install token', g.install_token,
+      'Deploy the gateway with SHIFT_GATEWAY_INSTALL_TOKEN set to this. It is single-use and short-lived: the gateway generates its own key, the hub dials out and learns it, and both sides burn the token.');
+    refresh();
+  } catch (e) { alert('register: ' + e.message); }
+}
+
+async function rotateGateway(id, name) {
+  if (!confirm(`Re-adopt ${name}?\n\nThe current identity stops being trusted and a NEW install token is issued. Use this when the gateway lost its state directory or its key may have been copied.`)) return;
+  try {
+    const r = await api('/api/v1/gateways/' + encodeURIComponent(id) + '/rotate', {method: 'POST'});
+    showOnce('New gateway install token', r.install_token,
+      'The gateway serves nothing until it pairs again with this token.');
+    refresh();
+  } catch (e) { alert('rotate: ' + e.message); }
+}
+
+async function deleteGateway(id, name) {
+  // Deleting the record IS revocation: the hub stops trusting that identity
+  // and stops pushing to it, so the box in the DMZ keeps serving whatever it
+  // last received until someone stops it. Say so.
+  if (!confirm(`Delete ${name}?\n\nThis revokes its identity and stops config pushes. The gateway process keeps serving its LAST configuration until it is stopped.`)) return;
+  try { await api('/api/v1/gateways/' + encodeURIComponent(id), {method: 'DELETE'}); refresh(); }
+  catch (e) { alert('delete: ' + e.message); }
+}
+
+async function gatewayProxies(id) {
+  const g = (window._gateways || []).find(x => x.id === id) || {};
+  const raw = prompt('Trusted proxy CIDRs — comma-separated.\n\nOnly these sources have their X-Forwarded-* headers believed; anything else is treated as the caller itself.',
+    (g.trusted_proxies || []).join(', '));
+  if (raw === null) return;
+  const trusted_proxies = raw.split(',').map(x => x.trim()).filter(Boolean);
+  try {
+    await api('/api/v1/gateways/' + encodeURIComponent(id) + '/trusted-proxies',
+      {method: 'PUT', body: JSON.stringify({trusted_proxies})});
+    refresh();
+  } catch (e) { alert('trusted proxies: ' + e.message); }
+}
+
+// --- ingress routes (ADR-0038 §5) ---
+function renderRoutes(rs) {
+  const gwName = id => (window._gateways || []).find(g => g.id === id)?.name || id;
+  $('routes').innerHTML = rs.map(r => {
+    const sel = Object.entries(r.selector || {});
+    return `<tr><td class="mono">${esc(r.method || 'ANY')}</td><td class="mono">${esc(r.path)}</td>
+      <td>${esc(r.flow)}</td>
+      <td>${r.gateway_id ? esc(gwName(r.gateway_id)) : '<span class="hint">all</span>'}</td>
+      <td>${r.auth_token_sha256 ? esc(r.auth_principal || 'authenticated') : '<span class="bad">public</span>'}</td>
+      <td>${sel.length ? sel.map(([k, v]) => `<span class="pill mono">${esc(k)}=${esc(v)}</span>`).join(' ') : '<span class="hint">any runner</span>'}</td>
+      <td class="rowacts">
+        <button class="ghost" onclick="rotateRouteToken('${escJS(r.id)}')">Rotate token</button>
+        <button class="ghost" onclick="deleteRoute('${escJS(r.id)}','${escJS(r.path)}')">Delete</button>
+      </td></tr>`;
+  }).join('') || '<tr><td colspan="7" class="hint">no routes — nothing is reachable from outside</td></tr>';
+}
+
+function editRouteForm() {
+  const gws = (window._gateways || []).map(g => `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join('');
+  const flows = (window._flows || []).map(f => `<option>${esc(f.name)}</option>`).join('');
+  $('route-editor').innerHTML = `<div class="mform">
+    <h4>New route</h4>
+    <div class="mrow"><label>method</label>
+      <select id="rt-method"><option value="">any</option>${['GET','POST','PUT','PATCH','DELETE'].map(m => `<option>${m}</option>`).join('')}</select>
+      <label>path</label><input id="rt-path" placeholder="/orders"></div>
+    <div class="mrow"><label>flow</label><select id="rt-flow">${flows}</select>
+      <label>gateway</label><select id="rt-gw"><option value="">every gateway</option>${gws}</select></div>
+    <div class="mrow"><label>caller name</label><input id="rt-principal" placeholder="acme-erp">
+      <label style="min-width:auto"><input type="checkbox" id="rt-public" style="flex:0" onchange="document.getElementById('rt-principal').disabled=this.checked"> deliberately public</label></div>
+    <div class="mrow"><label>runner selector</label><input id="rt-selector" placeholder="workload=api, zone=eu"></div>
+    <div class="mrow"><label>source allowlist</label><input id="rt-cidrs" placeholder="203.0.113.0/24, 198.51.100.7/32"></div>
+    <div class="mrow"><label>max body bytes</label><input id="rt-body" placeholder="1048576" style="max-width:10rem"></div>
+    <div class="hint" style="margin:0">A caller token is minted on save and shown once. "Deliberately public" is explicit because a route with no credential is otherwise indistinguishable from one where somebody forgot.</div>
+    <div class="mrow"><label></label><button onclick="saveRoute()">Create</button>
+      <button class="ghost" onclick="document.getElementById('route-editor').innerHTML=''">Cancel</button>
+      <span class="err" id="rt-err"></span></div>
+  </div>`;
+}
+
+async function saveRoute() {
+  const pairs = raw => {
+    const out = {};
+    for (const part of String(raw || '').split(',')) {
+      const t = part.trim(); if (!t) continue;
+      const i = t.indexOf('='); if (i < 1) throw new Error(`"${t}" is not key=value`);
+      out[t.slice(0, i).trim()] = t.slice(i + 1).trim();
+    }
+    return out;
+  };
+  let body;
+  try {
+    body = {
+      method: $('rt-method').value,
+      path: $('rt-path').value.trim(),
+      flow: $('rt-flow').value,
+      gateway_id: $('rt-gw').value || undefined,
+      public: $('rt-public').checked,
+      auth_principal: $('rt-public').checked ? '' : $('rt-principal').value.trim(),
+      selector: pairs($('rt-selector').value),
+      allow_cidrs: $('rt-cidrs').value.split(',').map(x => x.trim()).filter(Boolean),
+      max_body_bytes: Number($('rt-body').value || 0),
+    };
+  } catch (e) { $('rt-err').textContent = e.message; return; }
+  try {
+    const r = await api('/api/v1/routes', {method: 'POST', body: JSON.stringify(body)});
+    if (r.token) {
+      showOnce('Caller token for ' + r.path, r.token,
+        'The caller sends it as a bearer credential. Only its hash is stored, so this is the only time it can be read.');
+    }
+    $('route-editor').innerHTML = ''; refresh();
+  } catch (e) { $('rt-err').textContent = e.message; }
+}
+
+async function rotateRouteToken(id) {
+  if (!confirm('Rotate this route\'s caller token?\n\nThe old one keeps working until the next configuration reaches the gateway.')) return;
+  try {
+    const r = await api('/api/v1/routes/' + encodeURIComponent(id) + '/rotate-token', {method: 'POST'});
+    showOnce('New caller token', r.token, 'The old token stops working once the gateway acknowledges the new configuration.');
+    refresh();
+  } catch (e) { alert('rotate: ' + e.message); }
+}
+
+async function deleteRoute(id, path) {
+  if (!confirm(`Delete route ${path}?\n\nIt stops answering once the next configuration reaches the gateway.`)) return;
+  try { await api('/api/v1/routes/' + encodeURIComponent(id), {method: 'DELETE'}); refresh(); }
+  catch (e) { alert('delete: ' + e.message); }
 }
 
 function renderSecrets(ss) {
@@ -729,12 +1167,18 @@ function setActiveBuilder(key) { if (builders[key]) studio = builders[key]; }
 async function openGraph(name) {
   if (builders[name]) { setActiveBuilder(name); focusWin(builders[name].winId); return; }
   try {
-    const [flow, conns, secrets] = await Promise.all([
-      api('/api/v1/flows/' + encodeURIComponent(name)),
+    const [flow, conns, secrets, connections] = await Promise.all([
+      // The builder edits the LATEST version, published or not. Asking for the
+      // published one meant a freshly deployed flow could not be opened at
+      // all — and the error said "no published version" to somebody in the
+      // middle of creating the first one.
+      api('/api/v1/flows/' + encodeURIComponent(name) + '?version=latest'),
       api('/api/v1/connectors').catch(() => ({connectors: []})),
       api('/api/v1/secrets').catch(() => ({secrets: []})),
+      api('/api/v1/connections').catch(() => ({connections: []})),
     ]);
-    openBuilder(name, (flow && flow.document) || {name}, conns.connectors || [], secrets.secrets || []);
+    openBuilder(name, (flow && flow.document) || {name}, conns.connectors || [],
+      secrets.secrets || [], connections.connections || []);
   } catch (e) { alert('flow unavailable: ' + e.message); }
 }
 
@@ -743,17 +1187,18 @@ async function newBuilder() {
   if (!name) return;
   if (builders[name]) { setActiveBuilder(name); focusWin(builders[name].winId); return; }
   try {
-    const [conns, secrets] = await Promise.all([
+    const [conns, secrets, connections] = await Promise.all([
       api('/api/v1/connectors').catch(() => ({connectors: []})),
       api('/api/v1/secrets').catch(() => ({secrets: []})),
+      api('/api/v1/connections').catch(() => ({connections: []})),
     ]);
-    openBuilder(name, {name}, conns.connectors || [], secrets.secrets || []);
+    openBuilder(name, {name}, conns.connectors || [], secrets.secrets || [], connections.connections || []);
   } catch (e) { alert('cannot start builder: ' + e.message); }
 }
 
 // openBuilder creates (or focuses) the builder window for one flow and seeds
 // its independent state. Reusing an existing builder preserves unsaved edits.
-function openBuilder(key, doc, conns, secrets) {
+function openBuilder(key, doc, conns, secrets, connections) {
   if (builders[key]) { setActiveBuilder(key); focusWin(builders[key].winId); return builders[key]; }
   const uid = 'b' + (++builderSeq);
   const winId = 'win-' + uid;
@@ -765,6 +1210,9 @@ function openBuilder(key, doc, conns, secrets) {
     noticeEl: w.querySelector('.b-notices'), notices: [], reviewed: '', reviewTimer: null,
     model: toModel(doc || {name: key}), catalog: buildCatalog(conns || []),
     secrets: (secrets || []).map(s => s.name),
+    // Reusable connection records (ADR-0034), kept per connector so the
+    // picker only offers ones that fit the node.
+    connections: connections || [],
     pos: {}, sel: null, drag: null, connect: null,
   };
   st.pos = layoutPositions(clientGraph(st.model), st.model.layout || {});
@@ -1232,6 +1680,51 @@ function verbDir(connector, action) {
   return '';
 }
 
+// connectionPicker offers the reusable connection records that fit this node
+// (ADR-0034). Only ones for the SAME connector: a connection carries that
+// connector's host and credentials, and offering another's would be offering
+// config that cannot apply.
+//
+// Built-ins are excluded because they talk to no external system, which is
+// also why flowdoc rejects a connection on one.
+function connectionPicker(s) {
+  if (!s.connector || s.connector.startsWith('@')) return '';
+  const fits = (studio.connections || []).filter(c => c.connector === s.connector).map(c => c.name);
+  if (s.connection && !fits.includes(s.connection)) fits.push(s.connection); // preserve a deleted/renamed one
+  const sel = `<select onchange="editField('${escJS(s.id)}','connection',this.value)">` +
+    `<option value=""${!s.connection ? ' selected' : ''}>— inline config —</option>` +
+    fits.map(n => `<option${n === s.connection ? ' selected' : ''}>${esc(n)}</option>`).join('') + `</select>`;
+  return `<div class="efield"><label>connection</label>${sel}</div>` +
+    (s.connection ? `<div class="hint" style="margin:.1rem 0">Host, credentials and TLS come from the connection; anything set below overrides it for this step only.</div>` : '');
+}
+
+// versionRow shows the pinned connector build (ADR-0047 §1).
+//
+// Read-only, deliberately. A pin is RECORDED by publishing, not typed: a
+// hand-edited version is a claim about an artifact nobody checked, and the
+// registry is the only thing that knows which builds exist. An unpinned step
+// says what it will do instead, because "newest at dispatch" is a decision
+// even when nobody made it.
+function versionRow(s) {
+  if (!s.connector || s.connector.startsWith('@')) return '';
+  if (!s.version) {
+    return `<div class="efield"><label>version</label>` +
+      `<span class="hint" style="margin:0">newest at run time — publishing pins it</span></div>`;
+  }
+  return `<div class="efield"><label>version</label><span class="mono">${esc(s.version)}</span>` +
+    `<button class="wbtn" title="unpin: the next publish records the newest build instead" ` +
+    `onclick="unpinStep('${escJS(s.id)}')">unpin</button></div>`;
+}
+
+// unpinStep clears a recorded pin so the next publish records the newest build.
+// This is the upgrade path for one step, and it is an EDIT — visible in the
+// flow's version diff — rather than something publish does behind the author.
+function unpinStep(id) {
+  const s = stepById(id); if (!s) return;
+  delete s.version;
+  drawStudio(); renderEditor();
+}
+
 function connectorPickers(s) {
   // One connector node: choose connector, then a verb. The verb list spans BOTH
   // directions — the node's source/sink role follows the chosen action's
@@ -1259,6 +1752,7 @@ function connectorPickers(s) {
   }
   return `<div class="efield"><label>connector</label>${connSel}</div>` +
          `<div class="efield"><label>verb</label>${actCtl}</div>` +
+         connectionPicker(s) + versionRow(s) +
          webhookPickers(s);
 }
 
@@ -1578,6 +2072,14 @@ function cleanStep(s) {
   if (s.type === 'source' || s.type === 'sink') {
     out.connector = s.connector || ''; out.action = s.action || '';
     if (s.config !== undefined) out.config = s.config;
+    // The connection reference (ADR-0034) and the pinned build (ADR-0047 §1)
+    // are carried for the same reason the input contract below is: opening a
+    // flow in the builder and redeploying it must not silently drop what it
+    // was running. Dropping the connection would move the step back to inline
+    // config it does not have; dropping the pin would move a published flow
+    // back to "newest at dispatch", which is the whole thing pinning removed.
+    if (s.connection) out.connection = s.connection;
+    if (s.version) out.version = s.version;
     // A @webhook source's request contract (ADR-0042). These MUST be carried
     // through even though the canvas is not the only way to author them: a
     // flow whose input schema was written by hand and then opened in the
@@ -1628,6 +2130,11 @@ function nodeIcon(n) {
   return TYPE_ICON[n.type] || '◻';
 }
 function nodeLabel(n) { return n.connector || n.type; }
+// nodeVersion is the pin shown on the node itself (ADR-0047 §1). On the canvas
+// rather than only in the panel, because "which build does this flow run?" is a
+// question about the whole flow, and answering it should not mean clicking
+// every node in turn.
+function nodeVersion(n) { return n.version ? '@' + n.version : ''; }
 function summariseVal(v) {
   if (v && typeof v === 'object') return v.$secret ? '🔑' + v.$secret : jsonStr(v);
   return String(v);
@@ -1637,7 +2144,7 @@ function summariseVal(v) {
 function nodeSummary(n) {
   const s = n.step || {};
   if (n.type === 'source' || n.type === 'sink') {
-    const verb = s.action || ((n.connector || '')[0] === '@' ? '' : '(no verb)');
+    const verb = (s.action || ((n.connector || '')[0] === '@' ? '' : '(no verb)')) + nodeVersion(s);
     const cfg = (s.config && typeof s.config === 'object') ? s.config : {};
     const k = ['path', 'url', 'query', 'bucket', 'topic', 'host', 'file', 'remote', 'to'].find(x => cfg[x] != null);
     const kv = k ? summariseVal(cfg[k]) : '';
