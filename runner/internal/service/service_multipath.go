@@ -96,7 +96,7 @@ func (s *Service) bindSink(step *flow.Step, o SubmitOpts) (stream.Sink, func() i
 }
 
 // executeMulti dispatches a v3 DAG plan to the fan-out or fan-in executor.
-func (s *Service) executeMulti(ctx context.Context, doc *flow.Document, plan *flowdoc.Plan, redact func(string) string, _ *captureSampler, o SubmitOpts) (execResult, error) {
+func (s *Service) executeMulti(ctx context.Context, doc *flow.Document, plan *flowdoc.Plan, redact func(string) string, sampler *captureSampler, o SubmitOpts) (execResult, error) {
 	var fanouts, merges []*flowdoc.Step
 	for id, n := range plan.Nodes {
 		if len(plan.Data[id]) > 1 {
@@ -108,16 +108,16 @@ func (s *Service) executeMulti(ctx context.Context, doc *flow.Document, plan *fl
 	}
 	switch {
 	case len(fanouts) == 1 && len(merges) == 0:
-		return s.executeFanOut(ctx, doc, plan, fanouts[0], redact, o)
+		return s.executeFanOut(ctx, doc, plan, fanouts[0], redact, sampler, o)
 	case len(merges) == 1 && len(fanouts) == 0:
-		return s.executeFanIn(ctx, doc, plan, merges[0], redact, o)
+		return s.executeFanIn(ctx, doc, plan, merges[0], redact, sampler, o)
 	default:
 		return execResult{}, fmt.Errorf("service: flow topology not yet executable on this runner (%d fan-out, %d fan-in node(s)); nested or mixed graphs are a later change", len(fanouts), len(merges))
 	}
 }
 
 // executeFanOut runs source → ops → (tee|router) → { ops → sink } × N.
-func (s *Service) executeFanOut(ctx context.Context, doc *flow.Document, plan *flowdoc.Plan, fo *flowdoc.Step, redact func(string) string, o SubmitOpts) (execResult, error) {
+func (s *Service) executeFanOut(ctx context.Context, doc *flow.Document, plan *flowdoc.Plan, fo *flowdoc.Step, redact func(string) string, sampler *captureSampler, o SubmitOpts) (execResult, error) {
 	if len(plan.Sources) != 1 {
 		return execResult{}, fmt.Errorf("service: fan-out needs a single source (found %d)", len(plan.Sources))
 	}
@@ -137,7 +137,7 @@ func (s *Service) executeFanOut(ctx context.Context, doc *flow.Document, plan *f
 		return execResult{}, err
 	}
 	defer srcCleanup()
-	upPipe, err := flow.ApplyOps(upOps, stream.New(src, srcStep.ID), opts)
+	upPipe, err := flow.ApplyOps(upOps, sampled(stream.New(src, srcStep.ID), sampler), opts)
 	if err != nil {
 		return execResult{}, err
 	}
@@ -171,7 +171,10 @@ func (s *Service) executeFanOut(ctx context.Context, doc *flow.Document, plan *f
 			Sink:   sink,
 			Shared: isRouter || len(ops) == 0,
 			Build: func(bs stream.Source) *stream.Pipeline {
-				return flow.ApplyOpsFold(ops, stream.New(bs, sinkID), opts)
+				// Each branch samples too. On a fan-out this is the whole
+				// point of capture: "which branch did this record take" is
+				// unanswerable from the upstream sample alone.
+				return flow.ApplyOpsFold(ops, sampled(stream.New(bs, sinkID), sampler), opts)
 			},
 		})
 	}
@@ -189,11 +192,14 @@ func (s *Service) executeFanOut(ctx context.Context, doc *flow.Document, plan *f
 	}
 
 	res := aggregateFanout(frep, confirmers)
+	if sampler != nil {
+		res.captured = sampler.result()
+	}
 	return s.routeMultiError(ctx, plan, doc, redact, res, runErr)
 }
 
 // executeFanIn runs { source → ops } × N → merge(concat|join) → ops → sink.
-func (s *Service) executeFanIn(ctx context.Context, doc *flow.Document, plan *flowdoc.Plan, mg *flowdoc.Step, redact func(string) string, o SubmitOpts) (execResult, error) {
+func (s *Service) executeFanIn(ctx context.Context, doc *flow.Document, plan *flowdoc.Plan, mg *flowdoc.Step, redact func(string) string, sampler *captureSampler, o SubmitOpts) (execResult, error) {
 	gov := mem.New(s.opts.TaskWatermark)
 	opts := flow.CompileOptions{Gov: gov, SpillDir: s.opts.SpillDir}
 
@@ -216,7 +222,7 @@ func (s *Service) executeFanIn(ctx context.Context, doc *flow.Document, plan *fl
 			return execResult{}, err
 		}
 		defer cleanup()
-		pipe, err := flow.ApplyOps(ops, stream.New(src, srcID), opts)
+		pipe, err := flow.ApplyOps(ops, sampled(stream.New(src, srcID), sampler), opts)
 		if err != nil {
 			return execResult{}, err
 		}
@@ -279,12 +285,15 @@ func (s *Service) executeFanIn(ctx context.Context, doc *flow.Document, plan *fl
 	}
 	defer cleanup()
 
-	p, err := flow.ApplyOps(downOps, stream.New(merged, mg.ID), opts)
+	p, err := flow.ApplyOps(downOps, sampled(stream.New(merged, mg.ID), sampler), opts)
 	if err != nil {
 		return execResult{}, err
 	}
 	rep, runErr := p.Run(ctx, sink, sinkID)
 	res := execResult{rep: rep, confirmed: confirmed()}
+	if sampler != nil {
+		res.captured = sampler.result()
+	}
 	return s.routeMultiError(ctx, plan, doc, redact, res, runErr)
 }
 
