@@ -15,6 +15,13 @@ import (
 //go:embed ui.html
 var uiHTML []byte
 
+// UIHTML exposes the embedded page to the external test package, which asserts
+// that every endpoint the studio fetches is one this hub actually routes. The
+// two are in the same repository with no compile-time link between them, so a
+// renamed route is otherwise a silent break: the page loads, the window opens,
+// and it is empty.
+func UIHTML() string { return string(uiHTML) }
+
 func (a *api) dashboard(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)

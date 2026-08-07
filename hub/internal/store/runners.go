@@ -22,6 +22,17 @@ type Runner struct {
 	Name       string     `json:"name"`
 	Registered time.Time  `json:"registered_at"`
 	LastSeen   *time.Time `json:"last_seen_at,omitempty"`
+
+	// Labels are what the hub ASSERTS this runner is (ADR-0041 §3) — the facts
+	// route selectors match against. Served here because an administrator
+	// editing them has to be able to see them; a manager that writes a value
+	// it cannot read back is a guess with a button on it.
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// CertNotAfter is when this runner's client certificate stops being
+	// honoured (ADR-0044). Surfaced because expiry is silent otherwise: the
+	// runner simply stops leasing, and nothing says why.
+	CertNotAfter *time.Time `json:"cert_not_after,omitempty"`
 }
 
 // CreateRegistrationToken mints a single-use runner registration token.
@@ -200,7 +211,7 @@ func (s *Store) AuthRunner(ctx context.Context, secret string) (id, accountID st
 // Runners lists the account's registered runners, newest first.
 func (s *Store) Runners(ctx context.Context) ([]Runner, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, name, registered_at, last_seen_at FROM runners
+		`SELECT id, name, registered_at, last_seen_at, labels, cert_not_after FROM runners
 		 WHERE account_id = $1 ORDER BY registered_at DESC`, accountID(ctx))
 	if err != nil {
 		return nil, err
@@ -209,7 +220,11 @@ func (s *Store) Runners(ctx context.Context) ([]Runner, error) {
 	var out []Runner
 	for rows.Next() {
 		var r Runner
-		if err := rows.Scan(&r.ID, &r.Name, &r.Registered, &r.LastSeen); err != nil {
+		var labels []byte
+		if err := rows.Scan(&r.ID, &r.Name, &r.Registered, &r.LastSeen, &labels, &r.CertNotAfter); err != nil {
+			return nil, err
+		}
+		if err := unmarshalMap(labels, &r.Labels); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
