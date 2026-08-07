@@ -283,7 +283,14 @@ func (a *api) setConnectorYanked(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = a.st.Audit(r.Context(), actor(r), action, name,
 		map[string]any{"version": version, "os": req.OS, "arch": req.Arch})
-	writeJSON(w, http.StatusOK, map[string]any{"name": name, "version": version, "os": req.OS, "arch": req.Arch, "yanked": yank})
+	out := map[string]any{"name": name, "version": version, "os": req.OS, "arch": req.Arch, "yanked": yank}
+	if yank {
+		// Yank is a SELECTION rule: flows already pinned to this version keep
+		// running it (ADR-0047 §3). Whoever yanked it probably expected
+		// otherwise, so the flows still on it come back in the response.
+		out["still_pinned_by"] = a.yankReferences(r, name, version)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // --- publisher keys ----------------------------------------------------------
