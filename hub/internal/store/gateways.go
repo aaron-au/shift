@@ -20,7 +20,13 @@ var ErrAlreadyAdopted = errors.New("store: the gateway is already adopted")
 // makes it safe to return in an API response and to log: it identifies a key,
 // it does not authorise use of one.
 type Gateway struct {
-	ID          string `json:"id"`
+	ID string `json:"id"`
+	// AccountID is carried because the RECONCILE LOOP reads gateways across
+	// every tenant — it runs outside any request, so there is no account on its
+	// context to scope by. It re-scopes to this value before acting on the
+	// gateway; without it the loop would silently only ever serve the default
+	// account, which is the shape the scheduler avoids the same way (FireDue).
+	AccountID   string `json:"-"`
 	Name        string `json:"name"`
 	URL         string `json:"url"`
 	Fingerprint string `json:"fingerprint"`
@@ -39,6 +45,10 @@ type Gateway struct {
 	// PushedVersion is what it last acknowledged. They differ exactly while a
 	// push is outstanding or failing, which is the drift an administrator
 	// needs to see — from the hub, because that is where the administrator is.
+	// TrustedProxies are the CIDRs whose X-Forwarded-* headers this gateway
+	// believes. Per gateway because it describes where the box SITS.
+	TrustedProxies []string `json:"trusted_proxies,omitempty"`
+
 	ConfigVersion int64      `json:"config_version"`
 	PushedVersion int64      `json:"pushed_version"`
 	LastPushAt    *time.Time `json:"last_push_at,omitempty"`
@@ -47,17 +57,18 @@ type Gateway struct {
 	Created time.Time `json:"created_at"`
 }
 
-const gatewayCols = `id, name, url, fingerprint, install_token, token_expires_at, adopted_at,
-	cert_serial, cert_not_after,
+const gatewayCols = `id, account_id, name, url, fingerprint, install_token, token_expires_at, adopted_at,
+	cert_serial, cert_not_after, trusted_proxies,
 	config_version, pushed_version, last_push_at, last_push_error, created_at`
 
 func scanGateway(row pgx.Row) (Gateway, error) {
 	var g Gateway
 	var serial *string
 	var pushErr *string
-	err := row.Scan(&g.ID, &g.Name, &g.URL, &g.Fingerprint, &g.InstallToken, &g.TokenExpires,
+	err := row.Scan(&g.ID, &g.AccountID, &g.Name, &g.URL, &g.Fingerprint, &g.InstallToken, &g.TokenExpires,
 		&g.AdoptedAt, &serial,
-		&g.CertNotAfter, &g.ConfigVersion, &g.PushedVersion, &g.LastPushAt, &pushErr, &g.Created)
+		&g.CertNotAfter, &g.TrustedProxies,
+		&g.ConfigVersion, &g.PushedVersion, &g.LastPushAt, &pushErr, &g.Created)
 	if err != nil {
 		return Gateway{}, err
 	}
@@ -278,12 +289,13 @@ func (s *Store) RecordGatewayPush(ctx context.Context, id string, version int64,
 // An expired token is left alone rather than retried forever. Re-issuing one is
 // rotate, which is a deliberate act with an audit record behind it.
 func (s *Store) GatewaysPending(ctx context.Context) ([]Gateway, error) {
+	// NO account filter: this is read by the reconcile loop, which has no
+	// account on its context and must see every tenant's gateways.
 	return s.gatewayQuery(ctx,
 		`SELECT `+gatewayCols+` FROM gateways
-		  WHERE account_id = $1 AND adopted_at IS NULL AND install_token <> ''
+		  WHERE adopted_at IS NULL AND install_token <> ''
 		    AND (token_expires_at IS NULL OR token_expires_at > now())
-		  ORDER BY created_at`,
-		accountID(ctx))
+		  ORDER BY created_at`)
 }
 
 // GatewaysDue lists adopted gateways whose acknowledged generation is behind
@@ -294,14 +306,15 @@ func (s *Store) GatewaysPending(ctx context.Context) ([]Gateway, error) {
 // new one would strand it. Renewal is therefore something the hub must notice,
 // which means it belongs in the same query that notices config drift.
 func (s *Store) GatewaysDue(ctx context.Context, renewWithin time.Duration) ([]Gateway, error) {
+	// NO account filter, for the same reason as GatewaysPending.
 	return s.gatewayQuery(ctx,
 		`SELECT `+gatewayCols+` FROM gateways
-		  WHERE account_id = $1 AND adopted_at IS NOT NULL
+		  WHERE adopted_at IS NOT NULL
 		    AND (pushed_version < config_version
 		         OR cert_not_after IS NULL
-		         OR cert_not_after < now() + $2::interval)
+		         OR cert_not_after < now() + $1::interval)
 		  ORDER BY created_at`,
-		accountID(ctx), renewWithin.String())
+		renewWithin.String())
 }
 
 func (s *Store) gatewayQuery(ctx context.Context, sql string, args ...any) ([]Gateway, error) {
