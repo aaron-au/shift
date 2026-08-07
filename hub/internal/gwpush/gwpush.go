@@ -11,19 +11,29 @@
 //
 // Two trust models live in this package, and they are not interchangeable:
 //
-//   - ADOPTION pins the gateway's long-lived public key by fingerprint. There
-//     is no CA yet, so there is nothing to chain to; what there is instead is a
-//     value an operator carried out of band.
-//   - EVERYTHING AFTER pins the gateway CA plus the identity the hub itself
-//     issued, and presents the hub's own client certificate so the gateway can
-//     verify who is pushing policy at it.
+//   - PAIRING has no key to pin — the gateway generated one after the hub last
+//     looked. So the hub accepts what answers, LEARNS its fingerprint, and
+//     proves the exchange with a one-time install token instead. Both proofs
+//     are HMACs bound to the fingerprint on the wire, so an interceptor that
+//     terminates TLS with its own key fails both checks.
+//   - EVERY DIAL AFTER pins the learned fingerprint, or the gateway CA plus the
+//     identity the hub issued.
+//
+// The hub presents its own client certificate on every dial after pairing, so
+// the gateway can verify who is pushing policy at it.
 package gwpush
 
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,26 +54,79 @@ const HubSubject = "hub"
 // other untrusted input.
 const maxBody = 1 << 20
 
-// Bootstrap is what an unadopted gateway publishes about itself.
-//
-// All of it is public by construction: a key fingerprint, a certificate
-// request, and a version string. None of it authorises anything, which is why
-// the endpoint serving it needs no credential — requiring one would mean
-// shipping a secret into the DMZ before trust exists, the exact inversion
-// ADR-0049 removes.
-type Bootstrap struct {
-	Fingerprint string `json:"fingerprint"`
-	CSR         []byte `json:"csr"` // DER
-	Version     string `json:"version,omitempty"`
-}
-
-// Adoption is what the hub hands back to complete adoption.
+// Adoption is what the hub delivers to complete a pairing, or to renew.
 type Adoption struct {
+	// Nonce and Proof carry the hub's half of the pairing. The proof covers a
+	// digest of the material below, so a captured proof cannot be replayed with
+	// a substituted CA. Both are empty on a renewal over mutual TLS, where the
+	// hub's client certificate is the proof.
+	Nonce      string `json:"nonce,omitempty"`
+	Proof      string `json:"proof,omitempty"`
 	GatewayID  string `json:"gateway_id"`
 	CertPEM    []byte `json:"cert_pem"`
 	GatewayCA  []byte `json:"gateway_ca_pem"` // verifies the hub, and the gateway to runners
 	RunnerCA   []byte `json:"runner_ca_pem"`  // verifies runners polling for work
 	HubSubject string `json:"hub_subject"`    // who the gateway must see on a push
+}
+
+// Hello is a gateway's answer to a pairing challenge.
+type Hello struct {
+	Fingerprint string `json:"fingerprint"`
+	CSR         []byte `json:"csr"`
+	Proof       string `json:"proof"`
+	Version     string `json:"version,omitempty"`
+}
+
+// Challenge is the hub's opening move in a pairing.
+type Challenge struct {
+	Nonce string `json:"nonce"`
+	Proof string `json:"proof"`
+}
+
+// Domain separators for the pairing proofs. Distinct strings stop a proof
+// minted for one step satisfying another.
+const (
+	DomainHubHello = "shift-gw-hub-hello"
+	DomainGWHello  = "shift-gw-gw-hello"
+	DomainInstall  = "shift-gw-install"
+)
+
+// Proof computes an HMAC over a domain, a nonce, a certificate fingerprint and
+// an optional payload digest.
+//
+// DUPLICATED from gateway/internal/adopt on purpose, for the reason ADR-0046 §2
+// gives for duplicating the logging setup: gateway/go.mod has zero
+// dependencies, which is an auditable security property of the one component
+// that may sit in a DMZ, and the hub cannot import from it without breaking
+// that.
+//
+// Duplicated crypto that silently disagrees would be far worse than the
+// dependency, so TestTheProofConstructionMatchesTheGateway pins both
+// implementations to one fixed vector.
+func Proof(token, domain, nonce, fingerprint string, digest []byte) string {
+	m := hmac.New(sha256.New, []byte(token))
+	for _, part := range [][]byte{[]byte(domain), []byte(nonce), []byte(fingerprint), digest} {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], uint64(len(part)))
+		m.Write(n[:])
+		m.Write(part)
+	}
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+// MaterialDigest is the digest the install proof commits to, so a captured
+// proof cannot be replayed with substituted material.
+func MaterialDigest(a Adoption) []byte {
+	h := sha256.New()
+	for _, part := range [][]byte{
+		[]byte(a.GatewayID), a.CertPEM, a.GatewayCA, a.RunnerCA, []byte(a.HubSubject),
+	} {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], uint64(len(part)))
+		h.Write(n[:])
+		h.Write(part)
+	}
+	return h.Sum(nil)
 }
 
 // Client dials gateways.
@@ -83,98 +146,121 @@ func New(ca *pki.CA, hubCert *tls.Certificate, timeout time.Duration) *Client {
 	return &Client{ca: ca, hub: hubCert, http: &http.Client{Timeout: timeout}}
 }
 
-// Fetch reads an unadopted gateway's bootstrap document over a connection
-// pinned to want.
+// Pair adopts an unadopted gateway using a one-time install token
+// (ADR-0049 §1a), and returns the fingerprint it learned along with the issued
+// identity.
 //
 // InsecureSkipVerify here means "not the DEFAULT verification", not "no
-// verification": the gateway's certificate is self-signed and its host has no
-// name the hub can rely on, so VerifyPeerCertificate does the checking that
-// matters — the presented key must hash to the fingerprint the operator
-// carried. A wrong fingerprint fails the handshake, so nothing on either side
-// processes a request.
-func (c *Client) Fetch(ctx context.Context, url, want string) (*Bootstrap, error) {
-	var b Bootstrap
-	if err := c.call(ctx, c.pinnedTransport(want), http.MethodGet, url, "/bootstrap", nil, &b); err != nil {
-		return nil, err
+// verification". There is genuinely nothing to verify against yet — the
+// gateway's key did not exist when the record was made — so the transport is
+// used only to learn a fingerprint, and the HMAC exchange over it does the
+// authenticating in both directions.
+func (c *Client) Pair(ctx context.Context, url, token, gatewayID string, runnerCA []byte) (issued *pki.Issued, fingerprint string, err error) {
+	var nonce [32]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return nil, "", fmt.Errorf("gwpush: nonce: %w", err)
 	}
-	if b.Fingerprint != want {
-		// The handshake already proved the key, so this can only be a gateway
-		// disagreeing with itself. Refuse rather than reconcile.
-		return nil, fmt.Errorf("gwpush: the gateway reports fingerprint %s but presented %s", b.Fingerprint, want)
-	}
-	if len(b.CSR) == 0 {
-		return nil, errors.New("gwpush: the gateway offered no certificate request")
-	}
-	return &b, nil
-}
+	n := hex.EncodeToString(nonce[:])
 
-// Adopt signs the gateway's request and installs the result, closing adoption.
-//
-// The identity is issued for UsageServer: a gateway serves the hub's pushes and
-// the runners' long polls, and never dials. A certificate that could also
-// authenticate a client would let a stolen gateway key speak to the hub as
-// something the hub trusts.
-func (c *Client) Adopt(ctx context.Context, url, fingerprint, gatewayID string, runnerCA []byte, csrDER []byte) (*pki.Issued, error) {
-	issued, err := c.ca.Sign(csrDER, gatewayID, pki.UsageServer)
+	// Learn the key the gateway is terminating TLS with. Everything below is
+	// bound to it, so an interceptor's key produces proofs neither side accepts.
+	var seen string
+	tr := &http.Transport{TLSClientConfig: &tls.Config{
+		// #nosec G402 -- see the doc comment: nothing exists to verify against
+		// yet, and the HMAC exchange bound to this fingerprint is the check.
+		InsecureSkipVerify: true,
+		MinVersion:         tls.VersionTLS13,
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return errors.New("gwpush: the gateway presented no certificate")
+			}
+			fp, err := pki.Fingerprint(cs.PeerCertificates[0].PublicKey)
+			if err != nil {
+				return err
+			}
+			if seen != "" && seen != fp {
+				// Every request in this pairing must land on the same key, or
+				// the proofs are being computed against two different peers.
+				return errors.New("gwpush: the gateway changed keys mid-pairing")
+			}
+			seen = fp
+			return nil
+		},
+	}}
+
+	var hello Hello
+	challenge := Challenge{Nonce: n}
+	// The proof cannot be computed until the handshake reveals the key, so the
+	// call is made in two steps against the same transport: an empty probe to
+	// learn the fingerprint, then the real challenge.
+	if err := c.call(ctx, tr, http.MethodPost, url, "/pair", Challenge{Nonce: n}, &hello); err != nil && seen == "" {
+		return nil, "", err
+	}
+	if seen == "" {
+		return nil, "", errors.New("gwpush: the gateway's key was never observed")
+	}
+	challenge.Proof = Proof(token, DomainHubHello, n, seen, nil)
+	if err := c.call(ctx, tr, http.MethodPost, url, "/pair", challenge, &hello); err != nil {
+		return nil, "", err
+	}
+	if hello.Fingerprint != seen {
+		return nil, "", fmt.Errorf("gwpush: the gateway reports fingerprint %s but presented %s", hello.Fingerprint, seen)
+	}
+	if len(hello.CSR) == 0 {
+		return nil, "", errors.New("gwpush: the gateway offered no certificate request")
+	}
+	sum := sha256.Sum256(hello.CSR)
+	if subtle.ConstantTimeCompare([]byte(hello.Proof),
+		[]byte(Proof(token, DomainGWHello, n, seen, sum[:]))) != 1 {
+		// Either the gateway does not hold this token, or something in the
+		// middle is answering for it.
+		return nil, "", errors.New("gwpush: the gateway did not prove it holds the install token")
+	}
+
+	issued, err = c.ca.Sign(hello.CSR, gatewayID, pki.UsageServer)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	body := Adoption{
-		GatewayID:  gatewayID,
-		CertPEM:    issued.CertPEM,
-		GatewayCA:  c.ca.CAPEM(),
-		RunnerCA:   runnerCA,
-		HubSubject: HubSubject,
+		Nonce: n, GatewayID: gatewayID, CertPEM: issued.CertPEM,
+		GatewayCA: c.ca.CAPEM(), RunnerCA: runnerCA, HubSubject: HubSubject,
 	}
-	if err := c.call(ctx, c.pinnedTransport(fingerprint), http.MethodPost, url, "/adopt", body, nil); err != nil {
-		return nil, err
+	body.Proof = Proof(token, DomainInstall, n, seen, MaterialDigest(body))
+	if err := c.call(ctx, tr, http.MethodPost, url, "/adopt", body, nil); err != nil {
+		return nil, "", err
 	}
-	return issued, nil
+	return issued, seen, nil
 }
 
 // Renew issues a fresh identity to an already-adopted gateway.
 //
-// This is push-only for the same reason everything else here is: the gateway
-// cannot ask. An identity allowed to lapse before the hub replaced it would
-// strand the gateway behind a certificate it has no way to renew — which is
-// why the fingerprint is retained after adoption (ADR-0049 §6). If mutual TLS
-// fails because the identity already expired, the hub falls back to the pinned
-// dial and re-issues. Recovery, not a second trust model: the long-lived key
-// was the anchor all along.
+// Push-only, for the same reason everything here is: the gateway cannot ask. An
+// identity allowed to lapse before the hub replaced it would strand the gateway
+// — which is why the learned fingerprint is RETAINED after adoption
+// (ADR-0049 §6). If mutual TLS fails because the identity already expired, the
+// hub falls back to the pinned fingerprint and re-issues. The gateway still
+// verifies the hub's client certificate against the CA it kept from adoption,
+// so nothing is unauthenticated on that path and no install token is needed.
 func (c *Client) Renew(ctx context.Context, url, fingerprint, gatewayID string, runnerCA []byte) (*pki.Issued, error) {
-	var b Bootstrap
-	err := c.call(ctx, c.mtlsTransport(gatewayID), http.MethodGet, url, "/csr", nil, &b)
-	if err != nil {
+	tr := c.mtlsTransport(gatewayID)
+	var hello Hello
+	if err := c.call(ctx, tr, http.MethodGet, url, "/csr", nil, &hello); err != nil {
 		if !isTLSFailure(err) {
 			return nil, err
 		}
-		// Expired or missing identity: fall back to the anchor.
-		return c.reissuePinned(ctx, url, fingerprint, gatewayID, runnerCA)
+		// Expired identity: the gateway is serving its anchor, so pin that.
+		tr = c.pinnedTransport(fingerprint)
+		if err := c.call(ctx, tr, http.MethodGet, url, "/csr", nil, &hello); err != nil {
+			return nil, err
+		}
 	}
-	issued, err := c.ca.Sign(b.CSR, gatewayID, pki.UsageServer)
+	issued, err := c.ca.Sign(hello.CSR, gatewayID, pki.UsageServer)
 	if err != nil {
 		return nil, err
 	}
 	body := Adoption{GatewayID: gatewayID, CertPEM: issued.CertPEM,
 		GatewayCA: c.ca.CAPEM(), RunnerCA: runnerCA, HubSubject: HubSubject}
-	if err := c.call(ctx, c.mtlsTransport(gatewayID), http.MethodPost, url, "/identity", body, nil); err != nil {
-		return nil, err
-	}
-	return issued, nil
-}
-
-func (c *Client) reissuePinned(ctx context.Context, url, fingerprint, gatewayID string, runnerCA []byte) (*pki.Issued, error) {
-	b, err := c.Fetch(ctx, url, fingerprint)
-	if err != nil {
-		return nil, err
-	}
-	issued, err := c.ca.Sign(b.CSR, gatewayID, pki.UsageServer)
-	if err != nil {
-		return nil, err
-	}
-	body := Adoption{GatewayID: gatewayID, CertPEM: issued.CertPEM,
-		GatewayCA: c.ca.CAPEM(), RunnerCA: runnerCA, HubSubject: HubSubject}
-	if err := c.call(ctx, c.pinnedTransport(fingerprint), http.MethodPost, url, "/identity", body, nil); err != nil {
+	if err := c.call(ctx, tr, http.MethodPost, url, "/identity", body, nil); err != nil {
 		return nil, err
 	}
 	return issued, nil

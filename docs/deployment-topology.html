@@ -680,17 +680,31 @@ runnerd \
         <div class="body">
           <h3>Gateway — only if you need inbound</h3>
           <p class="muted">
-            Start it with no configuration at all. It comes up <em>inert</em>: no routes, no certificates,
-            serving nothing but a public key fingerprint printed to its own log.
+            Record the gateway in the hub first. That is what mints the <b>install token</b> — one use,
+            short-lived, returned exactly once.
           </p>
-<pre>gatewayd -public :8443 -control 0.0.0.0:8444
+<pre><span class="c"># in the hub: create the gateway record</span>
+POST /api/v1/gateways
+  {"name":"dmz","url":"https://gw.example:8444"}
 
-<span class="c">{"event":"gateway.awaiting_adoption",
- "fingerprint":"9f2c…a11b"}</span></pre>
+<span class="c">→ {"id":"…","install_token":"sgt_…","token_expires_at":"…"}</span></pre>
           <p class="muted">
-            Copy that fingerprint into the hub along with the gateway's URL. The hub then dials the
-            gateway and accepts it only if the key matches — so the value you carried by hand is what
-            establishes trust. Adoption then closes, and a restart comes back already adopted.
+            Then deploy the gateway with that token. It generates its own key, comes up <em>inert</em> —
+            no routes, no certificates, routing nothing — and waits.
+          </p>
+<pre>SHIFT_GATEWAY_INSTALL_TOKEN=sgt_… \
+gatewayd -public :8443 -control 0.0.0.0:8444 \
+  -state /var/lib/shift-gateway</pre>
+          <p class="muted">
+            That is the whole install. The hub dials on its next reconcile pass, and the two prove
+            themselves to each other with the token — the hub learns the gateway's key, pins it, and
+            issues its identity. Nothing is copied back, and nobody needs shell access to the DMZ box.
+          </p>
+          <p class="muted">
+            The token is <b>burned</b> once adoption completes, at both ends. From then on the pinned
+            key is what authenticates the gateway, so a lost or leaked token after adoption is worth
+            nothing. If you lose the state directory, <em>rotate</em> in the hub issues a fresh token
+            and the gateway re-pairs on redeploy.
           </p>
         </div>
       </li>

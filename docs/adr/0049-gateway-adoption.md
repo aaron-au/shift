@@ -55,19 +55,78 @@ In this state the gateway serves no ingress. It has no routes, no domains and
 no certificates, because it has no configuration — and configuration only comes
 from the hub (ADR-0038 §6). An unadopted gateway is inert.
 
+### 1a. Adoption is a pairing on a one-time install token
+
+An earlier draft of this ADR secured only one direction. A key fingerprint
+proves the GATEWAY to the hub; nothing proved the HUB to the gateway, and an
+unadopted gateway cannot tell the real hub from anyone else who can open a
+socket to its control port. Adoption was a race won by whoever dialled first,
+and the winner installed its own CA and pushed the gateway whatever routes it
+liked.
+
+The first fix was a second value — a code the gateway generated and the
+operator carried back. Aaron rejected the ergonomics of that (2026-08-06):
+
+> Couldn't simply providing the hub fingerprint as an envVar cover that instead
+> of double handling and accessing the storage/shell back and forth?
+
+He was right, and the better shape is a **pairing**. The hub mints a one-time
+**install token** when the gateway record is created; the operator supplies it
+at deploy time as `SHIFT_GATEWAY_INSTALL_TOKEN` (or `..._FILE`). One secret,
+travelling one direction, at the moment a deployment is already being written.
+
+The hub cannot pin a key that does not exist yet — the gateway generates it on
+first start — so it does not try. It **learns** the fingerprint on the first
+dial and pins it from then on. The token is what makes learning it safe.
+
+**Both proofs are HMACs bound to the fingerprint of the certificate on the
+wire**, not bare comparisons of the token, and that is the part that matters:
+
+| Step | Proof |
+|---|---|
+| hub → gateway | `HMAC(T, "shift-gw-hub-hello" ‖ N ‖ F)` |
+| gateway → hub | `HMAC(T, "shift-gw-gw-hello" ‖ N ‖ F ‖ sha256(csr))` |
+| hub → gateway, install | `HMAC(T, "shift-gw-install" ‖ N ‖ F ‖ sha256(material))` |
+
+`N` is a hub nonce; `F` is the fingerprint each side observes on *its* leg.
+
+A machine-in-the-middle terminates TLS with its own key, so the hub computes
+its proof over the interceptor's fingerprint and the gateway's check fails —
+and the gateway's proof is over its own key, which the interceptor cannot
+reproduce, so the hub's check fails too. Both sides detect it. A bare token
+would simply be relayed and copied. The install proof additionally commits to a
+digest of the delivered material, so a captured proof cannot be replayed with a
+substituted CA.
+
+The token is **burned at both ends** on success: the gateway clears it from
+memory (it was never written to disk), and the hub clears the column in the
+same statement that records the learned fingerprint, so it cannot be spent
+twice. From then on the pinned key does everything the token did.
+
+The construction is duplicated in `gateway/internal/adopt` and
+`hub/internal/gwpush`, for the reason ADR-0046 §2 gives for duplicating the
+logging setup: `gateway/go.mod` has zero dependencies, an auditable security
+property of the one component that may sit in a DMZ. Duplicated crypto that
+silently disagreed would be far worse than the dependency, so paired tests pin
+both implementations to one fixed vector — a mismatch fails the build rather
+than quietly making every gateway unadoptable.
+
+**What this gives up:** a human no longer eyeballs the specific box. Whoever
+holds the token becomes the gateway. That is the same trust model as runner
+registration (ADR-0009), which the platform already accepts, and it buys an
+install with no shell access to the DMZ host and nothing carried back.
+
 ### 2. Adoption is the hub dialling a pinned key
 
-An administrator gives the hub two values: the gateway's URL and its
-fingerprint. The hub then dials the gateway, and validates the presented
+An administrator gives the hub three values: the gateway's URL, its
+fingerprint, and its adoption code (§1a). The hub then dials the gateway, and validates the presented
 certificate **by fingerprint alone** — no CA, no name check.
 
-This is trust-on-first-use with the "first use" moved out of band, which is
-strictly stronger than TOFU: the operator read the fingerprint off the
-gateway's own logs and carried it to the hub by hand. A machine-in-the-middle
-would have to present the gateway's key, which it does not have. The
-fingerprint is 256 bits; anything dialling without matching it fails the
-handshake, so it is dropped traffic in the sense that matters — nothing on the
-gateway ever processes it.
+This is trust-on-first-use made safe by a secret that predates the connection,
+which is the standard pairing shape. The fingerprint the hub learns is 256 bits
+and is pinned for every later dial, so the window in which anything is
+unverified is exactly one exchange, and even that exchange is authenticated
+both ways.
 
 Over that pinned connection, in one exchange:
 
@@ -107,10 +166,10 @@ A gateway redeployed without its state directory comes up unadopted with a
 **new** fingerprint. The hub, holding a record that names the old key, refuses
 it. Nothing is silently re-trusted.
 
-Recovery is an explicit, audited hub action — *rotate adoption* — which accepts
-a new fingerprint for an existing gateway record while preserving its routes,
-domains and certificates. The friction is one paste by an administrator who
-already knows they redeployed the box. Making it automatic would mean anything
+Recovery is an explicit, audited hub action — *rotate adoption* — which issues a
+**fresh install token** for an existing gateway record, clears the pinned
+fingerprint, and preserves the routes, domains and certificates. The friction is
+one redeploy by an administrator who already knows they lost the box. Making it automatic would mean anything
 that can reach the URL and present a fresh key inherits a live gateway's
 configuration.
 
@@ -138,11 +197,17 @@ The dev-doc note said an expired identity strands a gateway permanently,
 because requesting a new one would mean dialling. Pinning the gateway's
 long-lived key at adoption removes that failure entirely.
 
-The identity certificate is short-lived and renewed by push, well before
-expiry. If a renewal is missed and the identity lapses, the hub still knows the
-gateway's original public key and can still dial it with fingerprint pinning
-and re-issue. The long-lived key is the anchor; the identity is a lease against
-it.
+The identity certificate is short-lived and renewed by push, well before expiry.
+If a renewal is missed and the identity lapses, the gateway falls back to
+serving its **anchor** certificate — it must, because a gateway still presenting
+a dead identity could never be reached again — and the hub dials the fingerprint
+it pinned at adoption and re-issues.
+
+Neither side needs the install token for that, which is why it can be burned:
+the hub authenticates the gateway by the pinned key, and the gateway
+authenticates the hub by the client certificate it verifies against the gateway
+CA it kept from adoption. The long-lived key is the anchor; the identity is a
+lease against it.
 
 So the failure mode degrades from *permanently stranded, requires a human in
 the DMZ* to *self-healing on the next reconcile*. That, rather than convenience,
@@ -186,8 +251,8 @@ Where the hub lives changes the network conversation:
 
 ## Consequences
 
-- The hub gains gateway records (URL, fingerprint, identity serial, adoption
-  state, config generation), an adopt action, a rotate-adoption action, and the
+- The hub gains gateway records (URL, install token, learned fingerprint,
+  identity serial, adoption state, config generation), an adopt action, a rotate-adoption action, and the
   push/reconcile loop. The gateway CA is a third signer alongside the runner CA
   from ADR-0044.
 - The gateway gains a state directory, a bootstrap endpoint that closes, and

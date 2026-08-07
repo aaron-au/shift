@@ -29,6 +29,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aaron-au/shift/gateway/internal/adopt"
 	"github.com/aaron-au/shift/gateway/internal/config"
 	"github.com/aaron-au/shift/gateway/internal/identity"
 	"github.com/aaron-au/shift/gateway/internal/ingress"
@@ -79,7 +80,8 @@ func run() error {
 	var (
 		publicAddr  = flag.String("public", ":8443", "public listener (inbound requests)")
 		controlAddr = flag.String("control", "127.0.0.1:8444", "control listener (runner poll/deliver, hub config push)")
-		identityDir = flag.String("identity", os.Getenv("SHIFT_GATEWAY_IDENTITY"), "directory holding the hub-issued identity bundle (ADR-0041); enables mTLS on the control listener")
+		stateDir    = flag.String("state", os.Getenv("SHIFT_GATEWAY_STATE"), "adoption state directory (ADR-0049); the gateway generates its own key here and waits to be adopted")
+		identityDir = flag.String("identity", os.Getenv("SHIFT_GATEWAY_IDENTITY"), "DEPRECATED (superseded by -state, ADR-0049): directory holding a hand-placed identity bundle (ADR-0041)")
 		configFile  = flag.String("config", "", "bootstrap configuration file (development only; the hub is the source of truth)")
 		debug       = flag.Bool("debug", false, "verbose logging")
 	)
@@ -87,6 +89,21 @@ func run() error {
 
 	// Env, never a flag: a flag would put the shared secret into every process
 	// listing on the host (same rule as the runner's hub registration token).
+	// Env only — a flag would leak the token into process listings. Single-use
+	// and burned at adoption, so it is a bootstrap credential rather than a
+	// standing one (ADR-0049 §1a).
+	installToken := os.Getenv("SHIFT_GATEWAY_INSTALL_TOKEN")
+	if installToken == "" {
+		// Compose and k8s hand secrets over as files.
+		if p := os.Getenv("SHIFT_GATEWAY_INSTALL_TOKEN_FILE"); p != "" {
+			raw, err := os.ReadFile(p) //nolint:gosec // G304: operator-configured token file (env)
+			if err != nil {
+				return fmt.Errorf("SHIFT_GATEWAY_INSTALL_TOKEN_FILE: %w", err)
+			}
+			installToken = strings.TrimSpace(string(raw))
+		}
+	}
+
 	controlToken := os.Getenv("SHIFT_GATEWAY_CONTROL_TOKEN")
 	if controlToken == "" {
 		if p := os.Getenv("SHIFT_GATEWAY_CONTROL_TOKEN_FILE"); p != "" {
@@ -97,6 +114,24 @@ func run() error {
 			controlToken = strings.TrimSpace(string(raw))
 		}
 	}
+	// Adoption state (ADR-0049) is the modern path: the gateway generates its
+	// own anchor key and waits for the hub to dial it. The hand-placed bundle
+	// below is the superseded one, kept until the hub push side is proven end
+	// to end in a deployment.
+	var st *adopt.State
+	if *stateDir != "" {
+		s, err := adopt.Open(*stateDir, installToken)
+		if err != nil {
+			return err
+		}
+		st = s
+	}
+	if st != nil && *identityDir != "" {
+		// Two sources of identity is one too many; refusing beats picking.
+		return errors.New("-state and -identity are alternatives: -state adopts (ADR-0049), " +
+			"-identity loads a hand-placed bundle (ADR-0041). Set one")
+	}
+
 	// Load the identity bundle first: it decides whether the control listener
 	// can be mutually authenticated, which decides whether the weaker
 	// alternatives below are even considered.
@@ -117,9 +152,10 @@ func run() error {
 	//
 	// mTLS satisfies this outright: it authenticates every runner individually
 	// AND lets the runner verify the gateway, which a shared secret cannot.
-	if bundle == nil && controlToken == "" && !loopbackOnly(*controlAddr) {
-		return fmt.Errorf("control listener %q is not loopback and has no identity bundle: "+
-			"set -identity (ADR-0041), or export SHIFT_GATEWAY_CONTROL_TOKEN, or bind -control to 127.0.0.1", *controlAddr)
+	if st == nil && bundle == nil && controlToken == "" && !loopbackOnly(*controlAddr) {
+		return fmt.Errorf("control listener %q is not loopback and has no identity: "+
+			"set -state (ADR-0049, recommended), or -identity (ADR-0041), "+
+			"or export SHIFT_GATEWAY_CONTROL_TOKEN, or bind -control to 127.0.0.1", *controlAddr)
 	}
 
 	// Logging setup is duplicated from pkg/shiftlog on purpose (ADR-0046 §2):
@@ -178,7 +214,7 @@ func run() error {
 	// impersonating a runner. It defaults to loopback for that reason.
 	ctrlMux := http.NewServeMux()
 	dispatch := ingress.NewDispatch(reg, log, controlToken)
-	if bundle != nil {
+	if bundle != nil || st != nil {
 		// Placement is asserted by the hub, keyed by the identity each runner
 		// proves with its client certificate (ADR-0041 §3). Without a bundle
 		// there is no proven identity, so the roster cannot be consulted and
@@ -193,6 +229,18 @@ func run() error {
 		})
 	}
 	dispatch.Routes(ctrlMux)
+	if st != nil {
+		// Adoption, renewal and the configuration push (ADR-0049). Applying a
+		// pushed configuration goes through the SAME validation as a local
+		// file: the hub is authoritative, but it is not exempt.
+		adopt.Handler(ctrlMux, st, buildVersion, func(raw []byte) error {
+			cfg, err := parseConfig(raw)
+			if err != nil {
+				return err
+			}
+			return h.SetConfig(cfg)
+		}, log)
+	}
 	ctrlMux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -215,7 +263,10 @@ func run() error {
 		Handler:           ctrlMux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	if bundle != nil {
+	switch {
+	case st != nil:
+		ctrl.TLSConfig = st.ControlTLS()
+	case bundle != nil:
 		ctrl.TLSConfig = bundle.ServerTLS()
 	}
 
@@ -231,7 +282,7 @@ func run() error {
 	}()
 
 	errc := make(chan error, 2)
-	go func() { errc <- serveControl(ctrl, bundle != nil) }()
+	go func() { errc <- serveControl(ctrl, st != nil || bundle != nil) }()
 	go func() { errc <- serve(srv) }()
 
 	// Unconfigured is the correct starting state, not a fault: the gateway
@@ -247,9 +298,42 @@ func run() error {
 	// this gateway permanently, because renewing it would mean dialling the
 	// hub. Renewal is the hub's job to PUSH (ADR-0041 §4).
 	identityID, certExpires := "", ""
-	if bundle != nil {
+	switch {
+	case st != nil:
+		identityID = st.GatewayID()
+		if na := st.NotAfter(); !na.IsZero() {
+			certExpires = na.UTC().Format(time.RFC3339)
+		}
+	case bundle != nil:
 		identityID = bundle.ID
 		certExpires = bundle.NotAfter.UTC().Format(time.RFC3339)
+	}
+	if st != nil && !st.Adopted() {
+		// Nothing for a human to copy: the hub already holds the install token
+		// and will dial. The fingerprint is logged because it is public, and
+		// because it is what an operator compares when a pairing is refused.
+		//
+		// A gateway with no install token can never be adopted, so that is a
+		// warning with a fix in it rather than a state to sit in quietly.
+		//
+		// The field is named "adoptable" rather than anything with "token" in
+		// it: the vocabulary gate refuses key names that read as credentials
+		// (ADR-0046 §7), and it is right to — a reader scanning logs should not
+		// have to work out whether a field holds a secret or merely mentions
+		// one.
+		if installToken == "" {
+			log.Warn("waiting to be adopted, but no install token was supplied — the hub's pairing will be refused",
+				"event", "gateway.awaiting_adoption",
+				"control", *controlAddr,
+				"fingerprint", st.Fingerprint(),
+				"adoptable", false)
+		} else {
+			log.Info("waiting to be adopted",
+				"event", "gateway.awaiting_adoption",
+				"control", *controlAddr,
+				"fingerprint", st.Fingerprint(),
+				"adoptable", true)
+		}
 	}
 	log.Info("gateway listening",
 		"event", "gateway.started",
@@ -321,6 +405,15 @@ func loadConfig(path string) (*config.Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseConfig(b)
+}
+
+// parseConfig decodes a configuration document, whoever supplied it.
+//
+// Shared by the local file and the hub's push on purpose: the hub is
+// authoritative, but authoritative is not the same as exempt. A malformed push
+// must be rejected exactly as loudly as a malformed file.
+func parseConfig(b []byte) (*config.Config, error) {
 	var c config.Config
 	if err := json.Unmarshal(b, &c); err != nil {
 		return nil, err

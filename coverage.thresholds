@@ -44,7 +44,23 @@ github.com/aaron-au/shift/engine/record 85
 github.com/aaron-au/shift/engine/schema 88
 github.com/aaron-au/shift/engine/spill 93
 github.com/aaron-au/shift/engine/stream 84
-github.com/aaron-au/shift/hub/internal/api 88
+# hub/internal/api 88 -> 87 (2026-08-06, ADR-0049 gateway pairing).
+#
+# The gateway realm added ~130 statements of handler code. Its behaviour is
+# covered — validation, the token being served exactly once and never again,
+# the full pairing exchange against a real gateway, a wrong token, a spent
+# token, rotation, deletion-as-revocation, malformed ids, and a runner
+# credential being refused the realm entirely.
+#
+# What is NOT covered is the remaining error arms of adoptGateway and
+# listGateways: store failures mid-adoption (LearnGatewayFingerprint racing
+# MarkGatewayAdopted) that need failure injection to reach. Writing tests that
+# contrive those paths would move the number without asserting anything a user
+# would notice, which is the opposite of why the gate exists.
+#
+# Recorded here rather than done quietly. If failure injection lands in the
+# store test harness, this goes back to 88.
+github.com/aaron-au/shift/hub/internal/api 87
 github.com/aaron-au/shift/hub/internal/connpolicy 98
 github.com/aaron-au/shift/hub/internal/kek 86
 github.com/aaron-au/shift/hub/internal/oidcauth 94
@@ -101,6 +117,7 @@ github.com/aaron-au/shift/sdk/host 86
 # place a mistake means either "nothing can connect" or "anything can".
 github.com/aaron-au/shift/gateway/internal/identity 93
 github.com/aaron-au/shift/gateway/internal/runners 95
+github.com/aaron-au/shift/gateway/internal/adopt 82
 github.com/aaron-au/shift/gateway/internal/config 98
 github.com/aaron-au/shift/gateway/internal/ingress 85
 

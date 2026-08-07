@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -14,7 +15,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -25,26 +25,25 @@ import (
 	"github.com/aaron-au/shift/hub/internal/store"
 )
 
-// The gateway realm is administrator-facing only (ADR-0049). Every assertion
-// here is about what an operator can and cannot get wrong with a paste.
+// The gateway realm is administrator-facing only (ADR-0049). There is no
+// gateway-facing endpoint here and there must never be one — a gateway that
+// could call the hub would be a DMZ box holding a hub credential.
 
-const goodFingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-
-func TestRecordingAGatewayValidatesThePaste(t *testing.T) {
+func TestRecordingAGatewayValidatesTheInput(t *testing.T) {
 	srv := newServer(t)
 
 	cases := []struct {
 		name, body string
 		want       int
 	}{
-		{"valid", `{"name":"dmz","url":"https://gw.example:8444","fingerprint":"` + goodFingerprint + `"}`, http.StatusCreated},
-		{"no name", `{"url":"https://gw.example","fingerprint":"` + goodFingerprint + `"}`, http.StatusUnprocessableEntity},
-		{"no url", `{"name":"x","fingerprint":"` + goodFingerprint + `"}`, http.StatusUnprocessableEntity},
-		// Adoption pins a key inside the TLS handshake; over plaintext there is
-		// no handshake to pin and the trust argument evaporates.
-		{"plaintext url", `{"name":"x","url":"http://gw.example","fingerprint":"` + goodFingerprint + `"}`, http.StatusUnprocessableEntity},
-		{"truncated fingerprint", `{"name":"x","url":"https://gw.example","fingerprint":"abcd"}`, http.StatusUnprocessableEntity},
-		{"non-hex fingerprint", `{"name":"x","url":"https://gw.example","fingerprint":"` + strings.Repeat("zz", 32) + `"}`, http.StatusUnprocessableEntity},
+		{"valid", `{"name":"dmz","url":"https://gw.example:8444"}`, http.StatusCreated},
+		{"no name", `{"url":"https://gw.example"}`, http.StatusUnprocessableEntity},
+		{"no url", `{"name":"x"}`, http.StatusUnprocessableEntity},
+		// Pairing binds its proofs to the fingerprint of the certificate on the
+		// wire. Over plaintext there is no certificate to bind to, and the
+		// exchange degrades to a token anyone on the path can copy.
+		{"plaintext url", `{"name":"x","url":"http://gw.example"}`, http.StatusUnprocessableEntity},
+		{"not a url", `{"name":"x","url":"://nonsense"}`, http.StatusUnprocessableEntity},
 		{"not json", `{`, http.StatusBadRequest},
 	}
 	for _, tc := range cases {
@@ -56,36 +55,22 @@ func TestRecordingAGatewayValidatesThePaste(t *testing.T) {
 	}
 }
 
-// Operators copy fingerprints out of terminals, where they are usually
-// colon-separated. Rejecting that spelling would be a papercut on the one
-// action that has to be got right by hand.
-func TestAColonSeparatedFingerprintIsAccepted(t *testing.T) {
+// The install token is served exactly once, by create. Anywhere else would be a
+// standing way to read a bootstrap secret out of the API.
+func TestTheInstallTokenIsReturnedOnceAndNeverAgain(t *testing.T) {
 	srv := newServer(t)
-	pairs := make([]string, 0, 32)
-	for i := 0; i < 64; i += 2 {
-		pairs = append(pairs, goodFingerprint[i:i+2])
-	}
-	body := `{"name":"colons","url":"https://gw.example","fingerprint":"` + strings.ToUpper(strings.Join(pairs, ":")) + `"}`
 
 	var created map[string]any
-	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways", adminToken, body, &created); got != http.StatusCreated {
-		t.Fatalf("status = %d, want 201", got)
-	}
-	if created["fingerprint"] != goodFingerprint {
-		t.Fatalf("stored fingerprint = %v, want it normalised to lowercase hex", created["fingerprint"])
-	}
-}
-
-func TestGatewayListGetAndDelete(t *testing.T) {
-	srv := newServer(t)
-	var created map[string]any
-	body := `{"name":"dmz-1","url":"https://gw.example:8444/","fingerprint":"` + goodFingerprint + `"}`
+	body := `{"name":"dmz-1","url":"https://gw.example:8444/"}`
 	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways", adminToken, body, &created); got != http.StatusCreated {
 		t.Fatalf("create = %d", got)
 	}
-	id, _ := created["id"].(string)
-	if id == "" {
-		t.Fatal("no gateway id returned")
+	token, _ := created["install_token"].(string)
+	if token == "" {
+		t.Fatal("no install token was returned, so the gateway could never be deployed")
+	}
+	if created["token_expires_at"] == nil {
+		t.Fatal("the install token never expires; an unclaimed one would stand forever")
 	}
 	if created["url"] != "https://gw.example:8444" {
 		t.Fatalf("url = %v, want the trailing slash trimmed", created["url"])
@@ -93,22 +78,44 @@ func TestGatewayListGetAndDelete(t *testing.T) {
 	if created["adopted_at"] != nil {
 		t.Fatal("a newly recorded gateway is adopted; nothing has dialled it")
 	}
+	if created["fingerprint"] != "" {
+		t.Fatal("a fingerprint was recorded before the gateway existed to have one")
+	}
+	id, _ := created["id"].(string)
+
+	var got map[string]any
+	if code := call(t, http.MethodGet, srv.URL+"/api/v1/gateways/"+id, adminToken, "", &got); code != http.StatusOK {
+		t.Fatalf("get = %d", code)
+	}
+	if _, ok := got["install_token"]; ok {
+		t.Fatal("the install token is served by get; it must be returned once and only once")
+	}
 
 	var list []map[string]any
-	if got := call(t, http.MethodGet, srv.URL+"/api/v1/gateways", adminToken, "", &list); got != http.StatusOK {
-		t.Fatalf("list = %d", got)
+	if code := call(t, http.MethodGet, srv.URL+"/api/v1/gateways", adminToken, "", &list); code != http.StatusOK {
+		t.Fatalf("list = %d", code)
 	}
 	if len(list) != 1 {
 		t.Fatalf("listed %d gateways, want 1", len(list))
 	}
-
-	if got := call(t, http.MethodGet, srv.URL+"/api/v1/gateways/"+id, adminToken, "", nil); got != http.StatusOK {
-		t.Fatalf("get = %d", got)
+	if _, ok := list[0]["install_token"]; ok {
+		t.Fatal("the install token is served by list")
 	}
-	if got := call(t, http.MethodGet, srv.URL+"/api/v1/gateways/00000000-0000-0000-0000-000000000000", adminToken, "", nil); got != http.StatusNotFound {
+}
+
+func TestGatewayGetAndDelete(t *testing.T) {
+	srv := newServer(t)
+	var created map[string]any
+	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways", adminToken,
+		`{"name":"dmz","url":"https://gw.example"}`, &created); got != http.StatusCreated {
+		t.Fatalf("create = %d", got)
+	}
+	id, _ := created["id"].(string)
+
+	if got := call(t, http.MethodGet, srv.URL+"/api/v1/gateways/00000000-0000-0000-0000-000000000000",
+		adminToken, "", nil); got != http.StatusNotFound {
 		t.Fatalf("get missing = %d, want 404", got)
 	}
-
 	// Deletion is revocation: the hub stops dialling and stops renewing.
 	if got := call(t, http.MethodDelete, srv.URL+"/api/v1/gateways/"+id, adminToken, "", nil); got != http.StatusNoContent {
 		t.Fatalf("delete = %d", got)
@@ -118,64 +125,21 @@ func TestGatewayListGetAndDelete(t *testing.T) {
 	}
 }
 
-// A hub with no gateway CA cannot issue an identity. Saying so is better than
-// dialling and failing halfway through a trust exchange.
+// A hub with no gateway CA cannot issue an identity. Saying so beats dialling
+// and failing halfway through a trust exchange.
 func TestAdoptingWithoutAGatewayCAIsUnavailable(t *testing.T) {
 	srv := newServer(t)
 	var created map[string]any
-	body := `{"name":"dmz","url":"https://gw.example","fingerprint":"` + goodFingerprint + `"}`
-	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways", adminToken, body, &created); got != http.StatusCreated {
+	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways", adminToken,
+		`{"name":"dmz","url":"https://gw.example"}`, &created); got != http.StatusCreated {
 		t.Fatalf("create = %d", got)
 	}
 	id, _ := created["id"].(string)
-
 	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways/"+id+"/adopt", adminToken, "", nil); got != http.StatusServiceUnavailable {
 		t.Fatalf("adopt with no CA = %d, want 503", got)
 	}
 }
 
-// Rotation is the recovery path for a gateway that lost its state directory,
-// and it validates the new paste exactly like the first one.
-func TestRotatingAdoptionValidatesTheNewFingerprint(t *testing.T) {
-	srv := newServer(t)
-	var created map[string]any
-	body := `{"name":"dmz","url":"https://gw.example","fingerprint":"` + goodFingerprint + `"}`
-	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways", adminToken, body, &created); got != http.StatusCreated {
-		t.Fatalf("create = %d", got)
-	}
-	id, _ := created["id"].(string)
-
-	rotated := strings.Repeat("ab", 32)
-	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways/"+id+"/rotate", adminToken,
-		`{"fingerprint":"`+rotated+`"}`, nil); got != http.StatusNoContent {
-		t.Fatalf("rotate = %d, want 204", got)
-	}
-	var after map[string]any
-	if got := call(t, http.MethodGet, srv.URL+"/api/v1/gateways/"+id, adminToken, "", &after); got != http.StatusOK {
-		t.Fatalf("get = %d", got)
-	}
-	if after["fingerprint"] != rotated {
-		t.Fatalf("fingerprint = %v, want the rotated one", after["fingerprint"])
-	}
-	if after["name"] != "dmz" || after["url"] != "https://gw.example" {
-		t.Fatal("rotation lost the record the administrator configured")
-	}
-
-	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways/"+id+"/rotate", adminToken,
-		`{"fingerprint":"nope"}`, nil); got != http.StatusUnprocessableEntity {
-		t.Fatalf("rotate with a bad paste = %d, want 422", got)
-	}
-	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways/"+id+"/rotate", adminToken, `{`, nil); got != http.StatusBadRequest {
-		t.Fatalf("rotate with malformed json = %d, want 400", got)
-	}
-	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways/00000000-0000-0000-0000-000000000000/rotate",
-		adminToken, `{"fingerprint":"`+rotated+`"}`, nil); got != http.StatusNotFound {
-		t.Fatalf("rotate a missing gateway = %d, want 404", got)
-	}
-}
-
-// The gateway realm is admin-only. A runner credential must not reach it —
-// runners are the thing gateways serve, not the thing that configures them.
 func TestTheGatewayRealmRefusesAnUnauthenticatedCaller(t *testing.T) {
 	srv := newServer(t)
 	for _, path := range []string{"/api/v1/gateways", "/api/v1/gateways/x"} {
@@ -188,17 +152,18 @@ func TestTheGatewayRealmRefusesAnUnauthenticatedCaller(t *testing.T) {
 	}
 }
 
-// --- adoption end to end ------------------------------------------------------
+// --- pairing end to end -------------------------------------------------------
 
-// unadoptedGateway is a gateway in the state ADR-0049 §1 describes: a
-// self-signed key, a published fingerprint, and no credential of any kind.
+// unadoptedGateway is a gateway in the state ADR-0049 §1 describes: a key it
+// generated itself, an install token handed to it at deploy time, and no
+// credential from anybody.
 type unadoptedGateway struct {
-	srv         *httptest.Server
-	fingerprint string
-	adopted     bool
+	srv     *httptest.Server
+	token   string
+	adopted bool
 }
 
-func newUnadoptedGateway(t *testing.T) *unadoptedGateway {
+func newUnadoptedGateway(t *testing.T, token string) *unadoptedGateway {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -229,15 +194,38 @@ func newUnadoptedGateway(t *testing.T) *unadoptedGateway {
 		t.Fatal(err)
 	}
 
-	g := &unadoptedGateway{fingerprint: fp}
+	g := &unadoptedGateway{token: token}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /bootstrap", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(gwpush.Bootstrap{Fingerprint: fp, CSR: csr})
+	mux.HandleFunc("POST /pair", func(w http.ResponseWriter, r *http.Request) {
+		var c gwpush.Challenge
+		if err := json.NewDecoder(r.Body).Decode(&c); err != nil || c.Proof == "" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if c.Proof != gwpush.Proof(g.token, gwpush.DomainHubHello, c.Nonce, fp, nil) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		sum := sha256.Sum256(csr)
+		_ = json.NewEncoder(w).Encode(gwpush.Hello{
+			Fingerprint: fp, CSR: csr,
+			Proof: gwpush.Proof(g.token, gwpush.DomainGWHello, c.Nonce, fp, sum[:]),
+		})
 	})
-	mux.HandleFunc("POST /adopt", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /adopt", func(w http.ResponseWriter, r *http.Request) {
+		var a gwpush.Adoption
+		if err := json.NewDecoder(r.Body).Decode(&a); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if a.Proof != gwpush.Proof(g.token, gwpush.DomainInstall, a.Nonce, fp, gwpush.MaterialDigest(a)) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
 		g.adopted = true
 		w.WriteHeader(http.StatusNoContent)
 	})
+
 	g.srv = httptest.NewUnstartedServer(mux)
 	g.srv.TLS = &tls.Config{
 		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
@@ -310,18 +298,22 @@ func newServerWithGateways(t *testing.T, ca *pki.CA) *httptest.Server {
 	return srv
 }
 
-// The whole adoption exchange, driven the way an administrator drives it.
-func TestAdoptionDialsTheGatewayAndRecordsTheIdentity(t *testing.T) {
-	ca := gatewayCA(t)
-	srv := newServerWithGateways(t, ca)
-	g := newUnadoptedGateway(t)
+// The whole exchange, driven the way an administrator drives it: record,
+// deploy with the token, pair.
+func TestAdoptionPairsWithTheGatewayAndLearnsItsKey(t *testing.T) {
+	srv := newServerWithGateways(t, gatewayCA(t))
 
+	// The record comes first — the token does not exist until it does. The
+	// gateway then reads that token at deploy time, which is what g.token
+	// stands in for here.
+	g := newUnadoptedGateway(t, "not-yet-deployed")
 	var created map[string]any
-	body := `{"name":"dmz","url":"` + g.srv.URL + `","fingerprint":"` + g.fingerprint + `"}`
-	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways", adminToken, body, &created); got != http.StatusCreated {
+	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways", adminToken,
+		`{"name":"dmz","url":"`+g.srv.URL+`"}`, &created); got != http.StatusCreated {
 		t.Fatalf("create = %d", got)
 	}
 	id, _ := created["id"].(string)
+	g.token, _ = created["install_token"].(string)
 
 	var adopted map[string]any
 	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways/"+id+"/adopt", adminToken, "", &adopted); got != http.StatusOK {
@@ -333,43 +325,43 @@ func TestAdoptionDialsTheGatewayAndRecordsTheIdentity(t *testing.T) {
 	if adopted["adopted_at"] == nil {
 		t.Fatal("adoption was not recorded, so the reconcile loop would never pick the gateway up")
 	}
+	if adopted["fingerprint"] == "" || adopted["fingerprint"] == nil {
+		t.Fatal("no fingerprint was learned; the hub would have no way back in after the identity lapsed")
+	}
 	if adopted["cert_serial"] == "" || adopted["cert_serial"] == nil {
 		t.Fatal("no identity serial recorded; renewal has nothing to compare against")
 	}
 
-	// One gateway, one owner. A second attempt is refused, not applied.
+	// The token is spent. A second adoption cannot replay it.
 	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways/"+id+"/adopt", adminToken, "", nil); got != http.StatusConflict {
 		t.Fatalf("second adoption = %d, want 409", got)
 	}
 }
 
-// A wrong paste fails at the handshake. It must surface as a gateway-side
-// failure the administrator can act on, not a 500.
-func TestAdoptingWithTheWrongFingerprintFailsAtTheDial(t *testing.T) {
-	ca := gatewayCA(t)
-	srv := newServerWithGateways(t, ca)
-	g := newUnadoptedGateway(t)
+// A gateway holding a different token is not adopted, and nothing is issued.
+func TestAdoptingAGatewayWithTheWrongTokenFails(t *testing.T) {
+	srv := newServerWithGateways(t, gatewayCA(t))
+	g := newUnadoptedGateway(t, "sgt_some_other_token")
 
 	var created map[string]any
-	body := `{"name":"dmz","url":"` + g.srv.URL + `","fingerprint":"` + strings.Repeat("ab", 32) + `"}`
-	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways", adminToken, body, &created); got != http.StatusCreated {
+	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways", adminToken,
+		`{"name":"dmz","url":"`+g.srv.URL+`"}`, &created); got != http.StatusCreated {
 		t.Fatalf("create = %d", got)
 	}
 	id, _ := created["id"].(string)
 
 	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways/"+id+"/adopt", adminToken, "", nil); got != http.StatusBadGateway {
-		t.Fatalf("adopt with a wrong fingerprint = %d, want 502", got)
+		t.Fatalf("adopt with a mismatched token = %d, want 502", got)
 	}
 	if g.adopted {
-		t.Fatal("the gateway processed an adoption despite the pin failing")
+		t.Fatal("the gateway was adopted despite the pairing failing")
 	}
-
 	var after map[string]any
 	if got := call(t, http.MethodGet, srv.URL+"/api/v1/gateways/"+id, adminToken, "", &after); got != http.StatusOK {
 		t.Fatalf("get = %d", got)
 	}
 	if after["adopted_at"] != nil {
-		t.Fatal("a failed adoption was recorded as successful")
+		t.Fatal("a failed pairing was recorded as an adoption")
 	}
 }
 
@@ -378,5 +370,168 @@ func TestAdoptingAGatewayThatDoesNotExist(t *testing.T) {
 	if got := call(t, http.MethodPost,
 		srv.URL+"/api/v1/gateways/00000000-0000-0000-0000-000000000000/adopt", adminToken, "", nil); got != http.StatusNotFound {
 		t.Fatalf("adopt a missing gateway = %d, want 404", got)
+	}
+}
+
+// Rotation is the recovery path for a gateway redeployed without its state
+// directory: a fresh token, the record intact, the identity reset.
+func TestRotatingAdoptionIssuesANewToken(t *testing.T) {
+	srv := newServerWithGateways(t, gatewayCA(t))
+	g := newUnadoptedGateway(t, "placeholder")
+
+	var created map[string]any
+	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways", adminToken,
+		`{"name":"dmz","url":"`+g.srv.URL+`"}`, &created); got != http.StatusCreated {
+		t.Fatalf("create = %d", got)
+	}
+	id, _ := created["id"].(string)
+	g.token, _ = created["install_token"].(string)
+	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways/"+id+"/adopt", adminToken, "", nil); got != http.StatusOK {
+		t.Fatalf("adopt = %d", got)
+	}
+
+	var rotated map[string]any
+	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways/"+id+"/rotate", adminToken, "", &rotated); got != http.StatusOK {
+		t.Fatalf("rotate = %d, want 200", got)
+	}
+	newToken, _ := rotated["install_token"].(string)
+	if newToken == "" || newToken == g.token {
+		t.Fatal("rotation did not issue a new install token")
+	}
+
+	var after map[string]any
+	if got := call(t, http.MethodGet, srv.URL+"/api/v1/gateways/"+id, adminToken, "", &after); got != http.StatusOK {
+		t.Fatalf("get = %d", got)
+	}
+	if after["name"] != "dmz" || after["url"] != g.srv.URL {
+		t.Fatal("rotation lost the record the administrator configured")
+	}
+	if after["adopted_at"] != nil {
+		t.Fatal("rotation left the gateway adopted, so it could never pair again")
+	}
+	if after["fingerprint"] != "" {
+		t.Fatal("rotation kept the old fingerprint; the hub would pin a key the redeployed gateway no longer has")
+	}
+
+	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways/00000000-0000-0000-0000-000000000000/rotate",
+		adminToken, "", nil); got != http.StatusNotFound {
+		t.Fatalf("rotate a missing gateway = %d, want 404", got)
+	}
+}
+
+// The token's lifetime is deployment policy, so it is configurable — short by
+// default because it will sit in a manifest until somebody deploys.
+func TestTheInstallTokenLifetimeIsConfigurable(t *testing.T) {
+	st, err := store.Open(t.Context(), pgtest.DSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	h, err := api.Handler(st, api.Options{
+		AdminToken:      adminToken,
+		LeaseTTL:        2 * time.Second,
+		LeasePoll:       20 * time.Millisecond,
+		GatewayTokenTTL: 15 * time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	var created map[string]any
+	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways", adminToken,
+		`{"name":"dmz","url":"https://gw.example"}`, &created); got != http.StatusCreated {
+		t.Fatalf("create = %d", got)
+	}
+	raw, _ := created["token_expires_at"].(string)
+	expires, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		t.Fatalf("token_expires_at = %q: %v", raw, err)
+	}
+	if d := time.Until(expires); d > 20*time.Minute || d < 10*time.Minute {
+		t.Fatalf("token expires in %s, want roughly the configured 15m", d)
+	}
+}
+
+// An unadopted gateway whose token is gone cannot be paired with, and says so
+// rather than dialling and failing obscurely.
+func TestAdoptingWithASpentTokenIsAConflict(t *testing.T) {
+	srv := newServerWithGateways(t, gatewayCA(t))
+	g := newUnadoptedGateway(t, "placeholder")
+
+	var created map[string]any
+	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways", adminToken,
+		`{"name":"dmz","url":"`+g.srv.URL+`"}`, &created); got != http.StatusCreated {
+		t.Fatalf("create = %d", got)
+	}
+	id, _ := created["id"].(string)
+	g.token, _ = created["install_token"].(string)
+
+	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways/"+id+"/adopt", adminToken, "", nil); got != http.StatusOK {
+		t.Fatalf("adopt = %d", got)
+	}
+	// Adopted, so the token is spent; a second attempt is a conflict rather
+	// than a retry.
+	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways/"+id+"/adopt", adminToken, "", nil); got != http.StatusConflict {
+		t.Fatalf("adopt with a spent token = %d, want 409", got)
+	}
+}
+
+// The gateway realm is the ADMIN realm. A runner's credential must not reach
+// it: runners are the thing gateways serve, never the thing that configures
+// them, and a compromised runner that could mint gateway records or read a
+// gateway's URL would have escalated out of its own realm.
+func TestARunnerCredentialCannotReachTheGatewayRealm(t *testing.T) {
+	srv := newServer(t)
+
+	var tok struct{ Token string }
+	if code := call(t, http.MethodPost, srv.URL+"/api/v1/runner-tokens", adminToken, `{}`, &tok); code != http.StatusCreated {
+		t.Fatalf("runner token = %d", code)
+	}
+	var reg struct {
+		RunnerID string `json:"runner_id"`
+		Secret   string `json:"secret"`
+	}
+	if code := call(t, http.MethodPost, srv.URL+"/api/v1/runners/register", "",
+		`{"token":"`+tok.Token+`","name":"r1"}`, &reg); code != http.StatusCreated || reg.Secret == "" {
+		t.Fatalf("register = %d", code)
+	}
+
+	if got := call(t, http.MethodGet, srv.URL+"/api/v1/gateways", reg.Secret, "", nil); got != http.StatusUnauthorized {
+		t.Fatalf("list as a runner = %d, want 401", got)
+	}
+	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways", reg.Secret,
+		`{"name":"x","url":"https://gw.example"}`, nil); got != http.StatusUnauthorized {
+		t.Fatalf("create as a runner = %d, want 401", got)
+	}
+
+	// And the record a runner tried to create must not exist.
+	var list []map[string]any
+	if got := call(t, http.MethodGet, srv.URL+"/api/v1/gateways", adminToken, "", &list); got != http.StatusOK {
+		t.Fatalf("list = %d", got)
+	}
+	if len(list) != 0 {
+		t.Fatalf("listed %d gateways, want none — a runner created one", len(list))
+	}
+}
+
+// A malformed id is a client mistake, not a broken hub. Postgres rejects it
+// while parsing the UUID, and letting that surface as a 500 would tell an
+// operator the server had failed when their URL was simply wrong — and would
+// bury real 500s among the typos.
+func TestAMalformedIDIsNotFoundRatherThanAServerError(t *testing.T) {
+	srv := newServer(t)
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/gateways/not-a-uuid"},
+		{http.MethodDelete, "/api/v1/gateways/not-a-uuid"},
+		{http.MethodPost, "/api/v1/gateways/not-a-uuid/rotate"},
+	} {
+		if got := call(t, tc.method, srv.URL+tc.path, adminToken, "", nil); got != http.StatusNotFound {
+			t.Fatalf("%s %s = %d, want 404", tc.method, tc.path, got)
+		}
 	}
 }

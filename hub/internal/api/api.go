@@ -60,6 +60,9 @@ type Options struct {
 	// Nil on a hub with no gateway CA configured, which makes adoption a 503
 	// rather than a half-working trust path.
 	Gateways *gwpush.Client
+	// GatewayTokenTTL bounds how long an unclaimed gateway install token is
+	// useful (default one hour).
+	GatewayTokenTTL time.Duration
 	// RunnerAuth decides which runner credentials are accepted: "mtls",
 	// "bearer" or "both" (default). A deployment that has cut over should set
 	// "mtls" — "we support both forever" is how the weaker credential stays
@@ -368,7 +371,11 @@ func writeErrCode(w http.ResponseWriter, code int, machineCode string, err error
 // ErrNotFound is a 404 and anything else is ours to own, which is the same
 // two-line shape every lookup handler was writing out longhand.
 func writeLookupErr(w http.ResponseWriter, err error) {
-	if errors.Is(err, store.ErrNotFound) {
+	if errors.Is(err, store.ErrNotFound) || store.IsMalformedID(err) {
+		// A malformed id is a client mistake, not a broken hub. Postgres
+		// rejects it while parsing the UUID, which surfaces as a driver error
+		// and used to become a 500 — telling an operator the server had failed
+		// when their URL was simply wrong.
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}

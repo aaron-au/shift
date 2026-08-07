@@ -261,11 +261,24 @@ than this system.
 
 ## Not built yet
 
-- **Gateway side of adoption** (ADR-0049): the state directory, the bootstrap
-  endpoint that closes once adopted, and mutual TLS on the control listener.
-  Until it lands the control listener carries a shared secret and `-config`
-  loads a local file. The shared secret is one-directional — it does not let a
-  runner verify the gateway, which mTLS will.
+- **Retire the superseded paths.** `-state` (ADR-0049) now adopts, and the
+  control listener switches posture with adoption: unadopted it serves the
+  anchor certificate and asks for no client certificate; adopted it serves the
+  hub-issued identity and requires one, verified against BOTH control CAs —
+  the gateway CA for the hub, the runner CA for runners. Role is attributed by
+  which CA signed the peer, never by the name it carries, because both are
+  trusted here and a name check would let a runner named `hub` push routes.
+
+  Adoption is a **pairing** (ADR-0049 §1a): the hub mints a one-time install
+  token, the operator supplies it at deploy time, and the hub learns the
+  gateway's key on the first dial rather than being told it in advance. Both
+  proofs are HMACs bound to the fingerprint on the wire, so a TLS-terminating
+  interceptor fails both checks. The token is burned at both ends on success.
+
+  The hand-placed `-identity` bundle and `SHIFT_GATEWAY_CONTROL_TOKEN` still
+  work and are marked deprecated. They go once the hub push side has been
+  proven end to end in a deployment; removing them before that would strand
+  `deploy/k8s`.
 - **Per-runner gateway address list**, and the config *builder* — the hub side
   now has the records, the CA, the dial-out client and the reconcile loop
   (`hub/internal/{pki,gwpush,gwsync}`), but `ConfigFor` is unset, so a hub

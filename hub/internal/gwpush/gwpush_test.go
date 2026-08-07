@@ -1,10 +1,10 @@
 package gwpush_test
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -23,96 +23,8 @@ import (
 	"github.com/aaron-au/shift/hub/internal/pki"
 )
 
-// fakeGateway is a gateway as the hub sees it: a self-signed TLS server that
-// publishes a fingerprint and a CSR, and accepts an adoption.
-type fakeGateway struct {
-	srv         *httptest.Server
-	fingerprint string
-	csr         []byte
-
-	adopted *gwpush.Adoption
-	pushed  []byte
-}
-
-func newFakeGateway(t *testing.T) *fakeGateway {
-	t.Helper()
-	// The long-lived key: the thing the fingerprint is over, and the thing an
-	// operator's paste actually pins.
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("gateway key: %v", err)
-	}
-	fp, err := pki.Fingerprint(&key.PublicKey)
-	if err != nil {
-		t.Fatalf("fingerprint: %v", err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "unadopted-gateway"},
-		NotBefore:    time.Now().Add(-time.Minute),
-		NotAfter:     time.Now().Add(time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatalf("self-signed certificate: %v", err)
-	}
-
-	// A separate identity key: the certificate the hub issues is over this,
-	// never over the anchor key.
-	idKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("identity key: %v", err)
-	}
-	csr, err := x509.CreateCertificateRequest(rand.Reader,
-		&x509.CertificateRequest{Subject: pkix.Name{CommonName: "ignored"}}, idKey)
-	if err != nil {
-		t.Fatalf("csr: %v", err)
-	}
-
-	g := &fakeGateway{fingerprint: fp, csr: csr}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /bootstrap", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(gwpush.Bootstrap{Fingerprint: fp, CSR: csr, Version: "test"})
-	})
-	mux.HandleFunc("POST /adopt", func(w http.ResponseWriter, r *http.Request) {
-		var a gwpush.Adoption
-		if err := json.NewDecoder(r.Body).Decode(&a); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		g.adopted = &a
-		w.WriteHeader(http.StatusNoContent)
-	})
-	mux.HandleFunc("POST /config", func(w http.ResponseWriter, r *http.Request) {
-		buf := make([]byte, 4096)
-		n, _ := r.Body.Read(buf)
-		g.pushed = buf[:n]
-		w.WriteHeader(http.StatusNoContent)
-	})
-	mux.HandleFunc("POST /identity", func(w http.ResponseWriter, r *http.Request) {
-		var a gwpush.Adoption
-		if err := json.NewDecoder(r.Body).Decode(&a); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		g.adopted = &a
-		w.WriteHeader(http.StatusNoContent)
-	})
-	mux.HandleFunc("POST /explode", func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "the gateway is unhappy", http.StatusInternalServerError)
-	})
-
-	g.srv = httptest.NewUnstartedServer(mux)
-	g.srv.TLS = &tls.Config{
-		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
-		MinVersion:   tls.VersionTLS13,
-	}
-	g.srv.StartTLS()
-	t.Cleanup(g.srv.Close)
-	return g
-}
+//nolint:gosec // G101: a test fixture, not a credential.
+const testToken = "sgt_test_install_token"
 
 // testCA writes a CA to disk and loads it, mirroring how hubd is configured.
 func testCA(t *testing.T) *pki.CA {
@@ -139,8 +51,7 @@ func testCA(t *testing.T) *pki.CA {
 	if err != nil {
 		t.Fatalf("marshal ca key: %v", err)
 	}
-	certPath := filepath.Join(dir, "ca.pem")
-	keyPath := filepath.Join(dir, "ca-key.pem")
+	certPath, keyPath := filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca-key.pem")
 	write(t, certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 	write(t, keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
 	ca, err := pki.Load("gateway", certPath, keyPath, time.Hour)
@@ -157,43 +68,129 @@ func write(t *testing.T, path string, b []byte) {
 	}
 }
 
-// The happy path: an operator's fingerprint is enough to reach a gateway that
-// has no CA, no name, and no credential.
-func TestAdoptionPinsTheGatewayByItsKey(t *testing.T) {
+// fakeGateway is a gateway as the hub meets it before adoption: a self-signed
+// key it generated itself, and an install token it was handed at deploy time.
+type fakeGateway struct {
+	srv         *httptest.Server
+	fingerprint string
+	token       string
+
+	adopted *gwpush.Adoption
+	// wrongFingerprint makes the gateway compute its proof over a key that is
+	// not the one it is serving — what an interceptor's relay looks like.
+	wrongFingerprint bool
+}
+
+func newFakeGateway(t *testing.T) *fakeGateway {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gateway key: %v", err)
+	}
+	fp, err := pki.Fingerprint(&key.PublicKey)
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "shift-gateway (unadopted)"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("self-signed certificate: %v", err)
+	}
+
+	idKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("identity key: %v", err)
+	}
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{}, idKey)
+	if err != nil {
+		t.Fatalf("csr: %v", err)
+	}
+
+	g := &fakeGateway{fingerprint: fp, token: testToken}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /pair", func(w http.ResponseWriter, r *http.Request) {
+		var c gwpush.Challenge
+		if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if c.Proof == "" {
+			// The hub's first call is a probe: it cannot compute a proof until
+			// the handshake has revealed this gateway's key.
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if c.Proof != gwpush.Proof(g.token, gwpush.DomainHubHello, c.Nonce, fp, nil) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		proofFP := fp
+		if g.wrongFingerprint {
+			proofFP = strings.Repeat("00", 32)
+		}
+		sum := sha256.Sum256(csr)
+		_ = json.NewEncoder(w).Encode(gwpush.Hello{
+			Fingerprint: fp, CSR: csr, Version: "test",
+			Proof: gwpush.Proof(g.token, gwpush.DomainGWHello, c.Nonce, proofFP, sum[:]),
+		})
+	})
+	mux.HandleFunc("POST /adopt", func(w http.ResponseWriter, r *http.Request) {
+		var a gwpush.Adoption
+		if err := json.NewDecoder(r.Body).Decode(&a); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		want := gwpush.Proof(g.token, gwpush.DomainInstall, a.Nonce, fp, gwpush.MaterialDigest(a))
+		if a.Proof != want {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		g.adopted = &a
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	g.srv = httptest.NewUnstartedServer(mux)
+	g.srv.TLS = &tls.Config{
+		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
+		MinVersion:   tls.VersionTLS13,
+	}
+	g.srv.StartTLS()
+	t.Cleanup(g.srv.Close)
+	return g
+}
+
+// The happy path: the hub reaches a gateway whose key it has never seen, and
+// learns it.
+func TestPairingLearnsTheGatewaysKey(t *testing.T) {
 	g := newFakeGateway(t)
 	c := gwpush.New(testCA(t), nil, 5*time.Second)
 
-	b, err := c.Fetch(t.Context(), g.srv.URL, g.fingerprint)
+	issued, fingerprint, err := c.Pair(t.Context(), g.srv.URL, testToken, "gw-1", []byte("runner-ca"))
 	if err != nil {
-		t.Fatalf("fetch: %v", err)
+		t.Fatalf("pair: %v", err)
 	}
-	if b.Version != "test" {
-		t.Fatalf("version = %q, want test", b.Version)
-	}
-
-	issued, err := c.Adopt(t.Context(), g.srv.URL, g.fingerprint, "gw-1", []byte("runner-ca"), b.CSR)
-	if err != nil {
-		t.Fatalf("adopt: %v", err)
+	if fingerprint != g.fingerprint {
+		t.Fatalf("learned fingerprint %s, want %s", fingerprint, g.fingerprint)
 	}
 	if g.adopted == nil {
 		t.Fatal("the gateway was never told it had been adopted")
 	}
-	if g.adopted.GatewayID != "gw-1" {
-		t.Fatalf("gateway id = %q, want gw-1", g.adopted.GatewayID)
-	}
-	if g.adopted.HubSubject != gwpush.HubSubject {
-		t.Fatalf("hub subject = %q, want %q", g.adopted.HubSubject, gwpush.HubSubject)
+	if g.adopted.GatewayID != "gw-1" || g.adopted.HubSubject != gwpush.HubSubject {
+		t.Fatal("the adoption did not carry the identity the hub assigned")
 	}
 	if string(g.adopted.RunnerCA) != "runner-ca" {
 		t.Fatal("the gateway was not given the runner CA, so it cannot verify a runner's poll")
 	}
 
-	// The issued identity must name the gateway the HUB chose, and must be
-	// server-auth only: a gateway serves, it never dials.
+	// Server-auth only, named by the hub, not a CA.
 	blk, _ := pem.Decode(issued.CertPEM)
-	if blk == nil {
-		t.Fatal("issued certificate is not PEM")
-	}
 	leaf, err := x509.ParseCertificate(blk.Bytes)
 	if err != nil {
 		t.Fatalf("parse issued: %v", err)
@@ -209,150 +206,52 @@ func TestAdoptionPinsTheGatewayByItsKey(t *testing.T) {
 	}
 }
 
-// The whole security claim of §2: a wrong fingerprint fails the HANDSHAKE, so
-// no request is ever processed by either side.
-func TestAWrongFingerprintNeverCompletesTheHandshake(t *testing.T) {
+// Without the right token the hub gets nowhere — and, importantly, issues
+// nothing.
+func TestPairingWithTheWrongTokenIssuesNothing(t *testing.T) {
 	g := newFakeGateway(t)
 	c := gwpush.New(testCA(t), nil, 5*time.Second)
 
-	wrong := strings.Repeat("ab", 32)
-	_, err := c.Fetch(t.Context(), g.srv.URL, wrong)
-	if err == nil {
-		t.Fatal("a gateway presenting a different key was accepted")
-	}
-	if !strings.Contains(err.Error(), "fingerprint") {
-		t.Fatalf("error = %v, want it to name the fingerprint mismatch", err)
+	if _, _, err := c.Pair(t.Context(), g.srv.URL, "sgt_wrong", "gw-1", nil); err == nil {
+		t.Fatal("a gateway paired with a token it does not hold")
 	}
 	if g.adopted != nil {
-		t.Fatal("the gateway saw a request despite the pin failing")
+		t.Fatal("an identity was delivered despite the pairing failing")
 	}
 }
 
-// A gateway that presents one key and claims another is refused rather than
-// reconciled — the two answers cannot both be true.
-func TestAGatewayDisagreeingWithItselfIsRefused(t *testing.T) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("key: %v", err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(2),
-		Subject:      pkix.Name{CommonName: "liar"},
-		NotBefore:    time.Now().Add(-time.Minute),
-		NotAfter:     time.Now().Add(time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatalf("certificate: %v", err)
-	}
-	real, err := pki.Fingerprint(&key.PublicKey)
-	if err != nil {
-		t.Fatalf("fingerprint: %v", err)
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /bootstrap", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(gwpush.Bootstrap{
-			Fingerprint: strings.Repeat("cd", 32), // not its own key
-			CSR:         []byte{1, 2, 3},
-		})
-	})
-	srv := httptest.NewUnstartedServer(mux)
-	srv.TLS = &tls.Config{
-		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
-		MinVersion:   tls.VersionTLS13,
-	}
-	srv.StartTLS()
-	defer srv.Close()
-
-	c := gwpush.New(testCA(t), nil, 5*time.Second)
-	if _, err := c.Fetch(t.Context(), srv.URL, real); err == nil {
-		t.Fatal("a gateway that misreports its own fingerprint was accepted")
-	}
-}
-
-// An empty CSR is refused: adoption that produced no identity would leave a
-// gateway trusted and unreachable.
-func TestABootstrapWithoutACSRIsRefused(t *testing.T) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("key: %v", err)
-	}
-	fp, err := pki.Fingerprint(&key.PublicKey)
-	if err != nil {
-		t.Fatalf("fingerprint: %v", err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(3),
-		Subject:      pkix.Name{CommonName: "empty"},
-		NotBefore:    time.Now().Add(-time.Minute),
-		NotAfter:     time.Now().Add(time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatalf("certificate: %v", err)
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /bootstrap", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(gwpush.Bootstrap{Fingerprint: fp})
-	})
-	srv := httptest.NewUnstartedServer(mux)
-	srv.TLS = &tls.Config{
-		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
-		MinVersion:   tls.VersionTLS13,
-	}
-	srv.StartTLS()
-	defer srv.Close()
-
-	c := gwpush.New(testCA(t), nil, 5*time.Second)
-	if _, err := c.Fetch(t.Context(), srv.URL, fp); err == nil {
-		t.Fatal("a bootstrap with no certificate request was accepted")
-	}
-}
-
-// Adoption must not proceed on a request the gateway cannot prove it owns.
-func TestAdoptRefusesAnUnsignableRequest(t *testing.T) {
+// The gateway's proof is bound to the key it is serving. A proof computed over
+// any other key is what a relayed exchange looks like, and the hub must refuse
+// rather than issue an identity to whatever answered.
+func TestAProofOverAnotherKeyIsRefused(t *testing.T) {
 	g := newFakeGateway(t)
+	g.wrongFingerprint = true
 	c := gwpush.New(testCA(t), nil, 5*time.Second)
-	if _, err := c.Adopt(t.Context(), g.srv.URL, g.fingerprint, "gw-1", nil, []byte("not a csr")); err == nil {
-		t.Fatal("a malformed certificate request was signed")
+
+	_, _, err := c.Pair(t.Context(), g.srv.URL, testToken, "gw-1", nil)
+	if err == nil {
+		t.Fatal("the hub accepted a proof computed over a key other than the one on the wire")
+	}
+	if !strings.Contains(err.Error(), "install token") {
+		t.Fatalf("error = %v, want it to name the failed proof", err)
 	}
 	if g.adopted != nil {
-		t.Fatal("the gateway was adopted despite no identity being issued")
+		t.Fatal("an identity was delivered to a peer that could not prove itself")
 	}
 }
 
-// A gateway erroring is reported with its status, and its response body is
-// bounded — it is the least trusted thing that talks to the hub.
-func TestAGatewayErrorIsReportedWithItsStatus(t *testing.T) {
-	g := newFakeGateway(t)
-	c := gwpush.New(testCA(t), nil, 5*time.Second)
-	err := c.Push(t.Context(), g.srv.URL, "gw-1", map[string]string{"x": "y"})
-	if err == nil {
-		t.Fatal("pushing to a gateway with no mutual TLS succeeded")
+// An unreachable gateway is an error, not a silent success.
+func TestPairingAnUnreachableGatewayFails(t *testing.T) {
+	c := gwpush.New(testCA(t), nil, time.Second)
+	if _, _, err := c.Pair(t.Context(), "https://127.0.0.1:1", testToken, "gw-1", nil); err == nil {
+		t.Fatal("pairing with nothing at all succeeded")
 	}
 }
 
-func TestPushDeliversTheWholeConfiguration(t *testing.T) {
-	// Push requires mutual TLS, which needs the gateway to hold a hub-issued
-	// identity; the fake gateway is self-signed, so verify the request never
-	// leaves rather than the delivery.
-	g := newFakeGateway(t)
-	c := gwpush.New(testCA(t), nil, 5*time.Second)
-	if err := c.Push(context.Background(), g.srv.URL, "gw-1", map[string]int{"version": 3}); err == nil {
-		t.Fatal("a configuration was pushed to a gateway that presented no hub-issued identity")
-	}
-	if g.pushed != nil {
-		t.Fatal("configuration reached a gateway the hub could not verify")
-	}
-}
+// --- after adoption ----------------------------------------------------------
 
-// hubIdentity mints the hub's own client certificate from the gateway CA —
-// the credential a gateway checks before believing a configuration push.
+// hubIdentity mints the hub's own client certificate from the gateway CA — the
+// credential a gateway checks before believing a configuration push.
 func hubIdentity(t *testing.T, ca *pki.CA) tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -376,7 +275,6 @@ func hubIdentity(t *testing.T, ca *pki.CA) tls.Certificate {
 type adoptedGateway struct {
 	srv    *httptest.Server
 	pushed []byte
-	csr    []byte
 	seen   *gwpush.Adoption
 }
 
@@ -407,7 +305,7 @@ func newAdoptedGateway(t *testing.T, ca *pki.CA, id string) *adoptedGateway {
 		t.Fatalf("next csr: %v", err)
 	}
 
-	g := &adoptedGateway{csr: nextCSR}
+	g := &adoptedGateway{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /config", func(w http.ResponseWriter, r *http.Request) {
 		buf := make([]byte, 4096)
@@ -416,7 +314,7 @@ func newAdoptedGateway(t *testing.T, ca *pki.CA, id string) *adoptedGateway {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /csr", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(gwpush.Bootstrap{CSR: nextCSR})
+		_ = json.NewEncoder(w).Encode(gwpush.Hello{CSR: nextCSR})
 	})
 	mux.HandleFunc("POST /identity", func(w http.ResponseWriter, r *http.Request) {
 		var a gwpush.Adoption
@@ -457,16 +355,14 @@ func TestPushOverMutualTLSReachesAnAdoptedGateway(t *testing.T) {
 }
 
 // The certificate is pinned to the gateway the hub MEANT to reach. Chaining to
-// the CA alone would trust any gateway it ever issued, including someone
-// else's.
+// the CA alone would trust any gateway it ever issued, including someone else's.
 func TestPushRefusesTheWrongGatewayOnTheRightCA(t *testing.T) {
 	ca := testCA(t)
 	g := newAdoptedGateway(t, ca, "gw-9")
 	hub := hubIdentity(t, ca)
 	c := gwpush.New(ca, &hub, 5*time.Second)
 
-	err := c.Push(t.Context(), g.srv.URL, "gw-OTHER", map[string]int{"version": 1})
-	if err == nil {
+	if err := c.Push(t.Context(), g.srv.URL, "gw-OTHER", map[string]int{"version": 1}); err == nil {
 		t.Fatal("a configuration was pushed to a different gateway holding a valid certificate")
 	}
 	if g.pushed != nil {
@@ -498,27 +394,51 @@ func TestRenewIssuesAFreshIdentityOverMutualTLS(t *testing.T) {
 	}
 }
 
-// The claim that matters: a gateway whose identity has LAPSED is not stranded.
-// Mutual TLS fails, and the hub falls back to the key an operator pinned at
-// adoption — which is why the fingerprint is retained rather than discarded.
-func TestALapsedIdentityIsRecoveredThroughThePinnedKey(t *testing.T) {
+// A gateway that cannot be verified at all is a failure, not a fallback to
+// something weaker.
+func TestRenewFailsWhenTheGatewayCannotBeVerified(t *testing.T) {
 	ca := testCA(t)
-	g := newFakeGateway(t) // self-signed: mutual TLS to the CA cannot succeed
+	g := newFakeGateway(t) // self-signed: neither the CA nor the pin will match
 	hub := hubIdentity(t, ca)
 	c := gwpush.New(ca, &hub, 5*time.Second)
 
-	// The fake gateway serves /bootstrap but not /csr, so the mTLS attempt
-	// fails at the handshake and the pinned path takes over.
-	issued, err := c.Renew(t.Context(), g.srv.URL, g.fingerprint, "gw-1", []byte("runner-ca"))
-	if err != nil {
-		t.Fatalf("a gateway with no valid identity was left stranded: %v", err)
+	if _, err := c.Renew(t.Context(), g.srv.URL, strings.Repeat("11", 32), "gw-1", nil); err == nil {
+		t.Fatal("an unverifiable gateway was renewed")
 	}
-	blk, _ := pem.Decode(issued.CertPEM)
-	leaf, err := x509.ParseCertificate(blk.Bytes)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
+}
+
+// The proof construction is DUPLICATED in gateway/internal/adopt, because
+// gateway/go.mod has zero dependencies and the hub cannot import from it —
+// the same trade ADR-0046 §2 makes for logging. Duplicated crypto that silently
+// disagreed would be far worse than the dependency, so both sides are pinned to
+// this one vector. Its twin is TestTheProofConstructionMatchesTheHub in
+// gateway/internal/adopt: if this value changes, that one must change with it,
+// and a mismatch means no gateway can be adopted.
+// to be identical on both sides of a duplicated implementation.
+//
+//nolint:gosec // G101: a fixed TEST VECTOR, not a credential — its whole job is
+const (
+	vectorToken       = "sgt_fixed_vector"
+	vectorNonce       = "0123456789abcdef0123456789abcdef"
+	vectorFingerprint = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+	vectorHubHello    = "922c3fdfc328e5c2bbaabfa3508c61908edcc6da9c889c6f878bd3d54dbdf5e3"
+)
+
+func TestTheProofConstructionMatchesTheGateway(t *testing.T) {
+	got := gwpush.Proof(vectorToken, gwpush.DomainHubHello, vectorNonce, vectorFingerprint, nil)
+	if got != vectorHubHello {
+		t.Fatalf("proof = %s, want %s — the hub and the gateway would no longer agree, "+
+			"and no gateway could be adopted", got, vectorHubHello)
 	}
-	if leaf.Subject.CommonName != "gw-1" {
-		t.Fatalf("recovered subject = %q, want gw-1", leaf.Subject.CommonName)
+
+	// The three properties the construction exists for.
+	if gwpush.Proof(vectorToken, gwpush.DomainInstall, vectorNonce, vectorFingerprint, nil) == got {
+		t.Fatal("two domains produce the same proof; a hello proof would satisfy an install")
+	}
+	if gwpush.Proof(vectorToken, gwpush.DomainHubHello, vectorNonce, strings.Repeat("00", 32), nil) == got {
+		t.Fatal("the proof does not depend on the fingerprint, so it could not detect interception")
+	}
+	if gwpush.Proof("sgt_other", gwpush.DomainHubHello, vectorNonce, vectorFingerprint, nil) == got {
+		t.Fatal("the proof does not depend on the token")
 	}
 }
