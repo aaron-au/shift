@@ -152,6 +152,13 @@ func main() {
 		opts.Gateways = client
 		gwLoop = gwsync.New(gwsync.Options{
 			Store: st, Client: client,
+			// The configuration a gateway serves is derived from hub state on
+			// every pass — routes, the runner roster, this gateway's proxy
+			// trust — rather than cached. A cached roster would keep routing to
+			// a runner the hub no longer vouches for.
+			ConfigFor: func(ctx context.Context, gatewayID string) (any, error) {
+				return st.BuildGatewayConfig(ctx, gatewayID)
+			},
 			RunnerCA: func() []byte {
 				if opts.RunnerCA == nil {
 					return nil

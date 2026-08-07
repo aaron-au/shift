@@ -279,18 +279,25 @@ than this system.
   work and are marked deprecated. They go once the hub push side has been
   proven end to end in a deployment; removing them before that would strand
   `deploy/k8s`.
-- **Per-runner gateway address list**, and the config *builder* — the hub side
-  now has the records, the CA, the dial-out client and the reconcile loop
-  (`hub/internal/{pki,gwpush,gwsync}`), but `ConfigFor` is unset, so a hub
-  currently maintains gateway identities and pushes nothing. An adopted gateway
-  with a live identity and no routes serves 503, which is the correct answer
-  for a gateway with nothing to route.
+- **Per-runner gateway address list.** A runner is told which gateways to poll
+  by `-gateways`; the hub does not yet distribute that. Everything else on the
+  hub side is wired: `store.BuildGatewayConfig` derives a gateway's whole
+  document from live state on every pass — routes scoped to it or to all
+  gateways, the runner roster its selectors resolve against, and its own proxy
+  trust — and `hubd` hands that to `gwsync` as `ConfigFor`.
 
-  Bootstrap no longer inverts: the gateway publishes a public-key fingerprint,
-  an administrator carries it to the hub, and the hub dials. Identity renewal is
-  pushed ahead of expiry by `gwsync`, and the fingerprint is *retained* after
-  adoption, so an identity that lapses anyway is recovered by falling back to
-  the pinned key rather than stranding the gateway.
+  Routes are a hub resource (`gateway_routes`), not a flow-document field:
+  a caller's bearer token, source allowlist and body cap are ingress policy and
+  have nothing to do with what a flow does with a record. Putting them in the
+  flow would mean editing a flow to rotate a credential.
+
+  The hub's document type is a MIRROR of `gateway/internal/config` — separate
+  modules, and the gateway's has no dependencies. Both sides parse
+  `testdata/gateway-config.golden.json`, the gateway's side with
+  `DisallowUnknownFields`, because a renamed field would otherwise vanish on
+  unmarshal with no error anywhere and the policy it carried would quietly stop
+  being applied.
+
 - **Caller identity inside the flow.** The gateway stamps the principal and the
   runner receives it, but nothing yet binds it into the flow document — that
   needs the flow-variable model ADR-0031 leaves open. Until then the principal

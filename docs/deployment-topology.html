@@ -706,6 +706,26 @@ gatewayd -public :8443 -control 0.0.0.0:8444 \
             nothing. If you lose the state directory, <em>rotate</em> in the hub issues a fresh token
             and the gateway re-pairs on redeploy.
           </p>
+          <p class="muted">
+            An adopted gateway with no routes serves 503 — correctly, since it has nothing to route.
+            Add a <b>route</b> in the hub to expose a flow: a public path, the flow it runs, which
+            runners may serve it, and the ingress policy around it. The caller's bearer token is minted
+            by the hub and returned once.
+          </p>
+<pre><span class="c"># expose a flow at a public path</span>
+POST /api/v1/routes
+  {"path":"/orders", "method":"POST", "flow":"orders-in",
+   "auth_principal":"acme-erp",
+   "selector":{"workload":"api"},
+   "max_body_bytes":1048576}
+
+<span class="c">→ {"id":"…", "token":"sgr_…"}   ← give this to the caller; shown once</span></pre>
+          <p class="muted">
+            A route with no credential must say <code>"public": true</code> explicitly — otherwise
+            "open to the internet" and "somebody forgot the token" look identical in a request body.
+            Route changes raise the configuration generation, and every gateway converges on the next
+            reconcile pass.
+          </p>
         </div>
       </li>
 

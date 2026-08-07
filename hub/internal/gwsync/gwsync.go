@@ -91,7 +91,10 @@ func (l *Loop) Tick(ctx context.Context) {
 		slog.Error("listing gateways to pair", "event", "gateway.reconcile_failed", "error", err.Error())
 	}
 	for _, gw := range pending {
-		l.pair(ctx, gw)
+		// Re-scope to the gateway's own tenant. The listings above deliberately
+		// span accounts; everything that ACTS on a gateway stays scoped, so a
+		// bug here cannot reach across tenants.
+		l.pair(store.WithAccount(ctx, gw.AccountID), gw)
 	}
 
 	due, err := l.opts.Store.GatewaysDue(ctx, l.opts.RenewBefore)
@@ -100,7 +103,7 @@ func (l *Loop) Tick(ctx context.Context) {
 		return
 	}
 	for _, gw := range due {
-		l.reconcile(ctx, gw)
+		l.reconcile(store.WithAccount(ctx, gw.AccountID), gw)
 	}
 }
 

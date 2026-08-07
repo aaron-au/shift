@@ -173,6 +173,12 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("POST /api/v1/gateways/{id}/adopt", a.admin(a.adoptGateway))           // ADR-0049 §2
 	mux.Handle("POST /api/v1/gateways/{id}/rotate", a.admin(a.rotateGatewayAdoption)) // ADR-0049 §4
 	mux.Handle("DELETE /api/v1/gateways/{id}", a.admin(a.deleteGateway))              // deletion = revocation
+	mux.Handle("PUT /api/v1/gateways/{id}/trusted-proxies", a.admin(a.setGatewayTrustedProxies))
+	mux.Handle("POST /api/v1/routes", a.admin(a.createRoute))        // ADR-0038 §5
+	mux.Handle("GET /api/v1/routes", a.admin(a.listRoutes))          // ADR-0038 §5
+	mux.Handle("DELETE /api/v1/routes/{id}", a.admin(a.deleteRoute)) // ADR-0038 §5
+	mux.Handle("POST /api/v1/routes/{id}/rotate-token", a.admin(a.rotateRouteToken))
+	mux.Handle("PUT /api/v1/runners/{id}/labels", a.admin(a.setRunnerLabels)) // ADR-0041 §3
 	mux.Handle("PUT /api/v1/flows/{name}", a.admin(a.deployFlow))
 	mux.Handle("GET /api/v1/flows", a.admin(a.listFlows))
 	mux.Handle("GET /api/v1/flows/{name}", a.admin(a.getFlow))
