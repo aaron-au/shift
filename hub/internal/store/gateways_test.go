@@ -22,6 +22,17 @@ func learn(t *testing.T, s *store.Store, id, fp string) {
 	}
 }
 
+// adopt is the whole pairing: learn the key, then record the identity issued
+// during it. Only the second half sets adopted_at, which is what everything
+// downstream — pushes, renewals, the runner's address list — keys off.
+func adopt(t *testing.T, s *store.Store, id, fp string) {
+	t.Helper()
+	learn(t, s, id, fp)
+	if err := s.MarkGatewayAdopted(t.Context(), id, "01", time.Now().Add(90*24*time.Hour)); err != nil {
+		t.Fatalf("mark adopted: %v", err)
+	}
+}
+
 func TestGatewayAdoptionLifecycle(t *testing.T) {
 	s := open(t)
 	ctx := t.Context()

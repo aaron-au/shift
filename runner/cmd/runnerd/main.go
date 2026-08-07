@@ -52,7 +52,7 @@ func main() {
 		spillDir      = flag.String("spill-dir", os.Getenv("SHIFT_SPILL_DIR"), "scratch dir (default: OS temp)")
 		name          = flag.String("name", envOr("SHIFT_RUNNER_NAME", hostname()), "runner display name")
 		hubURL        = flag.String("hub", os.Getenv("SHIFT_HUB_URL"), "hub base URL; enables the lease intake (M3b)")
-		gatewayAddrs  = flag.String("gateways", os.Getenv("SHIFT_GATEWAYS"), "comma-separated gateway control-listener URLs to poll for inbound work (ADR-0038); empty = no gateway intake")
+		gatewayAddrs  = flag.String("gateways", os.Getenv("SHIFT_GATEWAYS"), "comma-separated gateway control-listener URLs to poll for inbound work (ADR-0038); added to the list the hub supplies, never replacing it; without a hub this is the whole list")
 		flowsDir      = flag.String("flows-dir", os.Getenv("SHIFT_FLOWS_DIR"), "directory of {\"document\":<flow>} JSON files to register as webhooks at start-up (the hub is authoritative when attached)")
 		gatewayPolls  = flag.Int("gateway-polls", envInt("SHIFT_GATEWAY_POLLS", 16), "parked polls per gateway; bounds concurrent inbound requests from one gateway (the resource governor is still the real ceiling)")
 		hubCA         = flag.String("hub-ca", os.Getenv("SHIFT_HUB_CA_FILE"), "extra CA certificate for the hub (self-signed bundles)")
@@ -281,10 +281,21 @@ func main() {
 	// carries zero inbound attack surface as a result. The runner reaches OUT
 	// to each gateway, so it needs no inbound reachability of its own — which
 	// is what lets it sit behind a deny-all ingress policy.
-	if addrs := splitList(*gatewayAddrs); len(addrs) > 0 {
+	//
+	// With a hub, the address list comes FROM the hub and the flag is a
+	// static addition to it (ADR-0038 §4) — so a new gateway does not mean
+	// redeploying every runner, and a runner whose labels match no route
+	// polls nothing. Without a hub, the flag is the whole list.
+	addrs := splitList(*gatewayAddrs)
+	var discover func(context.Context) ([]string, error)
+	if client != nil {
+		discover = client.SyncGateways
+	}
+	if len(addrs) > 0 || discover != nil {
 		gw := gwclient.New(gwclient.Options{
-			Addrs:   addrs,
-			Service: svc,
+			Addrs:    addrs,
+			Discover: discover,
+			Service:  svc,
 			Lookup: func(name string) (*flowdoc.Document, bool) {
 				h, ok := hooks.Get(name)
 				if !ok {
@@ -307,7 +318,8 @@ func main() {
 		})
 		go gw.Run(loopCtx)
 		slog.Info("gateway intake started (placement labels come from the hub, ADR-0041)",
-			shiftlog.KeyEvent, "runner.gateway.intake", "gateways", len(addrs))
+			shiftlog.KeyEvent, "runner.gateway.intake",
+			"gateways", len(addrs), "discovery", discover != nil)
 	}
 
 	// Webhook ingress rate limit (M6c, ADR-0021), keyed {hook, source IP}.

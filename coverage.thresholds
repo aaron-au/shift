@@ -67,7 +67,7 @@ github.com/aaron-au/shift/hub/internal/oidcauth 94
 github.com/aaron-au/shift/hub/internal/ratelimit 86
 github.com/aaron-au/shift/hub/internal/scheduler 83
 github.com/aaron-au/shift/hub/internal/secrets 85
-github.com/aaron-au/shift/hub/internal/store 83
+github.com/aaron-au/shift/hub/internal/store 84
 github.com/aaron-au/shift/pkg/boomi 80
 github.com/aaron-au/shift/pkg/buildinfo 81
 github.com/aaron-au/shift/pkg/consign 91
@@ -101,7 +101,7 @@ github.com/aaron-au/shift/runner/internal/leaseloop 73
 # The gateway intake (ADR-0038). What is uncovered is the retry/backoff arms of
 # the poll loop and the secret-binding branch, which need a hub; the request
 # path itself is covered end to end against a stub gateway.
-github.com/aaron-au/shift/runner/internal/gwclient 75
+github.com/aaron-au/shift/runner/internal/gwclient 78
 github.com/aaron-au/shift/runner/internal/bind 90
 github.com/aaron-au/shift/runner/internal/ratelimit 86
 github.com/aaron-au/shift/runner/internal/service 71
@@ -131,6 +131,11 @@ github.com/aaron-au/shift/pkg/httpsec 98
 # serial-generation arms, which need a broken crypto source; every rule that
 # decides WHAT gets issued — subject, usages, key strength, proof of possession
 # — is covered.
-github.com/aaron-au/shift/hub/internal/gwpush 80
-github.com/aaron-au/shift/hub/internal/gwsync 74
+github.com/aaron-au/shift/hub/internal/gwpush 81
+github.com/aaron-au/shift/hub/internal/gwsync 81
 github.com/aaron-au/shift/hub/internal/pki 88
+
+# The logging setup and vocabulary (ADR-0046). What is uncovered is Fatalf
+# (it exits the process) and the tty-detection arms of isTerminal; the record
+# schema the gateway's own copy is held to is covered by a conformance test.
+github.com/aaron-au/shift/pkg/shiftlog 75

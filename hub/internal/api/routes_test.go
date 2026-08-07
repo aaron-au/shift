@@ -228,6 +228,60 @@ func TestTrustedProxiesValidateTheirCIDRs(t *testing.T) {
 	}
 }
 
+// The address list is answered for the identity the credential proves. An
+// admin token has no runner identity, so there is no list to serve it — and a
+// runner asking gets its own, never one it named.
+func TestARunnerAsksForItsOwnGatewayList(t *testing.T) {
+	srv := newServer(t)
+
+	var tok struct{ Token string }
+	call(t, http.MethodPost, srv.URL+"/api/v1/runner-tokens", adminToken, `{}`, &tok)
+	var reg struct {
+		RunnerID string `json:"runner_id"`
+		Secret   string `json:"secret"`
+	}
+	if code := call(t, http.MethodPost, srv.URL+"/api/v1/runners/register", "",
+		`{"token":"`+tok.Token+`","name":"r1"}`, &reg); code != http.StatusCreated {
+		t.Fatalf("register = %d", code)
+	}
+
+	gateways := func() []map[string]any {
+		t.Helper()
+		var out struct {
+			Gateways []map[string]any `json:"gateways"`
+		}
+		if code := call(t, http.MethodGet, srv.URL+"/api/v1/gateways/sync", reg.Secret, "", &out); code != http.StatusOK {
+			t.Fatalf("sync = %d", code)
+		}
+		return out.Gateways
+	}
+
+	// Nothing published yet: an empty list, not an error. A runner with no
+	// inbound work is the default deployment (ADR-0038).
+	if got := gateways(); len(got) != 0 {
+		t.Fatalf("gateways = %v, want none", got)
+	}
+
+	// A gateway that has not been adopted cannot verify this runner, so it is
+	// still not somewhere to poll even once a route exists.
+	if code := call(t, http.MethodPost, srv.URL+"/api/v1/gateways", adminToken,
+		`{"name":"dmz","url":"https://gw.example"}`, nil); code != http.StatusCreated {
+		t.Fatalf("create gateway = %d", code)
+	}
+	if code := call(t, http.MethodPost, srv.URL+"/api/v1/routes", adminToken,
+		`{"path":"/orders","flow":"f","auth_principal":"acme"}`, nil); code != http.StatusCreated {
+		t.Fatalf("create route = %d", code)
+	}
+	if got := gateways(); len(got) != 0 {
+		t.Fatalf("gateways = %v, want none while the gateway is unadopted", got)
+	}
+
+	// The admin realm has no runner identity behind it.
+	if code := call(t, http.MethodGet, srv.URL+"/api/v1/gateways/sync", adminToken, "", nil); code != http.StatusUnauthorized {
+		t.Fatalf("sync as an admin = %d, want 401", code)
+	}
+}
+
 // Routes are admin-realm. A runner credential must not reach them: a
 // compromised runner that could mint a route would have given itself a public
 // path into any flow.

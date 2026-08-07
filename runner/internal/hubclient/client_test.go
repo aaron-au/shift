@@ -509,6 +509,67 @@ func TestSyncWebhooksErrorStatus(t *testing.T) {
 	}
 }
 
+// The runner asks the hub which gateways to poll (ADR-0038 §4). It sends
+// nothing: the hub answers for the identity this credential proves.
+func TestSyncGateways(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/gateways/sync", func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > 0 {
+			t.Errorf("the runner sent a body; the hub answers for the credential, not for what is asked")
+		}
+		_, _ = io.WriteString(w, `{"gateways":[
+			{"id":"a","url":"https://gw-a.example:8444"},
+			{"id":"b","url":""},
+			{"id":"c","url":"https://gw-c.example:8444"}]}`)
+	})
+	c := newClient(t, mux)
+
+	addrs, err := c.SyncGateways(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A record with no URL is nothing to dial; polling "" would fail forever
+	// at the backoff ceiling with nothing useful in the log.
+	want := []string{"https://gw-a.example:8444", "https://gw-c.example:8444"}
+	if len(addrs) != len(want) {
+		t.Fatalf("addrs = %v, want %v", addrs, want)
+	}
+	for i := range want {
+		if addrs[i] != want[i] {
+			t.Fatalf("addrs = %v, want %v", addrs, want)
+		}
+	}
+}
+
+// A failure must be an ERROR, never an empty list: the caller keeps the
+// gateways it already polls on error, so "no gateways" and "could not ask"
+// must not arrive looking the same.
+func TestSyncGatewaysFailsLoudly(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		handler http.HandlerFunc
+	}{
+		{"server error", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}},
+		{"malformed body", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, `{"gateways":`)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /api/v1/gateways/sync", tc.handler)
+			addrs, err := newClient(t, mux).SyncGateways(t.Context())
+			if err == nil {
+				t.Fatalf("addrs = %v, want an error", addrs)
+			}
+			if addrs != nil {
+				t.Fatalf("addrs = %v on error, want none", addrs)
+			}
+		})
+	}
+}
+
 // A cancelled context aborts the transport before any response — the loop
 // relies on this to break out of a long-poll on shutdown. The handler has a
 // bounded fallback so a missed cancellation can't wedge server shutdown.

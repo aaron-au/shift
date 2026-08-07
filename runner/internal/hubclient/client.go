@@ -455,6 +455,35 @@ func (c *Client) SyncWebhooks(ctx context.Context) ([]WebhookConfig, error) {
 	return out.Webhooks, nil
 }
 
+// SyncGateways fetches the gateway control-listener URLs this runner should be
+// polling (ADR-0038 §4). The hub answers for the identity this client's
+// credential proves, so there is nothing to send.
+func (c *Client) SyncGateways(ctx context.Context) ([]string, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/v1/gateways/sync", "")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("hubclient: sync gateways: %s", readErr(resp))
+	}
+	var out struct {
+		Gateways []struct {
+			URL string `json:"url"`
+		} `json:"gateways"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("hubclient: sync gateways: %w", err)
+	}
+	addrs := make([]string, 0, len(out.Gateways))
+	for _, g := range out.Gateways {
+		if g.URL != "" {
+			addrs = append(addrs, g.URL)
+		}
+	}
+	return addrs, nil
+}
+
 func (c *Client) do(ctx context.Context, method, path, body string) (*http.Response, error) {
 	var rd io.Reader
 	if body != "" {

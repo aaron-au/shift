@@ -632,9 +632,12 @@ See [06-hub.md](06-hub.md) for the hub side of the protocol.
 
 ## Gateway intake (`internal/gwclient`, ADR-0038)
 
-`runnerd -gateways <url,url> -labels environment=production,workload=api`
-starts a **third** intake over the same task service: one long-poll loop per
-gateway.
+With a hub attached, gateway intake needs no configuration at all: the runner
+asks `GET /api/v1/gateways/sync` which gateways to poll and starts a **third**
+intake over the same task service — one long-poll group per gateway, added and
+withdrawn as the hub's answer changes. `-gateways <url,url>` adds static
+addresses to that list (and is the whole list without a hub); an address given
+locally is never withdrawn by a remote answer.
 
 The direction is the whole point. The gateway sits in a DMZ and never dials
 inward — the runner reaches **out** to it, so a runner behind NAT, a firewall,
@@ -664,10 +667,14 @@ Four properties worth stating because each is load-bearing:
   off exponentially per gateway; the hub lease loop and the other gateways
   carry on.
 
-Labels are what the runner **is**; the gateway matches route selectors against
-them. A malformed label is skipped rather than fatal — labels widen what a
-runner is eligible for, never what it may do, so a typo costing eligibility is
-the safe direction.
+- **A discovery failure is not an empty list.** An unreachable hub says nothing
+  about which gateways exist, so a failed pass keeps the current set. The
+  control plane must not be able to take the data plane down with it.
+
+Labels are what the runner **is**, and the hub asserts them (ADR-0041 §3) — the
+runner tells a gateway nothing about itself. The same labels decide both halves:
+which gateways it is told to poll, and which routes those gateways will pick it
+for.
 
 Because capacity is checked when the runner decides to poll rather than when
 work lands, a runner parked on several gateways can be handed several requests
