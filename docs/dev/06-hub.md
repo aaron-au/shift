@@ -301,6 +301,39 @@ return 404 on resolve — cloud hubs hide dangerous connectors "not even
 visible." Empty (self-hosted default) allows everything. Name-based and
 hub-wide today; capability metadata and per-tenant scope are later adds.
 
+## Test usage is metered, not capped (ADR-0048 §4)
+
+There is no record limit, no wall-clock limit and no quota on test executions —
+§2's core allowance was withdrawn. What replaces all of them is **measurement**:
+test usage is metered, excluded from billing, and **visible**.
+
+That is the whole control, and it works because §3 already removed every
+unattended route into test capacity. The abuse path requires a person
+repeatedly clicking run, which is self-limiting. So abuse becomes *observable*
+rather than capped, and a fair-use clause handles the rare case. **Unmeasured is
+the failure mode to avoid; uncapped is fine.**
+
+`usage_events.test` (migration 0022) carries the dimension, taken from the
+task's own marker at completion — it travelled with the work from the moment it
+was enqueued, so the request context is never consulted.
+
+- **`UsageReport.Totals`, `ByFlow` and `Series` are billable only.** A number
+  mixing the two is a number nobody can invoice from.
+- **`UsageReport.Test` is the same rollup over test executions**, reported
+  beside it. Split with one `FILTER` pass rather than two queries, so a row
+  cannot land in neither or both because a second statement saw a different
+  snapshot.
+- **`UsageByFlow.TestExecutions`** carries it per flow, because *"who is
+  hammering test mode"* is the question the visibility exists to answer and an
+  account total cannot answer it.
+- **The export carries `test` as a COLUMN, not a filter.** The billing platform
+  ingests a cursor stream and must classify what it receives without asking —
+  and dropping test rows would also hide the usage this exists to surface.
+
+Direct executions (webhook / API triggers) are never test-marked, stated
+explicitly rather than defaulted: those arrive over the data plane as
+production ingress, which §3 excludes by definition.
+
 ## The test tier (ADR-0048 §1/§3)
 
 Testing an integration usually means running it against something real, because

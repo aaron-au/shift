@@ -297,7 +297,8 @@
         <div class="gtoolbar"><button class="ghost" onclick="exportUsage()">Export CSV</button>
           <span class="hint">metering substrate — counts only, never payload</span></div>
         <div class="stats" id="usage-totals"></div>
-        <table><thead><tr><th>Flow</th><th>Runs</th><th>Records in→out</th><th>Exec s</th></tr></thead>
+        <div class="stats" id="usage-test"></div>
+        <table><thead><tr><th>Flow</th><th>Runs</th><th>Test runs</th><th>Records in→out</th><th>Exec s</th></tr></thead>
         <tbody id="usage-flows"></tbody></table>
       </div>
       <div class="resize"></div>
@@ -1203,12 +1204,22 @@ function renderUsage(u) {
     stat(num(t.failed), 'failed') + stat(num(t.records_in), 'records in') +
     stat(num(t.records_out), 'records out') +
     stat((t.exec_seconds || 0).toFixed(1), 'exec seconds');
+  // Test usage sits BESIDE the billable figures rather than inside them
+  // (ADR-0048 §4). There is no quota on it, so being able to see it is the
+  // whole control — unmeasured is the failure mode, uncapped is fine.
+  const tt = u.test || {};
+  $('usage-test').innerHTML = tt.executions
+    ? `<div class="stat"><b>${esc(num(tt.executions))}</b><span>test executions — not billed</span></div>` +
+      stat(num(tt.records_in), 'test records in') +
+      stat((tt.exec_seconds || 0).toFixed(1), 'test exec seconds')
+    : '<span class="hint">no test executions in range</span>';
   const flows = u.by_flow || [];
   $('usage-flows').innerHTML = flows.map(f =>
     `<tr><td>${esc(f.flow_name || '(unnamed)')}</td><td class="mono">${num(f.executions)}</td>
+      <td class="mono">${f.test_executions ? num(f.test_executions) : '—'}</td>
       <td class="mono">${num(f.records_in)}→${num(f.records_out)}</td>
       <td class="mono">${(f.exec_seconds || 0).toFixed(1)}</td></tr>`
-  ).join('') || '<tr><td colspan="4" class="hint">no usage in range</td></tr>';
+  ).join('') || '<tr><td colspan="5" class="hint">no usage in range</td></tr>';
 }
 
 // exportUsage downloads the raw metering ledger as CSV (the same rows the
