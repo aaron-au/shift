@@ -29,6 +29,11 @@ type Runner struct {
 	// it cannot read back is a guess with a button on it.
 	Labels map[string]string `json:"labels,omitempty"`
 
+	// Tier is what this runner is FOR (ADR-0048 §1): "production" or "test".
+	// Asserted by the hub, never by the runner — one that could name its own
+	// tier could escape metering, or receive work it should not see.
+	Tier string `json:"tier"`
+
 	// CertNotAfter is when this runner's client certificate stops being
 	// honoured (ADR-0044). Surfaced because expiry is silent otherwise: the
 	// runner simply stops leasing, and nothing says why.
@@ -211,7 +216,7 @@ func (s *Store) AuthRunner(ctx context.Context, secret string) (id, accountID st
 // Runners lists the account's registered runners, newest first.
 func (s *Store) Runners(ctx context.Context) ([]Runner, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, name, registered_at, last_seen_at, labels, cert_not_after FROM runners
+		`SELECT id, name, registered_at, last_seen_at, labels, cert_not_after, tier FROM runners
 		 WHERE account_id = $1 ORDER BY registered_at DESC`, accountID(ctx))
 	if err != nil {
 		return nil, err
@@ -221,7 +226,7 @@ func (s *Store) Runners(ctx context.Context) ([]Runner, error) {
 	for rows.Next() {
 		var r Runner
 		var labels []byte
-		if err := rows.Scan(&r.ID, &r.Name, &r.Registered, &r.LastSeen, &labels, &r.CertNotAfter); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.Registered, &r.LastSeen, &labels, &r.CertNotAfter, &r.Tier); err != nil {
 			return nil, err
 		}
 		if err := unmarshalMap(labels, &r.Labels); err != nil {
@@ -230,4 +235,47 @@ func (s *Store) Runners(ctx context.Context) ([]Runner, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// Runner tiers (ADR-0048 §1).
+const (
+	TierProduction = "production"
+	TierTest       = "test"
+)
+
+// ValidTier reports whether t is a runner tier.
+func ValidTier(t string) bool { return t == TierProduction || t == TierTest }
+
+// SetRunnerTier records what a runner is FOR (ADR-0048 §1).
+//
+// Hub-asserted, like labels and for the same reason: a runner that could name
+// its own tier could claim production capacity to escape metering, or claim
+// test capacity to be handed work it should not see. Nothing the runner sends
+// is consulted.
+func (s *Store) SetRunnerTier(ctx context.Context, id, tier string) error {
+	if !ValidTier(tier) {
+		return fmt.Errorf("store: unknown runner tier %q", tier)
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE runners SET tier = $3 WHERE account_id = $1 AND id = $2`,
+		accountID(ctx), id, tier)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// RunnerTier reads one runner's tier. Used on the claim path, which must not
+// trust anything the runner says about itself.
+func (s *Store) RunnerTier(ctx context.Context, id string) (string, error) {
+	var tier string
+	err := s.pool.QueryRow(ctx,
+		`SELECT tier FROM runners WHERE account_id = $1 AND id = $2`, accountID(ctx), id).Scan(&tier)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return tier, err
 }

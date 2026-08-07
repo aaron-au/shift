@@ -223,7 +223,7 @@
       <div class="winbody">
         <div class="gtoolbar"><button onclick="newRunnerToken()">+ Registration token</button>
           <span class="hint">single-use — one per runner</span></div>
-        <table><thead><tr><th>Name</th><th>Labels</th><th>Certificate</th><th>Last seen</th><th></th></tr></thead><tbody id="runners"></tbody></table>
+        <table><thead><tr><th>Name</th><th>Tier</th><th>Labels</th><th>Certificate</th><th>Last seen</th><th></th></tr></thead><tbody id="runners"></tbody></table>
         <div class="hint">Labels are asserted HERE, never by the runner (ADR-0041): a runner that could label itself could claim production traffic.</div>
       </div>
       <div class="resize"></div>
@@ -605,8 +605,12 @@ async function publishSel(i, name) {
   if (!await confirmPublish(name, v)) return;
   try { await publish(name, v); } catch (e) { alert('publish failed: ' + e.message); }
 }
+// runNow is one of exactly TWO things that can mark work as a test execution
+// (ADR-0048 §3) — the other is an API call that flags itself. Not schedules,
+// not webhook routes: a scheduled flow on test capacity is a production flow
+// metered wrong.
 async function runNow(name) {
-  try { await api(`/api/v1/flows/${encodeURIComponent(name)}/execute`, {method: 'POST', body: '{}'}); refresh(); }
+  try { await api(`/api/v1/flows/${encodeURIComponent(name)}/execute`, {method: 'POST', body: '{"test":true}'}); refresh(); }
   catch (e) { alert('run failed: ' + e.message); }
 }
 async function editSchedule(name) {
@@ -651,12 +655,16 @@ function renderRunners(rs) {
     // (ADR-0009); a gateway with none has not been adopted yet.
     const cert = certCell(r.cert_not_after, 'bearer secret');
     return `<tr><td>${esc(r.name)}<div class="hint mono">${esc(r.id.slice(0, 8))}</div></td>
+     <td>${r.tier === 'test'
+        ? `<span class="pill" title="takes test-marked work only (ADR-0048)">test</span>`
+        : `<span class="hint">production</span>`}</td>
      <td>${labels.length ? labels.map(([k, v]) => `<span class="pill mono">${esc(k)}=${esc(v)}</span>`).join(' ') : '<span class="hint">none</span>'}</td>
      <td>${cert}</td>
      <td class="mono">${r.last_seen_at ? new Date(r.last_seen_at).toLocaleTimeString() : '—'}</td>
      <td class="rowacts"><button class="ghost" onclick="editLabels('${escJS(r.id)}','${escJS(r.name)}')">Labels</button>
+       <button class="ghost" onclick="setTier('${escJS(r.id)}','${escJS(r.tier === 'test' ? 'production' : 'test')}')">${r.tier === 'test' ? 'Make production' : 'Make test'}</button>
        <button class="ghost" onclick="revokeRunner('${escJS(r.id)}','${escJS(r.name)}')">Revoke</button></td></tr>`;
-  }).join('') || '<tr><td colspan="5" class="hint">no runners registered</td></tr>';
+  }).join('') || '<tr><td colspan="6" class="hint">no runners registered</td></tr>';
 }
 
 // certCell states expiry in the terms an operator acts on. A certificate that
@@ -694,6 +702,18 @@ async function editLabels(id, name) {
 // revokeRunner is deletion, and under mTLS deletion IS revocation (ADR-0044):
 // the identity the certificate carries stops resolving. Worth spelling out in
 // the confirmation, because "delete" reads as tidying up a list.
+// setTier records what a runner is FOR (ADR-0048 §1). Hub-asserted: a runner
+// that could name its own tier could escape metering, or be handed work it
+// should not see.
+async function setTier(id, tier) {
+  if (tier === 'test' && !confirm('Make this a TEST runner?\n\nIt will then take test-marked work ONLY — no schedules, no webhook routes, nothing from the durable queue.')) return;
+  try {
+    await api('/api/v1/runners/' + encodeURIComponent(id) + '/tier',
+      {method: 'PUT', body: JSON.stringify({tier})});
+    refresh();
+  } catch (e) { alert('tier: ' + e.message); }
+}
+
 async function revokeRunner(id, name) {
   if (!confirm(`Revoke ${name}?\n\nIts credential stops being honoured immediately and any task it still holds will be re-dispatched when the lease expires.`)) return;
   try { await api('/api/v1/runners/' + encodeURIComponent(id), {method: 'DELETE'}); refresh(); }

@@ -39,6 +39,12 @@ type Task struct {
 	// different runner -- restarts where the last attempt reached, and pinned
 	// so it is never handed to a build that could read it as a different
 	// position.
+	// Test marks a task as a TEST execution (ADR-0048 §3): metered
+	// separately, excluded from billing, and the only kind a test runner may
+	// claim. Set only by the studio's run-now and an API execution that flags
+	// itself — never by a schedule or a webhook.
+	Test bool `json:"test,omitempty"`
+
 	Checkpoint          []byte `json:"checkpoint,omitempty"`
 	CheckpointConnector string `json:"checkpoint_connector,omitempty"`
 	CheckpointVersion   string `json:"checkpoint_version,omitempty"`
@@ -59,6 +65,22 @@ type TaskAttempt struct {
 // smoke-testing). With an idempotency key, re-enqueueing returns the
 // existing task id instead of creating a duplicate.
 func (s *Store) Enqueue(ctx context.Context, flowName string, version int, idempotencyKey string, maxAttempts int) (string, error) {
+	return s.enqueue(ctx, flowName, version, idempotencyKey, maxAttempts, false)
+}
+
+// EnqueueTest queues a TEST execution (ADR-0048 §3): metered separately,
+// excluded from billing, and claimable by a test runner.
+//
+// A separate method rather than a boolean on Enqueue, deliberately. A trailing
+// bool on a five-argument call is invisible at the call site and transposes
+// silently; a named method cannot be passed by accident, and grepping for the
+// two callers allowed to mark work as test — the studio's run-now and an
+// explicitly-flagged API execution — is then a grep for one identifier.
+func (s *Store) EnqueueTest(ctx context.Context, flowName string, version int, idempotencyKey string, maxAttempts int) (string, error) {
+	return s.enqueue(ctx, flowName, version, idempotencyKey, maxAttempts, true)
+}
+
+func (s *Store) enqueue(ctx context.Context, flowName string, version int, idempotencyKey string, maxAttempts int, test bool) (string, error) {
 	f, doc, err := s.GetFlow(ctx, flowName, version)
 	if err != nil {
 		return "", err
@@ -68,7 +90,7 @@ func (s *Store) Enqueue(ctx context.Context, flowName string, version int, idemp
 	}
 	maxAttempts = effectiveMaxAttempts(doc, maxAttempts)
 
-	return enqueueTx(ctx, s.pool, accountID(ctx), f.ID, f.Name, version, doc, idempotencyKey, maxAttempts)
+	return enqueueTx(ctx, s.pool, accountID(ctx), f.ID, f.Name, version, doc, idempotencyKey, maxAttempts, test)
 }
 
 // effectiveMaxAttempts resolves a task's attempt ceiling. A flow declared
@@ -95,17 +117,17 @@ type queryExecer interface {
 // enqueueTx inserts one task under an explicit account (FireDue crosses
 // accounts; the context's account would be wrong there). With an
 // idempotency key, a replay returns the existing task's id.
-func enqueueTx(ctx context.Context, q queryExecer, account, flowID, flowName string, version int, doc json.RawMessage, idempotencyKey string, maxAttempts int) (string, error) {
+func enqueueTx(ctx context.Context, q queryExecer, account, flowID, flowName string, version int, doc json.RawMessage, idempotencyKey string, maxAttempts int, test bool) (string, error) {
 	id := newUUID()
 	var key *string
 	if idempotencyKey != "" {
 		key = &idempotencyKey
 	}
 	tag, err := q.Exec(ctx,
-		`INSERT INTO tasks (id, account_id, flow_id, flow_name, flow_version, document, idempotency_key, max_attempts)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		`INSERT INTO tasks (id, account_id, flow_id, flow_name, flow_version, document, idempotency_key, max_attempts, test)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		 ON CONFLICT (account_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
-		id, account, flowID, flowName, version, doc, key, maxAttempts)
+		id, account, flowID, flowName, version, doc, key, maxAttempts, test)
 	if err != nil {
 		return "", err
 	}
@@ -131,6 +153,20 @@ func (s *Store) Claim(ctx context.Context, runnerID string, leaseTTL time.Durati
 	if err := s.ReapExpired(ctx); err != nil {
 		return nil, err
 	}
+	// What this runner is FOR is read from the ROSTER, never from the claim
+	// (ADR-0048 §1). A test runner takes test-marked work only.
+	//
+	// The converse is deliberately NOT true: test-marked work may also run on
+	// a production runner. Forbidding that would mean run-now stops working
+	// entirely in every deployment that has not registered a test runner —
+	// turning an additive capability into a breaking change — and the tier's
+	// commercial purpose is to keep test load OFF production capacity by
+	// choice, not to make testing impossible without it. The metering
+	// dimension travels with the task either way (§4).
+	tier, err := s.RunnerTier(ctx, runnerID)
+	if err != nil {
+		return nil, err
+	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -139,21 +175,25 @@ func (s *Store) Claim(ctx context.Context, runnerID string, leaseTTL time.Durati
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	t := &Task{State: "leased", LeasedBy: runnerID}
+	// testOnly is the whole filter: true restricts a test runner to
+	// test-marked work; false leaves a production runner able to take either.
+	testOnly := tier == TierTest
 	err = tx.QueryRow(ctx,
 		`UPDATE tasks SET state = 'leased', leased_by = $1, attempt = attempt + 1,
 		        lease_expires_at = now() + make_interval(secs => $2), started_at = COALESCE(started_at, now())
 		 WHERE id = (
 		   SELECT id FROM tasks WHERE state = 'queued' AND account_id = $3
+		     AND (NOT $4 OR test)
 		   ORDER BY enqueued_at
 		   FOR UPDATE SKIP LOCKED
 		   LIMIT 1)
 		 RETURNING id, flow_name, flow_version, document,
 		           COALESCE(idempotency_key, ''), attempt, max_attempts, enqueued_at,
-		           checkpoint, COALESCE(checkpoint_connector, ''), COALESCE(checkpoint_version, '')`,
-		runnerID, leaseTTL.Seconds(), accountID(ctx)).Scan(
+		           checkpoint, COALESCE(checkpoint_connector, ''), COALESCE(checkpoint_version, ''), test`,
+		runnerID, leaseTTL.Seconds(), accountID(ctx), testOnly).Scan(
 		&t.ID, &t.FlowName, &t.FlowVersion, &t.Document,
 		&t.IdempotencyKey, &t.Attempt, &t.MaxAttempts, &t.Enqueued,
-		&t.Checkpoint, &t.CheckpointConnector, &t.CheckpointVersion)
+		&t.Checkpoint, &t.CheckpointConnector, &t.CheckpointVersion, &t.Test)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -376,10 +416,10 @@ func (s *Store) GetTask(ctx context.Context, id string) (Task, error) {
 	var t Task
 	err := s.pool.QueryRow(ctx,
 		`SELECT id, flow_name, flow_version, COALESCE(idempotency_key,''), state, attempt, max_attempts,
-		        COALESCE(leased_by::text,''), enqueued_at, started_at, finished_at, COALESCE(error,''), result
+		        COALESCE(leased_by::text,''), enqueued_at, started_at, finished_at, COALESCE(error,''), result, test
 		 FROM tasks WHERE id = $1 AND account_id = $2`, id, accountID(ctx)).Scan(
 		&t.ID, &t.FlowName, &t.FlowVersion, &t.IdempotencyKey, &t.State, &t.Attempt, &t.MaxAttempts,
-		&t.LeasedBy, &t.Enqueued, &t.Started, &t.Finished, &t.Error, &t.Result)
+		&t.LeasedBy, &t.Enqueued, &t.Started, &t.Finished, &t.Error, &t.Result, &t.Test)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Task{}, ErrNotFound
 	}
@@ -414,7 +454,7 @@ func (s *Store) Tasks(ctx context.Context, limit int) ([]Task, error) {
 	}
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, flow_name, flow_version, COALESCE(idempotency_key,''), state, attempt, max_attempts,
-		        COALESCE(leased_by::text,''), enqueued_at, started_at, finished_at, COALESCE(error,''), result
+		        COALESCE(leased_by::text,''), enqueued_at, started_at, finished_at, COALESCE(error,''), result, test
 		 FROM tasks WHERE account_id = $2 ORDER BY enqueued_at DESC LIMIT $1`, limit, accountID(ctx))
 	if err != nil {
 		return nil, err
@@ -425,7 +465,7 @@ func (s *Store) Tasks(ctx context.Context, limit int) ([]Task, error) {
 		var t Task
 		if err := rows.Scan(
 			&t.ID, &t.FlowName, &t.FlowVersion, &t.IdempotencyKey, &t.State, &t.Attempt, &t.MaxAttempts,
-			&t.LeasedBy, &t.Enqueued, &t.Started, &t.Finished, &t.Error, &t.Result); err != nil {
+			&t.LeasedBy, &t.Enqueued, &t.Started, &t.Finished, &t.Error, &t.Result, &t.Test); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
