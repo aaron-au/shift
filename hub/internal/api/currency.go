@@ -153,6 +153,10 @@ func (a *api) noticesWithCurrency(r *http.Request, name string, version int) []f
 	if err != nil {
 		return notices
 	}
+	// End-of-life first: "this stops working on the 3rd" outranks "this is
+	// three versions behind", and the order notices are read in is decided
+	// here rather than in each client.
+	notices = append(notices, a.eolNotices(r, doc)...)
 	return append(notices, a.currencyNotices(r.Context(), doc)...)
 }
 

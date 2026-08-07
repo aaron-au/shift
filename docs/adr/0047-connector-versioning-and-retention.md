@@ -2,7 +2,7 @@
 
 Date: 2026-08-06
 
-Status: **§1–§6 built; §7–§9 pending.** Extends ADR-0011 (signed registry) and
+Status: **§1–§7 built; §8–§9 pending.** Extends ADR-0011 (signed registry) and
 ADR-0013/0029 (flow model). Consumes the review registry from ADR-0042 §7.
 
 Built so far: resolution moved from dispatch to publish (§1) — `flowdoc` steps
@@ -14,7 +14,9 @@ Reference-counted retention (§2) and the yank/collect split (§3) — the
 collection, and a yank response that names the flows still pinned. Currency
 (§4/§5/§6) — a per-version compatibility class, span-folding notices that
 advise rather than refuse, and a publish gate that drags a flow forward without
-ever blocking a rollback. See `docs/dev/06-hub.md`.
+ever blocking a rollback. End-of-life (§7) — a required reason, a named list
+of the flows that will stop, escalating notices, and a 410 that says what
+happened rather than a 404 that reads as a typo. See `docs/dev/06-hub.md`.
 
 ## Context
 

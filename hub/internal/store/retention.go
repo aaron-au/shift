@@ -2,7 +2,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Connector retention (ADR-0047 §2/§3).
@@ -189,4 +193,122 @@ func scanRefs(rows interface {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// SetConnectorEOL schedules a version to stop resolving (ADR-0047 §7).
+//
+// Across every platform, deliberately: yank is per (os, arch) because a bad
+// BUILD can be platform-specific, but a poisoned dependency is a property of
+// the release, and an EOL that left one platform live would be an EOL that did
+// not happen.
+//
+// A deadline in the past is allowed and takes effect at once. That is the
+// emergency shape — "this is being exploited now" — and refusing it would mean
+// the one case where speed matters requires two calls.
+func (s *Store) SetConnectorEOL(ctx context.Context, name, version string, deadline time.Time, reason, target string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE connector_versions v
+		    SET eol_at = $3, eol_reason = $4, eol_target = $5
+		   FROM connectors c
+		  WHERE v.connector_id = c.id AND c.account_id = $1 AND c.name = $2 AND v.version = $6`,
+		accountID(ctx), name, deadline, reason, target, version)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ClearConnectorEOL withdraws a scheduled end-of-life.
+//
+// Possible because declaring one is a human act on a live system and humans
+// mistype version numbers. It does NOT resurrect a deadline that has already
+// passed for any flow that failed in the meantime — those tasks are gone — but
+// it stops the bleeding, which is what somebody who has just realised needs.
+func (s *Store) ClearConnectorEOL(ctx context.Context, name, version string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE connector_versions v
+		    SET eol_at = NULL, eol_reason = '', eol_target = ''
+		   FROM connectors c
+		  WHERE v.connector_id = c.id AND c.account_id = $1 AND c.name = $2 AND v.version = $3`,
+		accountID(ctx), name, version)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// EOLVersion is one scheduled end-of-life and what it will take down.
+type EOLVersion struct {
+	Connector string    `json:"connector"`
+	Version   string    `json:"version"`
+	EOLAt     time.Time `json:"eol_at"`
+	Reason    string    `json:"eol_reason,omitempty"`
+	Target    string    `json:"eol_target,omitempty"`
+	Flows     []FlowRef `json:"flows,omitempty"`
+	Passed    bool      `json:"passed"`
+}
+
+// ScheduledEOLs lists every version with a deadline, soonest first, each with
+// the published flows still pinning it.
+//
+// One call because the two halves are never useful apart: a deadline nobody is
+// affected by needs no action, and an affected flow list without the deadline
+// does not say when.
+func (s *Store) ScheduledEOLs(ctx context.Context) ([]EOLVersion, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT c.name, v.version, v.eol_at, v.eol_reason, v.eol_target
+		   FROM connector_versions v
+		   JOIN connectors c ON c.id = v.connector_id
+		  WHERE c.account_id = $1 AND v.eol_at IS NOT NULL
+		  ORDER BY v.eol_at, c.name, v.version`, accountID(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []EOLVersion{}
+	for rows.Next() {
+		var e EOLVersion
+		if err := rows.Scan(&e.Connector, &e.Version, &e.EOLAt, &e.Reason, &e.Target); err != nil {
+			return nil, err
+		}
+		e.Passed = !time.Now().Before(e.EOLAt)
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		refs, err := s.ConnectorReferences(ctx, out[i].Connector, out[i].Version)
+		if err != nil {
+			return nil, err
+		}
+		out[i].Flows = refs
+	}
+	return out, nil
+}
+
+// EOLFor reports the scheduled end-of-life for one version, if any.
+func (s *Store) EOLFor(ctx context.Context, connector, version string) (*EOLVersion, error) {
+	var e EOLVersion
+	err := s.pool.QueryRow(ctx,
+		`SELECT c.name, v.version, v.eol_at, v.eol_reason, v.eol_target
+		   FROM connector_versions v
+		   JOIN connectors c ON c.id = v.connector_id
+		  WHERE c.account_id = $1 AND c.name = $2 AND v.version = $3 AND v.eol_at IS NOT NULL
+		  LIMIT 1`, accountID(ctx), connector, version).Scan(
+		&e.Connector, &e.Version, &e.EOLAt, &e.Reason, &e.Target)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	e.Passed = !time.Now().Before(e.EOLAt)
+	return &e, nil
 }

@@ -397,6 +397,49 @@ Two exemptions, both deliberate:
   the registry, or a version since collected, cannot be ranked — and "unknown"
   must not read as "old" and block a publish.
 
+## Connector end-of-life (ADR-0047 §7)
+
+Retention cannot touch a version a live flow pins — that is exactly what makes
+GC safe — which leaves one gap: a build that is genuinely poisoned (a CVE in a
+dependency, a protocol flaw) and still in use. EOL is the deliberate act that
+closes it, and it is **reserved for security**. The routine upgrade path is §4
+and §5.
+
+Announced, escalating, then loud:
+
+1. `POST /api/v1/connectors/{name}/versions/{version}/eol` with a deadline, a
+   **required** reason, and where to go instead. The response **names** the
+   published flows that will stop, because the next step is telling those
+   people. Posting an empty body withdraws it — declaring one is a human act on
+   a live system, and humans mistype version numbers.
+2. Until the deadline the version resolves exactly as before, while
+   `connector-eol.scheduled` rides on every deploy and publish of a flow
+   pinning it. Severity stays `warn` and the **wording** escalates: flowdoc has
+   two severities on purpose, so urgency belongs in the sentence somebody
+   reads, not in a level nobody can rank.
+3. At the deadline it stops resolving. `ResolveConnector` returns `EOLError`
+   and the API answers **410 Gone**, not 404 — the runner puts that message in
+   the task result, and the person reading it has a flow that worked yesterday
+   and no other clue. "Not found" would send them looking for a typo. The
+   artifact download refuses too, so a manifest cached before the deadline is
+   not a way around it.
+
+**They fail; they are not silently upgraded.** Swapping a connector underneath
+live customer data without anyone testing it is precisely the risk this ADR
+exists to remove, and doing it automatically on a timer would be the same
+mistake with a clock attached. Failing after weeks of escalating notice is
+honest.
+
+Publishing a flow whose pin is already dead is refused (422) **in both
+directions** — including a rollback, unlike the currency gate in §4. Rolling
+back to a connector that no longer resolves gives nobody a working flow, so
+blocking it costs nothing and saying so now beats a task failure in an hour.
+
+EOL is version-level, not per platform: yank is per `(os, arch)` because a bad
+*build* can be platform-specific, but a poisoned dependency is a property of
+the release, and an EOL that left one platform live would be an EOL that did
+not happen.
+
 ## Connector retention (ADR-0047 §2/§3)
 
 Pinning made a published flow immutable about which build it runs, which

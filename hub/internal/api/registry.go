@@ -163,6 +163,13 @@ func (a *api) resolveConnector(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	cv, err := a.st.ResolveConnector(r.Context(), r.PathValue("name"),
 		q.Get("version"), q.Get("os"), q.Get("arch"))
+	if eol, ok := errors.AsType[*store.EOLError](err); ok {
+		// 410, not 404. The runner puts this message in the task result, and
+		// the person reading it has a flow that worked yesterday and no other
+		// clue — "not found" would send them looking for a typo (ADR-0047 §7).
+		writeErrCode(w, http.StatusGone, "connector_end_of_life", eol)
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, err)
 		return
@@ -184,6 +191,12 @@ func (a *api) downloadConnector(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	cv, err := a.st.ResolveConnector(r.Context(), r.PathValue("name"),
 		r.PathValue("version"), q.Get("os"), q.Get("arch"))
+	if eol, ok := errors.AsType[*store.EOLError](err); ok {
+		// Also here: a cached manifest from before the deadline must not be a
+		// way to fetch the artifact afterwards.
+		writeErrCode(w, http.StatusGone, "connector_end_of_life", eol)
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, err)
 		return

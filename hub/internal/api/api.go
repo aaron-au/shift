@@ -181,6 +181,8 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("GET /api/v1/gateways/sync", a.runner(a.syncGateways))                                         // ADR-0038 §4
 	mux.Handle("GET /api/v1/connectors/{name}/versions/{version}/references", a.admin(a.connectorReferences)) // ADR-0047 §2
 	mux.Handle("POST /api/v1/connectors/collect", a.admin(a.collectConnectors))                               // ADR-0047 §2
+	mux.Handle("GET /api/v1/connectors/eol", a.admin(a.listEOLs))                                             // ADR-0047 §7
+	mux.Handle("POST /api/v1/connectors/{name}/versions/{version}/eol", a.admin(a.setConnectorEOL))           // ADR-0047 §7
 	mux.Handle("PUT /api/v1/runners/{id}/labels", a.admin(a.setRunnerLabels))                                 // ADR-0041 §3
 	mux.Handle("PUT /api/v1/flows/{name}", a.admin(a.deployFlow))
 	mux.Handle("GET /api/v1/flows", a.admin(a.listFlows))
@@ -489,7 +491,8 @@ func (a *api) deployFlow(w http.ResponseWriter, r *http.Request) {
 		// is, and what crossing that span would mean (ADR-0047 §5/§6). A draft
 		// is usually unpinned, so this is normally silent — it speaks when an
 		// author has pinned deliberately, or is editing a published flow.
-		"notices": append(flowdoc.Review(doc), a.currencyNotices(r.Context(), doc)...),
+		"notices": append(append(flowdoc.Review(doc), a.eolNotices(r, doc)...),
+			a.currencyNotices(r.Context(), doc)...),
 	})
 }
 
@@ -598,6 +601,16 @@ func (a *api) publishFlow(w http.ResponseWriter, r *http.Request) {
 	// window. That is where the version limitation lives — bounded by the last
 	// time somebody edited the flow rather than by a calendar, and landing at
 	// the one moment a developer is already in the builder with it open.
+	// A pin whose end-of-life has passed cannot run at all (ADR-0047 §7), so
+	// publishing it produces a flow that fails at its first task. Refused in
+	// BOTH directions — unlike the currency gate below, blocking a rollback
+	// here costs nothing, because rolling back to a connector that no longer
+	// resolves does not give anybody a working flow.
+	if dead := a.deadPinsFor(r, name, version); len(dead) > 0 {
+		writeErrCode(w, http.StatusUnprocessableEntity, "connector_end_of_life",
+			errors.New(strings.Join(dead, "; ")))
+		return
+	}
 	if stale, err := a.staleUpgradePins(r, name, version); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
