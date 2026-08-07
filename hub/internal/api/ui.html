@@ -761,8 +761,9 @@ async function openVersions(name) {
         ? `<button class="ghost" onclick="yankVersion('${escJS(name)}','${escJS(v.version)}','${escJS(v.os)}','${escJS(v.arch)}',false)">Restore</button>`
         : `<button class="ghost" onclick="yankVersion('${escJS(name)}','${escJS(v.version)}','${escJS(v.os)}','${escJS(v.arch)}',true)">Yank</button>`;
       const uses = `<button class="ghost" onclick="showReferences('${escJS(name)}','${escJS(v.version)}')">Used by</button>`;
+      const eol = `<button class="ghost" onclick="editEOL('${escJS(name)}','${escJS(v.version)}')">${v.eol_at ? 'EOL…' : 'End of life'}</button>`;
       return `<tr><td>${esc(v.version)}${compatChip(v.compat)}</td><td class="mono">${esc(v.os)}/${esc(v.arch)}</td>
-        <td class="mono">${(v.size_bytes / 1048576).toFixed(1)} MiB</td><td>${state}</td><td class="rowacts">${uses}${btn}</td></tr>
+        <td class="mono">${(v.size_bytes / 1048576).toFixed(1)} MiB</td><td>${state}${eolState(v)}</td><td class="rowacts">${uses}${eol}${btn}</td></tr>
         ${v.release_notes ? `<tr><td colspan="5" class="hint" style="padding-top:0">${esc(v.release_notes)}</td></tr>` : ''}`;
     }).join('');
     box.innerHTML = `<div class="ops"><b>${esc(name)}</b> — versions
@@ -770,6 +771,47 @@ async function openVersions(name) {
       <tbody>${rows}</tbody></table>
       <div class="hint" style="margin:.4rem 0 0">Yank withdraws a version from NEW pins; flows already pinned to it keep running (ADR-0047 §3). "Used by" lists those flows.</div></div>`;
   } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+// eolState says whether a version is dying or already dead (ADR-0047 §7).
+// Shown in the state column next to live/yanked because they answer the same
+// question — can I use this? — and an operator should not have to open two
+// places to find out.
+function eolState(v) {
+  if (!v.eol_at) return '';
+  const when = new Date(v.eol_at);
+  if (when <= Date.now()) return ` <span class="bad" title="${esc(v.eol_reason || '')}">END OF LIFE</span>`;
+  const days = Math.ceil((when - Date.now()) / 86400000);
+  return ` <span class="warn" title="${esc(v.eol_reason || '')}">EOL in ${days}d</span>`;
+}
+
+// editEOL schedules or withdraws an end-of-life.
+//
+// Reserved for security, and the prompt says so — the routine way to move a
+// flow forward is republishing it, not killing the build underneath it.
+async function editEOL(name, version) {
+  const when = prompt(
+    `End-of-life ${name} ${version}\n\n` +
+    `RESERVED FOR SECURITY. On this date the version stops resolving and every flow pinned to it FAILS — ` +
+    `they are not upgraded for you.\n\n` +
+    `Date (YYYY-MM-DD), or blank to withdraw a scheduled one:`, '');
+  if (when === null) return;
+  let body = {};
+  if (when.trim() !== '') {
+    const reason = prompt('Reason — this is what a customer is told when their flow stops:', '');
+    if (!reason) return;
+    const target = prompt('Version to move to (optional but kind):', '') || '';
+    body = {eol_at: new Date(when.trim() + 'T00:00:00Z').toISOString(), reason, target};
+  }
+  try {
+    const r = await api(`/api/v1/connectors/${encodeURIComponent(name)}/versions/${encodeURIComponent(version)}/eol`,
+      {method: 'POST', body: JSON.stringify(body)});
+    const flows = (r.flows || []).map(f => f.flow);
+    if (flows.length) {
+      alert(`Scheduled.\n\n${flows.length} published flow(s) pin this version and will stop running:\n\n` + flows.join('\n'));
+    }
+    openVersions(name);
+  } catch (e) { alert('end of life: ' + e.message); }
 }
 
 // compatChip renders what KIND of change a version is (ADR-0047 §6).

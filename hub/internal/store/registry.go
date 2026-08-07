@@ -41,6 +41,12 @@ type ConnectorVersion struct {
 	// than by signing the claim.
 	Compat       string `json:"compat,omitempty"`
 	ReleaseNotes string `json:"release_notes,omitempty"`
+	// EOL marks a version scheduled to stop resolving (ADR-0047 §7). Until
+	// EOLAt it runs exactly as before; after it, nothing resolves it and
+	// pinned tasks fail naming EOLTarget.
+	EOLAt     *time.Time `json:"eol_at,omitempty"`
+	EOLReason string     `json:"eol_reason,omitempty"`
+	EOLTarget string     `json:"eol_target,omitempty"`
 	// Yanked is set when this version has been withdrawn (marketplace M6e):
 	// resolve/download exclude it, but it stays listed for provenance.
 	// Populated only by ConnectorVersions (the version-history listing).
@@ -198,7 +204,7 @@ func (s *Store) PutConnectorVersion(ctx context.Context, v NewVersion) error {
 // excluded — fail closed.
 func (s *Store) ResolveConnector(ctx context.Context, name, version, osName, arch string) (ConnectorVersion, error) {
 	q := `SELECT c.name, v.version, v.os, v.arch, v.digest, v.signature, k.public_key, b.size_bytes, v.created_at, v.descriptor,
-	             v.compat, v.release_notes
+	             v.compat, v.release_notes, v.eol_at, v.eol_reason, v.eol_target
 	        FROM connector_versions v
 	        JOIN connectors c ON c.id = v.connector_id
 	        JOIN publisher_keys k ON k.id = v.publisher_key_id AND k.revoked_at IS NULL
@@ -215,11 +221,54 @@ func (s *Store) ResolveConnector(ctx context.Context, name, version, osName, arc
 	err := s.pool.QueryRow(ctx, q, args...).Scan(
 		&cv.Name, &cv.Version, &cv.OS, &cv.Arch, &cv.Digest, &cv.Signature,
 		&cv.PublisherKey, &cv.SizeBytes, &cv.Created, &cv.Descriptor,
-		&cv.Compat, &cv.ReleaseNotes)
+		&cv.Compat, &cv.ReleaseNotes, &cv.EOLAt, &cv.EOLReason, &cv.EOLTarget)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ConnectorVersion{}, ErrNotFound
 	}
-	return cv, err
+	if err != nil {
+		return ConnectorVersion{}, err
+	}
+	// Past its deadline, a version resolves to nothing (ADR-0047 §7). This is
+	// a DIFFERENT answer from "no such version", and the difference is the
+	// point: a task that fails here must say what happened and where to go,
+	// because the flow it belongs to was working yesterday.
+	if cv.PastEOL(time.Now()) {
+		return ConnectorVersion{}, &EOLError{
+			Connector: cv.Name, Version: cv.Version,
+			Since: *cv.EOLAt, Reason: cv.EOLReason, Target: cv.EOLTarget,
+		}
+	}
+	return cv, nil
+}
+
+// PastEOL reports whether this version has reached its end-of-life deadline.
+func (cv ConnectorVersion) PastEOL(now time.Time) bool {
+	return cv.EOLAt != nil && !now.Before(*cv.EOLAt)
+}
+
+// EOLError is what a resolution of a dead version returns.
+//
+// It carries the whole story rather than a status: the runner puts this string
+// in the task result, and the person reading it has a flow that worked
+// yesterday and no other clue.
+type EOLError struct {
+	Connector string
+	Version   string
+	Since     time.Time
+	Reason    string
+	Target    string
+}
+
+func (e *EOLError) Error() string {
+	msg := fmt.Sprintf("connector %s %s reached end of life on %s and no longer resolves",
+		e.Connector, e.Version, e.Since.UTC().Format(time.RFC3339))
+	if e.Reason != "" {
+		msg += ": " + e.Reason
+	}
+	if e.Target != "" {
+		msg += fmt.Sprintf(" — republish this flow against %s %s", e.Connector, e.Target)
+	}
+	return msg
 }
 
 // LatestConnectorVersion reports the version a new pin should record
@@ -253,7 +302,7 @@ func (s *Store) LatestConnectorVersion(ctx context.Context, name string) (string
 func (s *Store) ConnectorVersions(ctx context.Context, name string) ([]ConnectorVersion, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT c.name, v.version, v.os, v.arch, v.digest, v.signature, k.public_key, b.size_bytes, v.created_at, v.descriptor,
-		        v.compat, v.release_notes, v.yanked_at
+		        v.compat, v.release_notes, v.eol_at, v.eol_reason, v.eol_target, v.yanked_at
 		   FROM connector_versions v
 		   JOIN connectors c ON c.id = v.connector_id
 		   JOIN publisher_keys k ON k.id = v.publisher_key_id
@@ -269,7 +318,7 @@ func (s *Store) ConnectorVersions(ctx context.Context, name string) ([]Connector
 		var cv ConnectorVersion
 		if err := rows.Scan(&cv.Name, &cv.Version, &cv.OS, &cv.Arch, &cv.Digest,
 			&cv.Signature, &cv.PublisherKey, &cv.SizeBytes, &cv.Created, &cv.Descriptor,
-			&cv.Compat, &cv.ReleaseNotes, &cv.Yanked); err != nil {
+			&cv.Compat, &cv.ReleaseNotes, &cv.EOLAt, &cv.EOLReason, &cv.EOLTarget, &cv.Yanked); err != nil {
 			return nil, err
 		}
 		out = append(out, cv)
