@@ -154,8 +154,8 @@ fan-in:   { source → ops } × N → merge(concat|join) → ops → sink
 Graphs that nest or mix them — more than one fan-out, or a fan-out and a
 fan-in together — are valid at the hub and drawable on the canvas but **not
 yet executable**; they fail with an explicit error rather than mis-running
-(issue #59). Two further gaps are tracked: test-mode capture is dropped on
-DAG flows (#60) and per-branch idempotency keys are not derived (#61).
+(issue #59). One gap remains tracked: per-branch idempotency keys are not
+derived (#61).
 
 ### The error model: one cause, and a deliberate stop (ADR-0031)
 
@@ -497,6 +497,19 @@ records a **bounded sample** (default 20 records) of **each stage's output**
 - **ephemeral** — evicted with the task from the ring; no store, no TTL, no
   encryption (nothing at rest);
 - **best-effort** — never fails or stalls a task; stops at the bound.
+
+**On a v3 DAG every path samples** (#60, fixed). Capture used to come back
+empty for anything using tee/router/merge because `executeMulti` discarded the
+sampler — and an empty capture reads as *"no records flowed"*, not *"nobody was
+watching"*. The sampler is now wired onto the upstream pipeline, **each
+branch**, each merge input and the downstream, which is where capture earns
+most: "which branch did this record take" and "did the join match" are
+unanswerable from an upstream sample alone.
+
+That makes the sampler genuinely concurrent — branches run in their own
+goroutines (ADR-0029) — so its mutex is load-bearing rather than a guard
+against a later reader, and it covers the shared scratch batch. The bound is
+per step, so a fan-out does not multiply the sample by the number of paths.
 
 Off by default; the lease path leaves it off (hub-driven test runs land with
 the studio, M5d). The dashboard shows samples inline in the task detail.

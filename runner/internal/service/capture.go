@@ -9,6 +9,7 @@ import (
 
 	"github.com/aaron-au/shift/engine/format/ndjson"
 	"github.com/aaron-au/shift/engine/record"
+	"github.com/aaron-au/shift/engine/stream"
 	"github.com/aaron-au/shift/runner/internal/task"
 )
 
@@ -17,8 +18,10 @@ import (
 // test mode (M5c). The data is payload — it stays runner-side, is redacted
 // like every error path (ADR-0010), and never reaches the hub.
 //
-// It is called synchronously on the pipeline goroutine (one at a time per
-// task); the mutex only guards against a later concurrent reader.
+// CONCURRENCY: on a v3 DAG the branches run in their own goroutines
+// (ADR-0029), so Sample is called from several at once — the mutex is load
+// bearing, not just a guard against a later reader. It covers the scratch
+// batch too, which is why there is one per sampler rather than one per call.
 type captureSampler struct {
 	max    int
 	redact func(string) string
@@ -99,4 +102,19 @@ func (c *captureSampler) result() []task.StepCapture {
 		out = append(out, task.StepCapture{StepID: id, Records: acc.records, More: acc.more})
 	}
 	return out
+}
+
+// sampled wires the sampler onto a pipeline before any ops are appended, or
+// leaves it alone when capture is off.
+//
+// A helper rather than an inline nil check because a DAG builds several
+// pipelines — the upstream, each branch, each merge input, the downstream —
+// and every one of them has to be wired. Missing a single call is exactly the
+// bug this fixes (#60): the capture comes back with the branches absent, which
+// reads as "no records went that way" rather than "nobody was watching".
+func sampled(p *stream.Pipeline, s *captureSampler) *stream.Pipeline {
+	if s == nil {
+		return p
+	}
+	return p.WithSampler(s)
 }
