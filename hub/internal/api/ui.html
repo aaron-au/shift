@@ -108,7 +108,10 @@
   .glegend b{font-weight:600}
   .gtoolbar{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;margin:.4rem 0}
   .gtoolbar button{padding:.15rem .5rem;font-size:.75rem}
+  .chk{display:flex;gap:.35rem;align-items:center;font-size:.8rem;color:var(--text)}
+  .chk input{flex:0 0 auto;width:auto}
   .b-err{min-height:1rem;margin:.2rem 0}
+  .divert{color:var(--warn)}
   /* design-time review (ADR-0042 §7): advisory, never a refusal — styled apart
      from .err so "this deploys asynchronously" never reads as a rejection */
   .b-notices{display:flex;flex-direction:column;gap:.3rem;margin:.2rem 0 .5rem}
@@ -1757,6 +1760,63 @@ function verbDir(connector, action) {
   return '';
 }
 
+// testDiversion is the mock / test-input checkbox (ADR-0048 §5).
+//
+// An OPTION on the real step, never a node that stands in for it: the
+// connector, its verb, its config and its pin all stay exactly where they are.
+// That is what lets it be left switched on when the flow ships — production
+// ignores it — instead of being stripped out before every deploy and put back
+// to debug.
+function testDiversion(s) {
+  if (!s.connector || s.connector.startsWith('@')) return ''; // a built-in has nothing to divert
+  if (s.type === 'sink') {
+    const on = !!(s.mock && s.mock.enabled);
+    return `<div class="efield"><label>mock in test</label>
+      <label class="chk"><input type="checkbox"${on ? ' checked' : ''} onchange="toggleMock('${escJS(s.id)}',this.checked)"> record instead of writing</label></div>` +
+      (on ? `<div class="hint" style="margin:.1rem 0">Test runs record what would have been written. Deployed, this is ignored and ${esc(s.connector)} writes normally — so it never needs removing before you publish.</div>` : '');
+  }
+  if (s.type === 'source') {
+    const on = !!(s.testInput && s.testInput.enabled);
+    let body = `<div class="efield"><label>test input</label>
+      <label class="chk"><input type="checkbox"${on ? ' checked' : ''} onchange="toggleTestInput('${escJS(s.id)}',this.checked)"> supply records instead of reading</label></div>`;
+    if (on) {
+      const recs = (s.testInput.records || []).map(r => JSON.stringify(r)).join('\n');
+      body += `<div class="efield"><label>records</label><textarea placeholder='{"id":1}&#10;{"id":2}' onchange="setTestRecords('${escJS(s.id)}',this.value)">${esc(recs)}</textarea></div>`
+            + `<div class="hint" style="margin:.1rem 0">One JSON record per line. Deployed, this is ignored and ${esc(s.connector)} reads normally.</div>`;
+    }
+    return body;
+  }
+  return '';
+}
+
+function toggleMock(id, on) {
+  const s = stepById(id); if (!s) return;
+  if (on) { s.mock = {enabled: true}; } else { delete s.mock; }
+  drawStudio(); renderEditor();
+}
+
+function toggleTestInput(id, on) {
+  const s = stepById(id); if (!s) return;
+  if (on) { s.testInput = Object.assign({records: []}, s.testInput, {enabled: true}); } else { delete s.testInput; }
+  drawStudio(); renderEditor();
+}
+
+// setTestRecords parses one JSON record per line. A bad line is reported and
+// nothing is stored — half-parsed test data is worse than none, because the
+// run that used it would look like it worked.
+function setTestRecords(id, text) {
+  const s = stepById(id); if (!s || !s.testInput) return;
+  const out = [];
+  for (const line of String(text).split('\n')) {
+    const t = line.trim(); if (!t) continue;
+    try { out.push(JSON.parse(t)); }
+    catch (e) { studio.errEl.textContent = 'test input: ' + t.slice(0, 40) + ' is not valid JSON'; return; }
+  }
+  studio.errEl.textContent = '';
+  s.testInput.records = out;
+  drawStudio(); renderEditor();
+}
+
 // connectionPicker offers the reusable connection records that fit this node
 // (ADR-0034). Only ones for the SAME connector: a connection carries that
 // connector's host and credentials, and offering another's would be offering
@@ -1829,7 +1889,7 @@ function connectorPickers(s) {
   }
   return `<div class="efield"><label>connector</label>${connSel}</div>` +
          `<div class="efield"><label>verb</label>${actCtl}</div>` +
-         connectionPicker(s) + versionRow(s) +
+         connectionPicker(s) + versionRow(s) + testDiversion(s) +
          webhookPickers(s);
 }
 
@@ -2157,6 +2217,11 @@ function cleanStep(s) {
     // back to "newest at dispatch", which is the whole thing pinning removed.
     if (s.connection) out.connection = s.connection;
     if (s.version) out.version = s.version;
+    // The test-only options ride with the step for the same reason as the rest
+    // (ADR-0048 §5): a flow opened here and redeployed must not lose the mock
+    // an author is relying on, nor the records they typed in.
+    if (s.mock) out.mock = s.mock;
+    if (s.testInput) out.testInput = s.testInput;
     // A @webhook source's request contract (ADR-0042). These MUST be carried
     // through even though the canvas is not the only way to author them: a
     // flow whose input schema was written by hand and then opened in the
@@ -2212,6 +2277,21 @@ function nodeLabel(n) { return n.connector || n.type; }
 // question about the whole flow, and answering it should not mean clicking
 // every node in turn.
 function nodeVersion(n) { return n.version ? '@' + n.version : ''; }
+
+// divertMark is the SHIFT-DECISION, rendered (ADR-0048 §5).
+//
+// A step with a mock or test input runs one of two ways depending on the
+// execution mode, and that branch is drawn on the node rather than hidden in a
+// checkbox: "test → mock, otherwise → connector". It is platform-owned and not
+// authorable — there is no predicate to edit and no third arm — which is the
+// reason `running_mode` is not a value a developer can route on. The moment it
+// were, somebody would write "test hits the sandbox, production hits the real
+// one", and production would be taking a path nobody ever ran.
+function divertMark(s) {
+  if (s.mock && s.mock.enabled) return '  ⑂ test→mock';
+  if (s.testInput && s.testInput.enabled) return '  ⑂ test→input';
+  return '';
+}
 function summariseVal(v) {
   if (v && typeof v === 'object') return v.$secret ? '🔑' + v.$secret : jsonStr(v);
   return String(v);
@@ -2221,7 +2301,7 @@ function summariseVal(v) {
 function nodeSummary(n) {
   const s = n.step || {};
   if (n.type === 'source' || n.type === 'sink') {
-    const verb = (s.action || ((n.connector || '')[0] === '@' ? '' : '(no verb)')) + nodeVersion(s);
+    const verb = (s.action || ((n.connector || '')[0] === '@' ? '' : '(no verb)')) + nodeVersion(s) + divertMark(s);
     const cfg = (s.config && typeof s.config === 'object') ? s.config : {};
     const k = ['path', 'url', 'query', 'bucket', 'topic', 'host', 'file', 'remote', 'to'].find(x => cfg[x] != null);
     const kv = k ? summariseVal(cfg[k]) : '';

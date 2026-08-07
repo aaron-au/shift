@@ -48,6 +48,13 @@ func (s *Service) bindSourceInfo(step *flow.Step, o SubmitOpts) (stream.Source, 
 		}
 		return ndjson.NewReader(bytes.NewReader(o.WebhookBody), ndjson.ReaderOptions{}), func() {}, host.Info{}, nil
 	}
+	// Test input diverts a real source in a TEST execution (ADR-0048 §5). The
+	// connector below is untouched and still runs in production — the option
+	// is additive, never a substitution, which is why nothing has to be
+	// removed before publishing.
+	if o.Test && step.TestInput != nil && step.TestInput.Enabled {
+		return testInputSource(step), func() {}, host.Info{}, nil
+	}
 	proc, err := s.pool.Get(s.baseCtx, step.Connector, step.Version)
 	if err != nil {
 		return nil, nil, host.Info{}, err
@@ -80,12 +87,21 @@ func (s *Service) bindSink(step *flow.Step, o SubmitOpts) (stream.Sink, func() i
 	case flowdoc.DiscardSink:
 		ds := &discardSink{}
 		return ds, func() int64 { return ds.n }, func() {}, nil
+
 	case flowdoc.ResponseSink:
 		rs := newResponseSink(o.Response)
 		return rs, func() int64 { return rs.n }, func() {}, nil
 	case flowdoc.StopSink:
 		return &stopSink{}, func() int64 { return 0 }, func() {}, nil
 	default:
+		// A mock diverts a real sink in a TEST execution (ADR-0048 §5): it
+		// records what would have been written rather than writing it. The
+		// connector is left entirely alone — not launched, not configured, not
+		// removed from the document — so the deployed flow is unchanged.
+		if o.Test && step.Mock != nil && step.Mock.Enabled {
+			ms := &discardSink{}
+			return ms, func() int64 { return ms.n }, func() {}, nil
+		}
 		proc, err := s.pool.Get(s.baseCtx, step.Connector, step.Version)
 		if err != nil {
 			return nil, nil, nil, err
@@ -121,7 +137,7 @@ func (s *Service) executeFanOut(ctx context.Context, doc *flow.Document, plan *f
 	if len(plan.Sources) != 1 {
 		return execResult{}, fmt.Errorf("service: fan-out needs a single source (found %d)", len(plan.Sources))
 	}
-	opts := flow.CompileOptions{Gov: mem.New(s.opts.TaskWatermark), SpillDir: s.opts.SpillDir}
+	opts := flow.CompileOptions{Gov: mem.New(s.opts.TaskWatermark), SpillDir: s.opts.SpillDir, Test: o.Test}
 
 	// Upstream: the single source through its ops, up to the fan-out node.
 	srcStep := plan.Nodes[plan.Sources[0]]
@@ -201,7 +217,7 @@ func (s *Service) executeFanOut(ctx context.Context, doc *flow.Document, plan *f
 // executeFanIn runs { source → ops } × N → merge(concat|join) → ops → sink.
 func (s *Service) executeFanIn(ctx context.Context, doc *flow.Document, plan *flowdoc.Plan, mg *flowdoc.Step, redact func(string) string, sampler *captureSampler, o SubmitOpts) (execResult, error) {
 	gov := mem.New(s.opts.TaskWatermark)
-	opts := flow.CompileOptions{Gov: gov, SpillDir: s.opts.SpillDir}
+	opts := flow.CompileOptions{Gov: gov, SpillDir: s.opts.SpillDir, Test: o.Test}
 
 	type input struct {
 		producerID string // the immediate predecessor of the merge (names the join build side)
@@ -442,4 +458,19 @@ func resumeAllowed(o SubmitOpts, info host.Info) bool {
 		return false
 	}
 	return o.ResumeConnector == info.Name && o.ResumeVersion == info.Version
+}
+
+// testInputSource emits a step's configured test records instead of calling
+// its connector (ADR-0048 §5).
+//
+// Only ever reached inside a TEST execution: the caller checks, so this cannot
+// be the thing that accidentally diverts production. Records were validated as
+// JSON at parse time, so there is nothing to fail on here.
+func testInputSource(step *flow.Step) stream.Source {
+	var buf bytes.Buffer
+	for _, r := range step.TestInput.Records {
+		buf.Write(r)
+		buf.WriteByte('\n')
+	}
+	return ndjson.NewReader(bytes.NewReader(buf.Bytes()), ndjson.ReaderOptions{})
 }

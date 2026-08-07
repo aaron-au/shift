@@ -175,7 +175,11 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 	// ResumeFrom restarts a re-dispatched task where the last attempt's sink
 	// got to, rather than from the beginning; empty on a first attempt.
 	localID, err := l.opts.Service.SubmitWith(doc, service.SubmitOpts{
-		SecretValues:    secretValues,
+		SecretValues: secretValues,
+		// Whether this is a test execution is the HUB's statement, carried on
+		// the lease (ADR-0048 §3). A runner that decided for itself could stop
+		// a sink writing by calling its own work a test.
+		Test:            t.Test,
 		ResumeFrom:      t.Checkpoint,
 		ResumeConnector: t.CheckpointConnector,
 		ResumeVersion:   t.CheckpointVersion,

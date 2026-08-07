@@ -49,6 +49,16 @@ type CompileOptions struct {
 	Gov *mem.Governor
 	// SpillDir hosts scratch ("" = OS temp).
 	SpillDir string
+	// Test compiles the document for a TEST execution (ADR-0048 §5): the
+	// test-only shapes become live. Deployed (false) they are strictly inert —
+	// a probe compiles to NOTHING rather than to a pass-through operator, so
+	// the deployed pipeline is the one that would have existed without it.
+	//
+	// That is the invariant those shapes stand on: additive in test, inert in
+	// production, never removing or altering a production step. A probe left
+	// in the graph must not cost a deployed flow an operator, a rename, or a
+	// telemetry row.
+	Test bool
 }
 
 // Apply compiles the document's transform steps onto a pipeline (source
@@ -106,6 +116,12 @@ func applyTransforms(main []*flowdoc.Step, p *stream.Pipeline, opts CompileOptio
 		return p, nil
 	}
 	for _, s := range main[1 : len(main)-1] {
+		// A probe deployed is not an operator that does nothing — it is no
+		// operator at all (ADR-0048 §5). Skipping here is what makes "strictly
+		// inert" true of the compiled pipeline rather than just of its output.
+		if s.Type == flowdoc.ProbeType && !opts.Test {
+			continue
+		}
 		np, err := applyOp(&s.Op, p, opts)
 		if err != nil {
 			return nil, fmt.Errorf("flow: step %q: %w", s.ID, err)
@@ -139,6 +155,11 @@ func applyOp(o *Op, p *stream.Pipeline, opts CompileOptions) (*stream.Pipeline, 
 			rules[i] = stream.CoerceRule{Field: r.Field, To: k}
 		}
 		return p.Coerce(rules...), nil
+	case flowdoc.ProbeType:
+		// In test, a probe is a tap: an identity operator whose only purpose is
+		// to carry a step id the sampler keys on. The capture machinery
+		// (ADR-0014) does the rest, which is why this needs no state.
+		return p.Tap(), nil
 	case "flatten":
 		return p.Flatten(o.Sep), nil
 	case "aggregate":

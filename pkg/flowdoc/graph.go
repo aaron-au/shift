@@ -420,7 +420,7 @@ func (s *Step) validate() error {
 			if s.Version != "" {
 				return fmt.Errorf("built-in connector %q takes no version", s.Connector)
 			}
-			return nil
+			return validateTestOnly(s.ID, s.Endpoint(), s.Type)
 		}
 		if s.Connector == "" || s.Action == "" {
 			return fmt.Errorf("%s step needs connector and action", s.Type)
@@ -431,7 +431,7 @@ func (s *Step) validate() error {
 		if s.Version != "" && !ConnectorVersionPattern.MatchString(s.Version) {
 			return fmt.Errorf("version %q must match %s", s.Version, ConnectorVersionPattern)
 		}
-		return nil
+		return validateTestOnly(s.ID, s.Endpoint(), s.Type)
 	case isTransformType(s.Type):
 		return s.Op.validate()
 	default:

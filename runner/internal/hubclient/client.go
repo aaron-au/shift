@@ -83,6 +83,12 @@ type LeasedTask struct {
 	Attempt        int             `json:"attempt"`
 	MaxAttempts    int             `json:"max_attempts"`
 
+	// Test marks this as a TEST execution (ADR-0048). The runner honours it by
+	// making the test-only shapes live: @inject emits, @probe taps, @mock
+	// stands in for a sink. The hub decides — a runner cannot promote its own
+	// work to a test run, which would be a way to stop a sink writing.
+	Test bool `json:"test,omitempty"`
+
 	// Checkpoint is the resume position the previous attempt's sink confirmed
 	// (ADR-0037), with the connector build that produced it. Opaque here — the
 	// runner forwards it to the connector and never parses it. Empty on a

@@ -25,7 +25,7 @@ import (
 // the one that has already happened once.
 func TestBuilderSerialiserCarriesEveryStoredField(t *testing.T) {
 	body := funcBody(t, string(uiHTML), "cleanStep")
-	for _, field := range []string{"connection", "version", "input", "ack", "config"} {
+	for _, field := range []string{"connection", "version", "input", "ack", "config", "mock", "testInput"} {
 		if !strings.Contains(body, "out."+field) {
 			t.Errorf("cleanStep drops %q: a flow opened in the builder and redeployed would lose it silently", field)
 		}

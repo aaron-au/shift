@@ -50,6 +50,22 @@ func (p *Pipeline) Project(fields ...ProjectField) *Pipeline {
 	})
 }
 
+// Tap passes every batch through untouched.
+//
+// It exists so a step can be OBSERVED without being changed: the pipeline
+// stamps each operator with its step id, and the sampler keys on that, so an
+// identity operator is what turns "sample here" into a thing the engine can
+// name (ADR-0048 §5, @probe).
+//
+// It is the only operator whose purpose is to do nothing, which is worth
+// stating: a reader finding it in a profile should know the cost is one batch
+// hand-off and not look for the missing transform.
+func (p *Pipeline) Tap() *Pipeline {
+	return p.Apply("tap", func(_ context.Context, b *record.Batch) (*record.Batch, error) {
+		return b, nil
+	})
+}
+
 // Filter keeps records where pred returns true, compacting in place.
 func (p *Pipeline) Filter(name string, pred func(record.Value) bool) *Pipeline {
 	return p.Apply(name, func(_ context.Context, b *record.Batch) (*record.Batch, error) {

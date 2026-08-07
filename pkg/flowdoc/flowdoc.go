@@ -96,6 +96,13 @@ type Step struct {
 	Connection string          `json:"connection,omitempty"`
 	Config     json.RawMessage `json:"config,omitempty"`
 
+	// Mock and TestInput are the test-only diversions (ADR-0048 §5): options on
+	// the REAL step, never substitutes for it. Inert in a deployed execution,
+	// so neither has to be removed before publishing — the flow that runs in
+	// production is the same document that was tested.
+	Mock      *Mock      `json:"mock,omitempty"`
+	TestInput *TestInput `json:"testInput,omitempty"`
+
 	// Input verifies the inbound request before the flow accepts it
 	// (ADR-0042). Valid only on a @webhook source step; see input.go.
 	Input *Input `json:"input,omitempty"`
@@ -173,6 +180,7 @@ func (s *Step) Endpoint() Endpoint {
 	return Endpoint{
 		Connector: s.Connector, Action: s.Action, Version: s.Version,
 		Connection: s.Connection, Config: s.Config, Input: s.Input, Ack: s.Ack,
+		Mock: s.Mock, TestInput: s.TestInput,
 	}
 }
 
@@ -242,7 +250,9 @@ func isTransformType(t string) bool {
 	case "filter", "project", "coerce", "flatten", "aggregate", "map":
 		return true
 	}
-	return false
+	// A probe occupies a transform position — it sits between steps and passes
+	// everything through — so it compiles down the same path (ADR-0048 §5).
+	return t == ProbeType
 }
 
 // isStructuralType reports whether t is a v3 fan-out / fan-in node (ADR-0029).
@@ -281,6 +291,13 @@ type Endpoint struct {
 	Version    string          `json:"version,omitempty"`
 	Connection string          `json:"connection,omitempty"`
 	Config     json.RawMessage `json:"config,omitempty"`
+
+	// Mock and TestInput are the test-only diversions (ADR-0048 §5). They are
+	// options on the REAL step, never substitutes for it: the connector and its
+	// config stay in the document, so a deployed flow is complete whether or
+	// not either is set, and neither ever needs removing before shipping.
+	Mock      *Mock      `json:"mock,omitempty"`
+	TestInput *TestInput `json:"testInput,omitempty"`
 
 	// Input verifies the inbound request before the flow accepts it
 	// (ADR-0042). Valid only on a @webhook source; see input.go.
@@ -469,6 +486,11 @@ func (d *Document) Validate() error {
 	if IsBuiltinConnector(d.Source.Connector) && d.Source.Connector != WebhookSource {
 		return fmt.Errorf("flow: unknown built-in source %q", d.Source.Connector)
 	}
+	for label, ep := range map[string]Endpoint{"source": d.Source, "sink": d.Sink} {
+		if err := validateTestOnly(label, ep, label); err != nil {
+			return fmt.Errorf("flow: %w", err)
+		}
+	}
 	for i, op := range d.Ops {
 		if err := op.validate(); err != nil {
 			return fmt.Errorf("flow: op %d: %w", i, err)
@@ -574,6 +596,9 @@ func (o *Op) validate() error {
 		}
 	case "map":
 		return validateMap(o.Maps)
+	case ProbeType:
+		// A probe has no operands: it taps whatever passes through it. The
+		// optional label is presentational (ADR-0048 §5).
 	default:
 		return fmt.Errorf("unknown op type %q", o.Type)
 	}
