@@ -61,6 +61,25 @@ func (a *api) uploadConnector(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf("unsupported os/arch %s/%s", osName, arch))
 		return
 	}
+	// What KIND of change this version is (ADR-0047 §6). Declared by the
+	// publisher, unsigned, and advisory — a publisher's own claim is weak
+	// evidence, which is why §8 backs it with a compatibility suite rather
+	// than by signing it. Absent means "unknown", never "compatible": the
+	// safe default is the one that prompts somebody to look.
+	compat := r.URL.Query().Get("compat")
+	if compat != "" && !store.ValidCompat(compat) {
+		writeErr(w, http.StatusUnprocessableEntity, fmt.Errorf(
+			"compat must be one of %q, %q, %q or %q",
+			store.CompatCompatible, store.CompatBehaviour, store.CompatBreaking, store.CompatUnknown))
+		return
+	}
+	notes := r.Header.Get("X-Shift-Release-Notes")
+	if len(notes) > maxReleaseNotes {
+		writeErr(w, http.StatusUnprocessableEntity,
+			fmt.Errorf("release notes exceed %d bytes", maxReleaseNotes))
+		return
+	}
+
 	keyName := r.Header.Get("X-Shift-Publisher-Key")
 	sig, err := base64.StdEncoding.DecodeString(r.Header.Get("X-Shift-Signature"))
 	if keyName == "" || err != nil || len(sig) == 0 {
@@ -116,7 +135,12 @@ func (a *api) uploadConnector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.st.PutConnectorVersion(r.Context(), name, version, osName, arch, m.Digest[:], sig, key.ID, data, descriptor); err != nil {
+	if err := a.st.PutConnectorVersion(r.Context(), store.NewVersion{
+		Name: name, Version: version, OS: osName, Arch: arch,
+		Digest: m.Digest[:], Signature: sig, PublisherKeyID: key.ID,
+		Data: data, Descriptor: descriptor,
+		Compat: compat, ReleaseNotes: notes,
+	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -125,6 +149,7 @@ func (a *api) uploadConnector(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"name": name, "version": version, "os": osName, "arch": arch,
 		"digest": hex.EncodeToString(m.Digest[:]), "size_bytes": len(data),
+		"compat": compatOrUnknown(compat),
 	})
 }
 

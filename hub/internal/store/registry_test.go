@@ -30,8 +30,10 @@ func addKey(t *testing.T, s *store.Store, ctx context.Context, name string) stri
 func putArtifact(t *testing.T, s *store.Store, ctx context.Context, keyID, name, version, osName, arch string, data []byte) []byte {
 	t.Helper()
 	sum := sha256.Sum256(data)
-	if err := s.PutConnectorVersion(ctx, name, version, osName, arch,
-		sum[:], []byte("signature-"+version), keyID, data, nil); err != nil {
+	if err := s.PutConnectorVersion(ctx, store.NewVersion{
+		Name: name, Version: version, OS: osName, Arch: arch,
+		Digest: sum[:], Signature: []byte("signature-" + version),
+		PublisherKeyID: keyID, Data: data}); err != nil {
 		t.Fatalf("PutConnectorVersion(%s@%s): %v", name, version, err)
 	}
 	return sum[:]
@@ -289,8 +291,10 @@ func TestConnectorDescriptorRoundTrip(t *testing.T) {
 	desc := []byte("{\"actions\":[{\"name\":\"get\"}]}\x00\x01binary-tail")
 	data := []byte("artifact-with-descriptor")
 	sum := sha256.Sum256(data)
-	if err := s.PutConnectorVersion(ctx, "myconn", "2.0.0", "linux", "amd64",
-		sum[:], []byte("sig"), keyID, data, desc); err != nil {
+	if err := s.PutConnectorVersion(ctx, store.NewVersion{
+		Name: "myconn", Version: "2.0.0", OS: "linux", Arch: "amd64",
+		Digest: sum[:], Signature: []byte("sig"), PublisherKeyID: keyID,
+		Data: data, Descriptor: desc}); err != nil {
 		t.Fatal(err)
 	}
 	cv, err := s.ResolveConnector(ctx, "myconn", "latest", "linux", "amd64")

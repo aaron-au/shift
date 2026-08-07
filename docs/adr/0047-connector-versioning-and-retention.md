@@ -2,7 +2,7 @@
 
 Date: 2026-08-06
 
-Status: **§1–§3 built; §4–§9 pending.** Extends ADR-0011 (signed registry) and
+Status: **§1–§6 built; §7–§9 pending.** Extends ADR-0011 (signed registry) and
 ADR-0013/0029 (flow model). Consumes the review registry from ADR-0042 §7.
 
 Built so far: resolution moved from dispatch to publish (§1) — `flowdoc` steps
@@ -11,8 +11,10 @@ resolves an exact build and pools processes per (name, version), and the
 `connector-pin` check reports anything still resolving to newest.
 Reference-counted retention (§2) and the yank/collect split (§3) — the
 `flow_connector_pins` index, `ConnectorReferences`, report-by-default
-collection, and a yank response that names the flows still pinned. See
-`docs/dev/06-hub.md`.
+collection, and a yank response that names the flows still pinned. Currency
+(§4/§5/§6) — a per-version compatibility class, span-folding notices that
+advise rather than refuse, and a publish gate that drags a flow forward without
+ever blocking a rollback. See `docs/dev/06-hub.md`.
 
 ## Context
 

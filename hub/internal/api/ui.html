@@ -761,14 +761,29 @@ async function openVersions(name) {
         ? `<button class="ghost" onclick="yankVersion('${escJS(name)}','${escJS(v.version)}','${escJS(v.os)}','${escJS(v.arch)}',false)">Restore</button>`
         : `<button class="ghost" onclick="yankVersion('${escJS(name)}','${escJS(v.version)}','${escJS(v.os)}','${escJS(v.arch)}',true)">Yank</button>`;
       const uses = `<button class="ghost" onclick="showReferences('${escJS(name)}','${escJS(v.version)}')">Used by</button>`;
-      return `<tr><td>${esc(v.version)}</td><td class="mono">${esc(v.os)}/${esc(v.arch)}</td>
-        <td class="mono">${(v.size_bytes / 1048576).toFixed(1)} MiB</td><td>${state}</td><td class="rowacts">${uses}${btn}</td></tr>`;
+      return `<tr><td>${esc(v.version)}${compatChip(v.compat)}</td><td class="mono">${esc(v.os)}/${esc(v.arch)}</td>
+        <td class="mono">${(v.size_bytes / 1048576).toFixed(1)} MiB</td><td>${state}</td><td class="rowacts">${uses}${btn}</td></tr>
+        ${v.release_notes ? `<tr><td colspan="5" class="hint" style="padding-top:0">${esc(v.release_notes)}</td></tr>` : ''}`;
     }).join('');
     box.innerHTML = `<div class="ops"><b>${esc(name)}</b> — versions
       <table class="mvlist"><thead><tr><th>Version</th><th>Platform</th><th>Size</th><th>State</th><th></th></tr></thead>
       <tbody>${rows}</tbody></table>
       <div class="hint" style="margin:.4rem 0 0">Yank withdraws a version from NEW pins; flows already pinned to it keep running (ADR-0047 §3). "Used by" lists those flows.</div></div>`;
   } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+// compatChip renders what KIND of change a version is (ADR-0047 §6).
+//
+// "unknown" is shown rather than hidden. It is not the same as compatible —
+// it means the publisher did not say — and a blank space reads as "fine",
+// which is the one thing it does not mean.
+function compatChip(c) {
+  const label = {
+    'breaking': ['bad', 'breaking'],
+    'behaviour-change': ['warn', 'behaviour'],
+    'compatible': ['good', 'compatible'],
+  }[c] || ['hint', 'undeclared'];
+  return ` <span class="${label[0]}" title="publisher's own declaration, backed by the compatibility suite in CI">${esc(label[1])}</span>`;
 }
 
 // showReferences answers "who would this break?" by name. A count is not an

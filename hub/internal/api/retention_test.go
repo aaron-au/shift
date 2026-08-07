@@ -43,6 +43,44 @@ func registryWithConnectors(t *testing.T) (*httptest.Server, func(name, version 
 	}
 }
 
+// registryWithCompat is registryWithConnectors with the publisher's
+// compatibility declaration (ADR-0047 §6) attached to each version.
+func registryWithCompat(t *testing.T) (*httptest.Server, func(name, version, compat, notes string)) {
+	t.Helper()
+	srv, publish := registryWithConnectors(t)
+	_ = publish
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := call(t, http.MethodPost, srv.URL+"/api/v1/publisher-keys", adminToken,
+		`{"name":"pub2","public_key":"`+base64.StdEncoding.EncodeToString(pub)+`"}`, nil); c != http.StatusCreated {
+		t.Fatalf("publisher key = %d", c)
+	}
+	return srv, func(name, version, compat, notes string) {
+		t.Helper()
+		art := []byte(name + "-" + version)
+		sum := sha256.Sum256(art)
+		m := consign.Manifest{Name: name, Version: version, OS: "linux", Arch: "amd64"}
+		copy(m.Digest[:], sum[:])
+		url := fmt.Sprintf("%s/api/v1/connectors/%s/versions/%s?os=linux&arch=amd64", srv.URL, name, version)
+		if compat != "" {
+			url += "&compat=" + compat
+		}
+		hdr := map[string]string{
+			"Authorization":         "Bearer " + adminToken,
+			"X-Shift-Publisher-Key": "pub2",
+			"X-Shift-Signature":     base64.StdEncoding.EncodeToString(consign.Sign(priv, m)),
+		}
+		if notes != "" {
+			hdr["X-Shift-Release-Notes"] = notes
+		}
+		if body, c := callHdr(t, http.MethodPut, url, hdr, art); c != http.StatusCreated {
+			t.Fatalf("publish %s@%s = %d (%s)", name, version, c, body)
+		}
+	}
+}
+
 // Yank is a SELECTION rule, not a recall: flows already pinned keep running.
 // Whoever yanked almost always expects otherwise, so the response says which
 // flows are still on it (ADR-0047 §3).

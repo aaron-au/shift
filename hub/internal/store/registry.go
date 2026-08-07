@@ -35,6 +35,12 @@ type ConnectorVersion struct {
 	// nil for pre-descriptor (v1) artifacts. Stored and served verbatim;
 	// the hub never parses it.
 	Descriptor []byte `json:"-"`
+	// Compat is the publisher's declared compatibility class and ReleaseNotes
+	// their free text (ADR-0047 §6). Advisory: they say what the publisher
+	// CLAIMS, which is why §8 backs them with a compatibility suite rather
+	// than by signing the claim.
+	Compat       string `json:"compat,omitempty"`
+	ReleaseNotes string `json:"release_notes,omitempty"`
 	// Yanked is set when this version has been withdrawn (marketplace M6e):
 	// resolve/download exclude it, but it stays listed for provenance.
 	// Populated only by ConnectorVersions (the version-history listing).
@@ -103,11 +109,58 @@ func (s *Store) PublisherKeyByName(ctx context.Context, name string) (PublisherK
 	return k, err
 }
 
+// Compatibility classes (ADR-0047 §6). What KIND of change a version is, so
+// an upgrade notice can fold a whole span rather than the last hop.
+const (
+	CompatCompatible = "compatible"       // additive or internal
+	CompatBehaviour  = "behaviour-change" // same config, different results
+	CompatBreaking   = "breaking"         // config or output shape changed
+	// CompatUnknown is the default, deliberately. Defaulting to "compatible"
+	// would make every version published before the field existed — and every
+	// publisher who forgot — claim to be safe.
+	CompatUnknown = "unknown"
+)
+
+// ValidCompat reports whether c is a declared compatibility class.
+func ValidCompat(c string) bool {
+	switch c {
+	case CompatCompatible, CompatBehaviour, CompatBreaking, CompatUnknown:
+		return true
+	}
+	return false
+}
+
+// NewVersion is one artifact to store. A struct rather than a positional list
+// because the list had reached nine arguments of which four were []byte, and
+// the next mistake would have been silent: a digest and a signature transposed
+// still compiles.
+type NewVersion struct {
+	Name, Version, OS, Arch string
+	Digest, Signature       []byte
+	PublisherKeyID          string
+	Data, Descriptor        []byte
+
+	// Compat and ReleaseNotes are the publisher's declaration about this
+	// version (ADR-0047 §6). Empty Compat stores "unknown".
+	Compat       string
+	ReleaseNotes string
+}
+
 // PutConnectorVersion stores a verified artifact: blob (deduped by
 // digest) + version row, one transaction. The API layer verifies the
 // signature BEFORE calling this — the store trusts its caller here and
 // stays dumb SQL.
-func (s *Store) PutConnectorVersion(ctx context.Context, name, version, osName, arch string, digest, signature []byte, publisherKeyID string, data, descriptor []byte) error {
+func (s *Store) PutConnectorVersion(ctx context.Context, v NewVersion) error {
+	name, version, osName, arch := v.Name, v.Version, v.OS, v.Arch
+	digest, signature, data, descriptor := v.Digest, v.Signature, v.Data, v.Descriptor
+	publisherKeyID := v.PublisherKeyID
+	compat := v.Compat
+	if compat == "" {
+		compat = CompatUnknown
+	}
+	if !ValidCompat(compat) {
+		return fmt.Errorf("store: unknown compatibility class %q", compat)
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -127,11 +180,14 @@ func (s *Store) PutConnectorVersion(ctx context.Context, name, version, osName, 
 		return err
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO connector_versions (connector_id, version, os, arch, digest, signature, publisher_key_id, descriptor)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		`INSERT INTO connector_versions
+		   (connector_id, version, os, arch, digest, signature, publisher_key_id, descriptor, compat, release_notes)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		 ON CONFLICT (connector_id, version, os, arch)
-		 DO UPDATE SET digest = $5, signature = $6, publisher_key_id = $7, descriptor = $8, created_at = now(), yanked_at = NULL`,
-		connectorID, version, osName, arch, digest, signature, publisherKeyID, descriptor); err != nil {
+		 DO UPDATE SET digest = $5, signature = $6, publisher_key_id = $7, descriptor = $8,
+		               compat = $9, release_notes = $10, created_at = now(), yanked_at = NULL`,
+		connectorID, version, osName, arch, digest, signature, publisherKeyID, descriptor,
+		compat, v.ReleaseNotes); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -141,7 +197,8 @@ func (s *Store) PutConnectorVersion(ctx context.Context, name, version, osName, 
 // registry-latest not semver). Yanked versions and revoked keys are
 // excluded — fail closed.
 func (s *Store) ResolveConnector(ctx context.Context, name, version, osName, arch string) (ConnectorVersion, error) {
-	q := `SELECT c.name, v.version, v.os, v.arch, v.digest, v.signature, k.public_key, b.size_bytes, v.created_at, v.descriptor
+	q := `SELECT c.name, v.version, v.os, v.arch, v.digest, v.signature, k.public_key, b.size_bytes, v.created_at, v.descriptor,
+	             v.compat, v.release_notes
 	        FROM connector_versions v
 	        JOIN connectors c ON c.id = v.connector_id
 	        JOIN publisher_keys k ON k.id = v.publisher_key_id AND k.revoked_at IS NULL
@@ -157,7 +214,8 @@ func (s *Store) ResolveConnector(ctx context.Context, name, version, osName, arc
 	var cv ConnectorVersion
 	err := s.pool.QueryRow(ctx, q, args...).Scan(
 		&cv.Name, &cv.Version, &cv.OS, &cv.Arch, &cv.Digest, &cv.Signature,
-		&cv.PublisherKey, &cv.SizeBytes, &cv.Created, &cv.Descriptor)
+		&cv.PublisherKey, &cv.SizeBytes, &cv.Created, &cv.Descriptor,
+		&cv.Compat, &cv.ReleaseNotes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ConnectorVersion{}, ErrNotFound
 	}
@@ -194,7 +252,8 @@ func (s *Store) LatestConnectorVersion(ctx context.Context, name string) (string
 // the public_key join; a revoked key yields no row.
 func (s *Store) ConnectorVersions(ctx context.Context, name string) ([]ConnectorVersion, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT c.name, v.version, v.os, v.arch, v.digest, v.signature, k.public_key, b.size_bytes, v.created_at, v.descriptor, v.yanked_at
+		`SELECT c.name, v.version, v.os, v.arch, v.digest, v.signature, k.public_key, b.size_bytes, v.created_at, v.descriptor,
+		        v.compat, v.release_notes, v.yanked_at
 		   FROM connector_versions v
 		   JOIN connectors c ON c.id = v.connector_id
 		   JOIN publisher_keys k ON k.id = v.publisher_key_id
@@ -209,7 +268,8 @@ func (s *Store) ConnectorVersions(ctx context.Context, name string) ([]Connector
 	for rows.Next() {
 		var cv ConnectorVersion
 		if err := rows.Scan(&cv.Name, &cv.Version, &cv.OS, &cv.Arch, &cv.Digest,
-			&cv.Signature, &cv.PublisherKey, &cv.SizeBytes, &cv.Created, &cv.Descriptor, &cv.Yanked); err != nil {
+			&cv.Signature, &cv.PublisherKey, &cv.SizeBytes, &cv.Created, &cv.Descriptor,
+			&cv.Compat, &cv.ReleaseNotes, &cv.Yanked); err != nil {
 			return nil, err
 		}
 		out = append(out, cv)
