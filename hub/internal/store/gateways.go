@@ -20,11 +20,17 @@ var ErrAlreadyAdopted = errors.New("store: the gateway is already adopted")
 // makes it safe to return in an API response and to log: it identifies a key,
 // it does not authorise use of one.
 type Gateway struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	URL         string     `json:"url"`
-	Fingerprint string     `json:"fingerprint"`
-	AdoptedAt   *time.Time `json:"adopted_at,omitempty"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	URL         string `json:"url"`
+	Fingerprint string `json:"fingerprint"`
+	// InstallToken is deliberately NOT serialised. It is a bootstrap secret,
+	// not a fact about the gateway, and an API response is exactly where a
+	// secret leaks from — it is handed to the operator once, by the create
+	// endpoint, and never served again.
+	InstallToken string     `json:"-"`
+	TokenExpires *time.Time `json:"token_expires_at,omitempty"`
+	AdoptedAt    *time.Time `json:"adopted_at,omitempty"`
 
 	CertSerial   string     `json:"cert_serial,omitempty"`
 	CertNotAfter *time.Time `json:"cert_not_after,omitempty"`
@@ -41,14 +47,16 @@ type Gateway struct {
 	Created time.Time `json:"created_at"`
 }
 
-const gatewayCols = `id, name, url, fingerprint, adopted_at, cert_serial, cert_not_after,
+const gatewayCols = `id, name, url, fingerprint, install_token, token_expires_at, adopted_at,
+	cert_serial, cert_not_after,
 	config_version, pushed_version, last_push_at, last_push_error, created_at`
 
 func scanGateway(row pgx.Row) (Gateway, error) {
 	var g Gateway
 	var serial *string
 	var pushErr *string
-	err := row.Scan(&g.ID, &g.Name, &g.URL, &g.Fingerprint, &g.AdoptedAt, &serial,
+	err := row.Scan(&g.ID, &g.Name, &g.URL, &g.Fingerprint, &g.InstallToken, &g.TokenExpires,
+		&g.AdoptedAt, &serial,
 		&g.CertNotAfter, &g.ConfigVersion, &g.PushedVersion, &g.LastPushAt, &pushErr, &g.Created)
 	if err != nil {
 		return Gateway{}, err
@@ -63,18 +71,46 @@ func scanGateway(row pgx.Row) (Gateway, error) {
 }
 
 // CreateGateway records an intent to adopt: a name, the URL the hub will dial,
-// and the fingerprint an administrator carried out of band (ADR-0049 §2).
+// and a freshly minted install token (ADR-0049 §1a).
 //
-// It creates an UNADOPTED record. Nothing is issued and nothing is pushed
-// until the hub has completed the pinned exchange, so a wrong fingerprint
-// costs a failed dial and not a mis-issued identity.
-func (s *Store) CreateGateway(ctx context.Context, name, url, fingerprint string) (Gateway, error) {
+// The fingerprint is EMPTY and stays empty until the hub learns it on the first
+// dial. That is the whole point of the token: the hub cannot pin a key that
+// does not exist yet, so it pairs on a secret it minted and pins what it finds.
+//
+// The token is returned once, in the created record. The operator pastes it
+// into a deployment, and the hub keeps its copy only until adoption burns it.
+func (s *Store) CreateGateway(ctx context.Context, name, url string, expires time.Time) (Gateway, error) {
+	token, _ := newSecret("sgt_")
 	row := s.pool.QueryRow(ctx,
-		`INSERT INTO gateways (id, account_id, name, url, fingerprint)
-		 VALUES ($1,$2,$3,$4,$5)
+		`INSERT INTO gateways (id, account_id, name, url, fingerprint, install_token, token_expires_at)
+		 VALUES ($1,$2,$3,$4,'',$5,$6)
 		 RETURNING `+gatewayCols,
-		newUUID(), accountID(ctx), name, url, fingerprint)
+		newUUID(), accountID(ctx), name, url, token, expires)
 	return scanGateway(row)
+}
+
+// LearnGatewayFingerprint records the key the hub observed while pairing, and
+// burns the install token in the same statement.
+//
+// The UPDATE requires the gateway to still be unadopted with the token unspent,
+// so two concurrent pairings cannot both win and a token cannot be replayed
+// after the first success. Checking in Go and writing after would leave that
+// window open.
+func (s *Store) LearnGatewayFingerprint(ctx context.Context, id, fingerprint string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE gateways SET fingerprint = $3, install_token = '', token_expires_at = NULL
+		  WHERE account_id = $1 AND id = $2 AND adopted_at IS NULL AND install_token <> ''`,
+		accountID(ctx), id, fingerprint)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		if _, err := s.GetGateway(ctx, id); err != nil {
+			return err
+		}
+		return ErrAlreadyAdopted
+	}
+	return nil
 }
 
 // ListGateways returns the account's gateways, newest first.
@@ -160,21 +196,22 @@ func (s *Store) RecordGatewayCertificate(ctx context.Context, id, serial string,
 // rather than something the hub infers: a gateway whose identity vanished must
 // not be silently re-trusted, because "presents a fresh key at the right URL"
 // is exactly what an impostor also does.
-func (s *Store) RotateGatewayAdoption(ctx context.Context, id, fingerprint string) error {
+func (s *Store) RotateGatewayAdoption(ctx context.Context, id string, expires time.Time) (string, error) {
+	token, _ := newSecret("sgt_")
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE gateways
-		    SET fingerprint = $3, adopted_at = NULL,
+		    SET fingerprint = '', install_token = $3, token_expires_at = $4, adopted_at = NULL,
 		        cert_serial = NULL, cert_not_after = NULL, cert_issued_at = NULL,
 		        pushed_version = 0, last_push_at = NULL, last_push_error = NULL
 		  WHERE account_id = $1 AND id = $2`,
-		accountID(ctx), id, fingerprint)
+		accountID(ctx), id, token, expires)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return "", ErrNotFound
 	}
-	return nil
+	return token, nil
 }
 
 // DeleteGateway removes a gateway record.
@@ -198,8 +235,16 @@ func (s *Store) DeleteGateway(ctx context.Context, id string) error {
 // gateway in the account, which is what marks a push as due.
 //
 // Account-wide rather than per-gateway because configuration is derived from
-// account-wide facts — the flow set, the runner roster, the routes. A change
-// to any of them is a change every gateway needs.
+// account-wide facts — the flow set, the runner roster, the routes. A change to
+// any of them is a change every gateway needs.
+//
+// NOTHING IN PRODUCTION CALLS THIS YET, and that is deliberate rather than an
+// oversight: the config builder is not built (gwsync.Options.ConfigFor is nil),
+// so raising a generation now would mark every gateway permanently drifted
+// against a push that can never be satisfied. Its caller lands with the
+// builder. Until then it is exercised by the tests that prove the drift
+// detection and push-accounting paths in gwsync actually work — those ARE
+// production code, and this is how they are put into the state they handle.
 func (s *Store) BumpGatewayConfig(ctx context.Context) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE gateways SET config_version = config_version + 1 WHERE account_id = $1`,
@@ -227,6 +272,20 @@ func (s *Store) RecordGatewayPush(ctx context.Context, id string, version int64,
 	return err
 }
 
+// GatewaysPending lists gateways never yet adopted that still hold a live
+// install token — the ones the reconcile loop should try to pair with.
+//
+// An expired token is left alone rather than retried forever. Re-issuing one is
+// rotate, which is a deliberate act with an audit record behind it.
+func (s *Store) GatewaysPending(ctx context.Context) ([]Gateway, error) {
+	return s.gatewayQuery(ctx,
+		`SELECT `+gatewayCols+` FROM gateways
+		  WHERE account_id = $1 AND adopted_at IS NULL AND install_token <> ''
+		    AND (token_expires_at IS NULL OR token_expires_at > now())
+		  ORDER BY created_at`,
+		accountID(ctx))
+}
+
 // GatewaysDue lists adopted gateways whose acknowledged generation is behind
 // the intended one, or whose identity is approaching expiry.
 //
@@ -235,7 +294,7 @@ func (s *Store) RecordGatewayPush(ctx context.Context, id string, version int64,
 // new one would strand it. Renewal is therefore something the hub must notice,
 // which means it belongs in the same query that notices config drift.
 func (s *Store) GatewaysDue(ctx context.Context, renewWithin time.Duration) ([]Gateway, error) {
-	rows, err := s.pool.Query(ctx,
+	return s.gatewayQuery(ctx,
 		`SELECT `+gatewayCols+` FROM gateways
 		  WHERE account_id = $1 AND adopted_at IS NOT NULL
 		    AND (pushed_version < config_version
@@ -243,6 +302,10 @@ func (s *Store) GatewaysDue(ctx context.Context, renewWithin time.Duration) ([]G
 		         OR cert_not_after < now() + $2::interval)
 		  ORDER BY created_at`,
 		accountID(ctx), renewWithin.String())
+}
+
+func (s *Store) gatewayQuery(ctx context.Context, sql string, args ...any) ([]Gateway, error) {
+	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -83,6 +83,17 @@ func (l *Loop) Run(ctx context.Context) {
 // Tick performs one reconcile pass. Exported so a test can drive it without a
 // clock, and so an administrator action can force one.
 func (l *Loop) Tick(ctx context.Context) {
+	// Pair first. A gateway waiting to be adopted is serving nothing at all,
+	// so it is the most urgent thing in the pass — and pairing is what makes
+	// everything below possible for it.
+	pending, err := l.opts.Store.GatewaysPending(ctx)
+	if err != nil {
+		slog.Error("listing gateways to pair", "event", "gateway.reconcile_failed", "error", err.Error())
+	}
+	for _, gw := range pending {
+		l.pair(ctx, gw)
+	}
+
 	due, err := l.opts.Store.GatewaysDue(ctx, l.opts.RenewBefore)
 	if err != nil {
 		slog.Error("listing gateways to reconcile", "event", "gateway.reconcile_failed", "error", err.Error())
@@ -91,6 +102,40 @@ func (l *Loop) Tick(ctx context.Context) {
 	for _, gw := range due {
 		l.reconcile(ctx, gw)
 	}
+}
+
+// pair adopts a gateway that has never been adopted, using its one-time
+// install token (ADR-0049 §1a).
+//
+// The fingerprint is LEARNED here and pinned from now on. Recording it and
+// burning the token happen in one statement, so a token cannot be spent twice
+// and two concurrent passes cannot both adopt.
+func (l *Loop) pair(ctx context.Context, gw store.Gateway) {
+	var runnerCA []byte
+	if l.opts.RunnerCA != nil {
+		runnerCA = l.opts.RunnerCA()
+	}
+	issued, fingerprint, err := l.opts.Client.Pair(ctx, gw.URL, gw.InstallToken, gw.ID, runnerCA)
+	if err != nil {
+		// Retried on the next tick until the token expires. A gateway that is
+		// not deployed yet is the common case, not a fault.
+		slog.Warn("pairing with a gateway", "event", "gateway.pair_failed",
+			"gateway", gw.ID, "error", err.Error())
+		_ = l.opts.Store.RecordGatewayPush(ctx, gw.ID, gw.PushedVersion, err)
+		return
+	}
+	if err := l.opts.Store.LearnGatewayFingerprint(ctx, gw.ID, fingerprint); err != nil {
+		slog.Error("recording a paired gateway's key", "event", "gateway.pair_failed",
+			"gateway", gw.ID, "error", err.Error())
+		return
+	}
+	if err := l.opts.Store.MarkGatewayAdopted(ctx, gw.ID, issued.Serial, issued.NotAfter); err != nil {
+		slog.Error("recording an adoption", "event", "gateway.pair_failed",
+			"gateway", gw.ID, "error", err.Error())
+		return
+	}
+	slog.Info("gateway adopted", "event", "gateway.adopted",
+		"gateway", gw.ID, "fingerprint", fingerprint, "cert_serial", issued.Serial)
 }
 
 func (l *Loop) reconcile(ctx context.Context, gw store.Gateway) {
