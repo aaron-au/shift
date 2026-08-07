@@ -275,6 +275,61 @@ func (s *Store) BuildGatewayConfig(ctx context.Context, gatewayID string) (Gatew
 	return cfg, nil
 }
 
+// RunnerGateway is one gateway a runner should be polling.
+type RunnerGateway struct {
+	ID  string `json:"id"`
+	URL string `json:"url"`
+}
+
+// GatewaysForRunner answers "which gateways should this runner poll?".
+//
+// The runner reaches OUT to every gateway that could hand it work (ADR-0038
+// §4), so it needs an address list, and the hub is the only party that holds
+// both halves of the answer: the gateway records and the labels placement is
+// decided by. Without this the list is a flag on every runner, and adding a
+// gateway means redeploying the fleet.
+//
+// Two filters, and both are answers to "why would polling that gateway be
+// wrong?":
+//
+//   - Not yet adopted. An unadopted gateway has no runner CA, so it cannot
+//     verify a client certificate; polling it means presenting an identity to
+//     something that cannot check it and being unable to check it in return.
+//   - No route this runner could serve. `labels @> selector` is JSONB
+//     containment, which is exactly the subset match the gateway applies to
+//     the roster — so the address list and the placement decision cannot
+//     disagree about what "matches" means.
+//
+// A runner with no matching gateway gets an empty list and polls nothing,
+// which is the honest answer rather than a wasted connection per DMZ host.
+func (s *Store) GatewaysForRunner(ctx context.Context, runnerID string) ([]RunnerGateway, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT g.id, g.url
+		   FROM gateways g
+		   JOIN gateway_routes r
+		     ON r.account_id = g.account_id
+		    AND (r.gateway_id IS NULL OR r.gateway_id = g.id)
+		  WHERE g.account_id = $1
+		    AND g.adopted_at IS NOT NULL
+		    AND COALESCE((SELECT labels FROM runners WHERE account_id = $1 AND id = $2),
+		                 '{}'::jsonb) @> r.selector
+		  ORDER BY g.id`,
+		accountID(ctx), runnerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []RunnerGateway{}
+	for rows.Next() {
+		var g RunnerGateway
+		if err := rows.Scan(&g.ID, &g.URL); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) runnerRoster(ctx context.Context) ([]RosterRunner, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, labels FROM runners WHERE account_id = $1 ORDER BY id`, accountID(ctx))

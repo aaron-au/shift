@@ -83,8 +83,24 @@ type FlowLookup func(name string) (*flowdoc.Document, bool)
 // Options configure the intake.
 type Options struct {
 	// Addrs are the gateway control-listener base URLs to poll. One loop runs
-	// per address, concurrently.
+	// per address, concurrently. These are STATIC: configured locally and
+	// never withdrawn. Discover below is the normal source in a deployment.
 	Addrs []string
+	// Discover asks the hub which gateways this runner should be polling
+	// (ADR-0038 §4). Optional; without it the address list is whatever Addrs
+	// was at startup.
+	//
+	// The hub answers for the identity the runner's credential proves, so
+	// adding a gateway or relabelling a runner takes effect here without
+	// touching the runner — which is the point: an address list baked into
+	// every deployment means a new DMZ host is a fleet-wide redeploy.
+	//
+	// A failure is NOT an empty list. The hub being unreachable says nothing
+	// about which gateways exist, so a failed pass keeps the current set and
+	// retries; only a successful answer may withdraw a gateway.
+	Discover func(ctx context.Context) ([]string, error)
+	// DiscoverEvery is how often to re-ask (default 60s).
+	DiscoverEvery time.Duration
 	// NB: there is deliberately NO Labels field. A runner used to state its own
 	// placement on every poll, which meant a compromised or misconfigured one
 	// could claim `environment: production` and be handed production traffic.
@@ -161,6 +177,9 @@ func New(opts Options) *Loop {
 	if opts.HeadroomPoll <= 0 {
 		opts.HeadroomPoll = 250 * time.Millisecond
 	}
+	if opts.DiscoverEvery <= 0 {
+		opts.DiscoverEvery = time.Minute
+	}
 	log := opts.Log
 	if log == nil {
 		log = slog.Default()
@@ -184,9 +203,12 @@ func New(opts Options) *Loop {
 			Proxy:               http.ProxyFromEnvironment,
 			MaxIdleConnsPerHost: perHost,
 			MaxConnsPerHost:     0, // unbounded: the poll count is the real bound
-			MaxIdleConns:        perHost * max(len(opts.Addrs), 1),
-			IdleConnTimeout:     90 * time.Second,
-			TLSClientConfig:     opts.TLS,
+			// Sized for several gateways when the set is discovered, because
+			// it is not known here: an idle-connection cap below what the
+			// polls actually hold is the port-exhaustion shape above.
+			MaxIdleConns:    perHost * max(len(opts.Addrs), 4),
+			IdleConnTimeout: 90 * time.Second,
+			TLSClientConfig: opts.TLS,
 		}
 		// ForceAttemptHTTP2 matters more than it looks: over h2, every parked
 		// poll to one gateway shares a SINGLE connection instead of holding its
@@ -217,15 +239,85 @@ func New(opts Options) *Loop {
 // resource governor (ADR-0005) rather than this number: a poll only re-parks
 // while there is admission headroom, so the fleet self-regulates exactly as
 // the hub lease loop does.
+// The address set is LIVE when Discover is set: gateways come and go while the
+// runner runs, and each one gets its own cancellable group of polls. Withdrawing
+// one cancels its polls rather than letting them keep parking against a gateway
+// the hub has removed — a decommissioned DMZ host that a runner kept talking to
+// would still be able to hand it work.
 func (l *Loop) Run(ctx context.Context) {
 	var wg sync.WaitGroup
-	for _, addr := range l.opts.Addrs {
+	// Static addresses are started once and never withdrawn: they were
+	// configured locally, so no remote answer should be able to turn them off.
+	running := map[string]context.CancelFunc{}
+	static := map[string]bool{}
+	start := func(addr string) {
+		gctx, cancel := context.WithCancel(ctx)
+		running[addr] = cancel
 		for range l.opts.PollConcurrency {
-			wg.Go(func() { l.pollLoop(ctx, strings.TrimSuffix(addr, "/")) })
+			// The deferred cancel releases the group's context once its polls
+			// have stopped; withdrawing the gateway is what stops them, and
+			// cancelling twice is harmless.
+			wg.Go(func() { defer cancel(); l.pollLoop(gctx, addr) })
 		}
+	}
+	for _, addr := range l.opts.Addrs {
+		addr = strings.TrimSuffix(addr, "/")
+		if running[addr] == nil {
+			static[addr] = true
+			start(addr)
+		}
+	}
+	if l.opts.Discover == nil {
+		wg.Wait()
+		return
+	}
+	for ctx.Err() == nil {
+		addrs, err := l.opts.Discover(ctx)
+		switch {
+		case err != nil:
+			// Keep serving what we already poll. The hub is the control
+			// plane, and this is the data plane — an unreachable hub must not
+			// take inbound traffic down with it.
+			if ctx.Err() == nil {
+				l.log.Warn("gateway discovery failed; keeping the current gateways",
+					"event", "runner.gateway.discovery_failed",
+					"gateways", len(running), "error", err)
+			}
+		default:
+			l.reconcile(addrs, running, static, start)
+		}
+		sleep(ctx, l.discoverEvery())
+	}
+	for _, cancel := range running {
+		cancel()
 	}
 	wg.Wait()
 }
+
+// reconcile brings the set of polled gateways in line with the hub's answer.
+func (l *Loop) reconcile(addrs []string, running map[string]context.CancelFunc, static map[string]bool, start func(string)) {
+	want := make(map[string]bool, len(addrs))
+	for _, addr := range addrs {
+		want[strings.TrimSuffix(addr, "/")] = true
+	}
+	for addr, cancel := range running {
+		if want[addr] || static[addr] {
+			continue
+		}
+		l.log.Info("gateway withdrawn", "event", "runner.gateway.withdrawn", "gateway", addr)
+		cancel()
+		delete(running, addr)
+	}
+	for addr := range want {
+		if running[addr] != nil {
+			continue
+		}
+		l.log.Info("gateway added", "event", "runner.gateway.added", "gateway", addr)
+		start(addr)
+	}
+}
+
+func (l *Loop) discoverEvery() time.Duration { return l.opts.DiscoverEvery }
 
 // pollLoop holds one of a gateway's long-polls, re-parking after every outcome.
 func (l *Loop) pollLoop(ctx context.Context, addr string) {

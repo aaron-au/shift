@@ -156,6 +156,23 @@ func (a *api) rotateRouteToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"token": token})
 }
 
+// syncGateways tells the calling runner which gateways to poll (runner realm).
+//
+// The runner asks; the hub answers for the identity the CREDENTIAL proves, not
+// for one named in the request. That is the same rule as the labels themselves
+// (ADR-0041 §3): a runner that could ask "what should runner X poll?" could
+// park against a gateway serving somebody else's traffic.
+//
+// Metadata only — an address list. No payload, no route policy, no credential.
+func (a *api) syncGateways(w http.ResponseWriter, r *http.Request) {
+	gws, err := a.st.GatewaysForRunner(r.Context(), runnerID(r))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"gateways": gws})
+}
+
 type labelsRequest struct {
 	Labels map[string]string `json:"labels"`
 }

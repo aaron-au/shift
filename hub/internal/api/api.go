@@ -178,6 +178,7 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("GET /api/v1/routes", a.admin(a.listRoutes))          // ADR-0038 §5
 	mux.Handle("DELETE /api/v1/routes/{id}", a.admin(a.deleteRoute)) // ADR-0038 §5
 	mux.Handle("POST /api/v1/routes/{id}/rotate-token", a.admin(a.rotateRouteToken))
+	mux.Handle("GET /api/v1/gateways/sync", a.runner(a.syncGateways))         // ADR-0038 §4
 	mux.Handle("PUT /api/v1/runners/{id}/labels", a.admin(a.setRunnerLabels)) // ADR-0041 §3
 	mux.Handle("PUT /api/v1/flows/{name}", a.admin(a.deployFlow))
 	mux.Handle("GET /api/v1/flows", a.admin(a.listFlows))

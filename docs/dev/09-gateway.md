@@ -131,9 +131,26 @@ gateway 1 is invisible to gateway 2 — and that is deliberate, because the
 alternative is shared state between DMZ hosts.
 
 So **a runner polls every gateway eligible to send it work**, and the **hub
-computes that list** (it already holds the gateway records and the runner
-labels) and hands it over on the config sync that already exists. Adding a
-gateway reconfigures nothing.
+computes that list** — it already holds the gateway records and the runner
+labels, which is both halves of the answer. A runner asks on
+`GET /api/v1/gateways/sync` (runner realm) every 60 seconds and starts or stops
+a poll group per gateway, so adding a gateway or relabelling a runner takes
+effect without touching the fleet.
+
+`store.GatewaysForRunner` filters on two things, and each one is an answer to
+"why would polling that gateway be wrong?":
+
+- **Not adopted yet** — it has no runner CA, so it cannot verify the
+  certificate the runner would present, and the runner cannot verify it back.
+- **No route this runner could serve** — `labels @> selector` is JSONB
+  containment, which is exactly the subset match the gateway applies to the
+  roster. The address list and the placement decision therefore cannot disagree
+  about what "matches" means.
+
+Two rules on the runner side, both about not letting the control plane take the
+data plane down with it: a **failed** discovery pass keeps the current set (an
+unreachable hub says nothing about which gateways exist), and an address given
+locally with `-gateways` is added to the hub's list and never withdrawn by it.
 
 The cost is small: 100 runners across 5 gateways is 100 parked connections per
 gateway (~8 KB of goroutine stack each) and roughly 3 poll requests/sec per
@@ -259,6 +276,31 @@ The benchmark models connectors as service-time *distributions* with jitter and
 a 1–3% spike arm, because a zero-latency stub measures Go's scheduler rather
 than this system.
 
+## Configuration: the hub is the source of truth
+
+`store.BuildGatewayConfig` derives a gateway's whole document from live state on
+every pass — routes scoped to it or to all gateways, the runner roster its
+selectors resolve against, and its own proxy trust — and `hubd` hands that to
+`gwsync` as `ConfigFor`. It is pushed WHOLE and swapped atomically: a
+half-applied policy is worse than a stale one.
+
+Routes are a hub resource (`gateway_routes`), not a flow-document field: a
+caller's bearer token, source allowlist and body cap are ingress policy and have
+nothing to do with what a flow does with a record. Putting them in the flow
+would mean editing a flow to rotate a credential.
+
+Every edit funnels through one call site that audits AND raises the
+configuration generation. A change that audited without bumping would leave
+gateways serving policy the hub no longer believes in, and the drift the
+reconcile loop watches for is exactly that difference.
+
+The hub's document type is a MIRROR of `gateway/internal/config` — separate
+modules, and the gateway's has no dependencies. Both sides parse
+`testdata/gateway-config.golden.json`, the gateway's side with
+`DisallowUnknownFields`, because a renamed field would otherwise vanish on
+unmarshal with no error anywhere and the policy it carried would quietly stop
+being applied.
+
 ## Not built yet
 
 - **Retire the superseded paths.** `-state` (ADR-0049) now adopts, and the
@@ -279,25 +321,6 @@ than this system.
   work and are marked deprecated. They go once the hub push side has been
   proven end to end in a deployment; removing them before that would strand
   `deploy/k8s`.
-- **Per-runner gateway address list.** A runner is told which gateways to poll
-  by `-gateways`; the hub does not yet distribute that. Everything else on the
-  hub side is wired: `store.BuildGatewayConfig` derives a gateway's whole
-  document from live state on every pass — routes scoped to it or to all
-  gateways, the runner roster its selectors resolve against, and its own proxy
-  trust — and `hubd` hands that to `gwsync` as `ConfigFor`.
-
-  Routes are a hub resource (`gateway_routes`), not a flow-document field:
-  a caller's bearer token, source allowlist and body cap are ingress policy and
-  have nothing to do with what a flow does with a record. Putting them in the
-  flow would mean editing a flow to rotate a credential.
-
-  The hub's document type is a MIRROR of `gateway/internal/config` — separate
-  modules, and the gateway's has no dependencies. Both sides parse
-  `testdata/gateway-config.golden.json`, the gateway's side with
-  `DisallowUnknownFields`, because a renamed field would otherwise vanish on
-  unmarshal with no error anywhere and the policy it carried would quietly stop
-  being applied.
-
 - **Caller identity inside the flow.** The gateway stamps the principal and the
   runner receives it, but nothing yet binds it into the flow document — that
   needs the flow-variable model ADR-0031 leaves open. Until then the principal

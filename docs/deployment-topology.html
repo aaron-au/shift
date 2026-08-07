@@ -669,9 +669,9 @@ runnerd \
   -name edge-runner-1 \
   -cred-file /var/lib/shift/hub.cred</pre>
           <p class="muted">
-            Add <code>-gateways https://gw.example:8444</code> once a gateway exists, so this runner also
-            polls it for inbound work. Repeat for as many runners as you want; they need nothing from
-            each other.
+            Nothing else to configure for inbound. The runner asks the hub which gateways to poll and
+            starts polling them as they appear, so adding a gateway later touches no runner.
+            Repeat for as many runners as you want; they need nothing from each other.
           </p>
         </div>
       </li>

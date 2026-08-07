@@ -205,6 +205,127 @@ func TestTheRosterCarriesHubAssertedLabels(t *testing.T) {
 	}
 }
 
+// A runner is told which gateways to poll (ADR-0038 §4). Every case here is a
+// gateway it must NOT be told about, because the failure of each is silent: a
+// runner polling a gateway that cannot verify it, or one whose routes could
+// never select it, costs a parked connection per DMZ host and looks fine.
+func TestARunnerPollsOnlyGatewaysThatCouldSendItWork(t *testing.T) {
+	s := open(t)
+	ctx := t.Context()
+
+	adopted, unadopted := newGateway(t, s, "adopted"), newGateway(t, s, "unadopted")
+	adopt(t, s, adopted.ID, fingerprint("ab"))
+
+	token, _, err := s.CreateRegistrationToken(ctx, time.Hour)
+	if err != nil {
+		t.Fatalf("token: %v", err)
+	}
+	runnerID, _, err := s.RegisterRunnerCert(ctx, token, "r1")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	urls := func() []string {
+		t.Helper()
+		gws, err := s.GatewaysForRunner(ctx, runnerID)
+		if err != nil {
+			t.Fatalf("gateways for runner: %v", err)
+		}
+		out := make([]string, 0, len(gws))
+		for _, g := range gws {
+			out = append(out, g.URL)
+		}
+		return out
+	}
+
+	// No routes anywhere: nothing could be sent, so there is nothing to poll.
+	if got := urls(); len(got) != 0 {
+		t.Fatalf("gateways = %v, want none before any route exists", got)
+	}
+
+	// An unselective route makes every ADOPTED gateway worth polling. The
+	// unadopted one still is not: it has no runner CA, so it could not verify
+	// the certificate this runner would present.
+	if _, _, err := s.CreateRoute(ctx, store.Route{Path: "/open", Flow: "f", AuthPrincipal: "p"}, true); err != nil {
+		t.Fatalf("create route: %v", err)
+	}
+	got := urls()
+	if len(got) != 1 || got[0] != adopted.URL {
+		t.Fatalf("gateways = %v, want only the adopted one (%s)", got, adopted.URL)
+	}
+	adopt(t, s, unadopted.ID, fingerprint("cd"))
+	if got := urls(); len(got) != 2 {
+		t.Fatalf("gateways = %v, want both once the second is adopted", got)
+	}
+}
+
+// Selector matching decides the address list the same way it decides
+// placement. If the two disagreed, a runner would either poll a gateway that
+// will never pick it or — worse — stop polling one that would.
+func TestTheAddressListMatchesSelectorsTheSameWayPlacementDoes(t *testing.T) {
+	s := open(t)
+	ctx := t.Context()
+
+	api, batch := newGateway(t, s, "api"), newGateway(t, s, "batch")
+	adopt(t, s, api.ID, fingerprint("ab"))
+	adopt(t, s, batch.ID, fingerprint("cd"))
+
+	token, _, err := s.CreateRegistrationToken(ctx, time.Hour)
+	if err != nil {
+		t.Fatalf("token: %v", err)
+	}
+	runnerID, _, err := s.RegisterRunnerCert(ctx, token, "r1")
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	// Each gateway carries one route, selective and pinned to it.
+	for gw, workload := range map[string]string{api.ID: "api", batch.ID: "batch"} {
+		if _, _, err := s.CreateRoute(ctx, store.Route{
+			GatewayID: gw, Path: "/" + workload, Flow: "f", AuthPrincipal: "p",
+			Selector: map[string]string{"workload": workload},
+		}, true); err != nil {
+			t.Fatalf("create route: %v", err)
+		}
+	}
+
+	ids := func() []string {
+		t.Helper()
+		gws, err := s.GatewaysForRunner(ctx, runnerID)
+		if err != nil {
+			t.Fatalf("gateways for runner: %v", err)
+		}
+		out := make([]string, 0, len(gws))
+		for _, g := range gws {
+			out = append(out, g.ID)
+		}
+		return out
+	}
+
+	// Unlabelled: matches neither selector.
+	if got := ids(); len(got) != 0 {
+		t.Fatalf("gateways = %v, want none for an unlabelled runner", got)
+	}
+
+	if err := s.SetRunnerLabels(ctx, runnerID, map[string]string{"workload": "api", "zone": "eu"}); err != nil {
+		t.Fatalf("labels: %v", err)
+	}
+	// Containment, not equality: extra labels the selector does not mention
+	// must not stop a match, or every selector would have to name every label.
+	if got := ids(); len(got) != 1 || got[0] != api.ID {
+		t.Fatalf("gateways = %v, want only the api gateway", got)
+	}
+
+	// Relabelling moves the runner. This is the whole reason the list is
+	// asked for repeatedly rather than read once at startup.
+	if err := s.SetRunnerLabels(ctx, runnerID, map[string]string{"workload": "batch"}); err != nil {
+		t.Fatalf("relabel: %v", err)
+	}
+	if got := ids(); len(got) != 1 || got[0] != batch.ID {
+		t.Fatalf("after relabelling, gateways = %v, want only the batch gateway", got)
+	}
+}
+
 func TestTrustedProxiesAreCarriedPerGateway(t *testing.T) {
 	s := open(t)
 	ctx := t.Context()
