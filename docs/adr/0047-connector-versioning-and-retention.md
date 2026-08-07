@@ -2,8 +2,14 @@
 
 Date: 2026-08-06
 
-Status: **Designed, build pending.** Extends ADR-0011 (signed registry) and
+Status: **§1 built; §2–§9 pending.** Extends ADR-0011 (signed registry) and
 ADR-0013/0029 (flow model). Consumes the review registry from ADR-0042 §7.
+
+Built so far: resolution moved from dispatch to publish (§1) — `flowdoc` steps
+carry a `version`, `PublishFlow` fills it in transactionally, the runner
+resolves an exact build and pools processes per (name, version), and the
+`connector-pin` check reports anything still resolving to newest. See
+`docs/dev/06-hub.md`.
 
 ## Context
 

@@ -29,6 +29,14 @@ var NamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._-]{0,127}$`)
 // connection name is an identifier the author types rather than prose.
 var ConnectionNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
+// ConnectorVersionPattern constrains a pinned connector version (ADR-0047 §1).
+//
+// The registry treats a version as an opaque label, not semver, so this only
+// bounds the character set — but it bounds it tightly, because the string
+// reaches a path component in the runner's artifact cache and a query
+// parameter on the way there.
+var ConnectorVersionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
+
 // Connectors returns the sorted, unique connector names the document
 // references — source and sink in the linear form; every connector step
 // (including error handlers) in the graph form. The hub uses this to apply
@@ -406,6 +414,12 @@ func (s *Step) validate() error {
 			if s.Connection != "" {
 				return fmt.Errorf("built-in connector %q takes no connection", s.Connector)
 			}
+			// Nor a version: a built-in is compiled into the runner, so there
+			// is no artifact to pin and no registry to pin it from
+			// (ADR-0047 §1).
+			if s.Version != "" {
+				return fmt.Errorf("built-in connector %q takes no version", s.Connector)
+			}
 			return nil
 		}
 		if s.Connector == "" || s.Action == "" {
@@ -413,6 +427,9 @@ func (s *Step) validate() error {
 		}
 		if s.Connection != "" && !ConnectionNamePattern.MatchString(s.Connection) {
 			return fmt.Errorf("connection %q must match %s (letters, digits, . _ -)", s.Connection, ConnectionNamePattern)
+		}
+		if s.Version != "" && !ConnectorVersionPattern.MatchString(s.Version) {
+			return fmt.Errorf("version %q must match %s", s.Version, ConnectorVersionPattern)
 		}
 		return nil
 	case isTransformType(s.Type):

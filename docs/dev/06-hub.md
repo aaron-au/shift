@@ -301,6 +301,54 @@ return 404 on resolve — cloud hubs hide dangerous connectors "not even
 visible." Empty (self-hosted default) allows everything. Name-based and
 hub-wide today; capability metadata and per-tenant scope are later adds.
 
+## Connector pinning (ADR-0047 §1)
+
+A flow that does not say which connector build it runs takes whatever is
+newest **at the moment a task dispatches** — so publishing `sftp v0.3.0` used
+to change behaviour for every flow using sftp, on the next task, against live
+data. Nobody chose that; it is what "resolve latest" means once a registry
+holds more than one version.
+
+The resolution machinery was already right. It ran at the wrong moment. So it
+moved:
+
+| | Before | Now |
+|---|---|---|
+| Draft | resolves latest at dispatch | resolves latest at dispatch |
+| Published | resolves latest at dispatch | runs the build it was published against |
+
+`PublishFlow` rewrites the version's document, filling `version` on every
+unpinned connector step, **in the same transaction as the status flip** —
+published-but-unpinned is precisely the state this removes, and a crash
+between two statements would leave a flow in it permanently.
+
+Four rules fall out, each of which is a test:
+
+- **Already-pinned steps are left alone.** Republishing an unchanged document
+  is a no-op, not a silent upgrade, and a rollback keeps the builds its version
+  was published against.
+- **A yanked version or a revoked key never becomes a new pin** — pinning fails
+  closed exactly as resolution does.
+- **A connector the registry does not know stays unpinned rather than blocking
+  the publish.** The registry is optional: a self-hosted deployment may
+  provision binaries into the runner's directory and publish no artifacts at
+  all, and refusing here would make it mandatory by accident. The
+  `connector-pin` review check (ADR-0042 §7) raises a warning naming every
+  step still resolving to newest, which is where a typo shows up.
+- **A stored document that no longer parses is left exactly as it is.**
+  Publishing worked before pinning existed and still does; `/graph` already
+  answers 422 for it.
+
+On the runner, the pin travels on the step and reaches `connstore.Ensure`, so
+`ResolveConnector` asks for an exact version instead of `""`. The process pool
+is keyed by **name AND version**: two published flows may legitimately pin
+different builds of one connector, and keying by name alone would hand the
+second flow whichever build the first happened to start — the same silent
+substitution, moved from the registry into the pool. The local connector
+directory ignores the pin, deliberately: that is the dev path where an
+operator drops in a binary and vouches for it, and `SHIFT_REQUIRE_SIGNED`
+removes it entirely.
+
 ## Direct executions (M5d-2, ADR-0016)
 
 Push-triggered runs (webhook / direct API) execute entirely on a runner and

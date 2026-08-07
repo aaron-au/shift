@@ -38,7 +38,7 @@ type Options struct {
 	SpillDir string
 	// LocateConnector resolves connectors from the hub registry
 	// (verified) when ConnectorDir doesn't provide them. Optional.
-	LocateConnector func(ctx context.Context, name string) (string, error)
+	LocateConnector func(ctx context.Context, name, version string) (string, error)
 	// RequireSigned disables the ConnectorDir fallback: everything must
 	// come verified through LocateConnector.
 	RequireSigned bool
@@ -559,11 +559,11 @@ func (r *responseSink) Close() error { return r.w.Close() }
 // sink action). The record is metadata only — flow, failing step, error,
 // timestamp — never the payload the hub must not see (doctrine).
 func (s *Service) runHandler(ctx context.Context, h *flow.Step, flowName, failStep, errMsg string) error {
-	proc, err := s.pool.Get(s.baseCtx, h.Connector) // pooled process lifetime, not task ctx
+	proc, err := s.pool.Get(s.baseCtx, h.Connector, h.Version) // pooled process lifetime, not task ctx
 	if err != nil {
 		return err
 	}
-	defer s.pool.Put(h.Connector)
+	defer s.pool.Put(h.Connector, h.Version)
 	sink := proc.Sink(h.Action, h.Config)
 
 	b := errorRecord(flowName, failStep, errMsg, time.Now().UTC().Format(time.RFC3339))

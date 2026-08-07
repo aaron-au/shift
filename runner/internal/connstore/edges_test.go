@@ -67,7 +67,7 @@ func TestEnsureResolveFailurePropagates(t *testing.T) {
 	hub.resolveStatus = 500
 	s := newStore(t, srv, [][]byte{hub.pub})
 
-	path, err := s.Ensure(t.Context(), "gen")
+	path, err := s.Ensure(t.Context(), "gen", "")
 	if err == nil {
 		t.Fatal("resolve failure accepted")
 	}
@@ -107,7 +107,7 @@ func TestEnsureMalformedManifestFieldsFailClosed(t *testing.T) {
 			hub.mutate = tc.mutate
 			s := newStore(t, srv, [][]byte{hub.pub})
 
-			path, err := s.Ensure(t.Context(), "gen")
+			path, err := s.Ensure(t.Context(), "gen", "")
 			if err == nil {
 				t.Fatal("malformed manifest accepted")
 			}
@@ -136,7 +136,7 @@ func TestEnsureUnknownKeyAfterRefreshFailsClosed(t *testing.T) {
 	hub.resolveKey = func() []byte { return otherPub }
 	s := newStore(t, srv, nil) // unpinned: a hub refresh is allowed
 
-	if _, err := s.Ensure(t.Context(), "gen"); !errors.Is(err, ErrUntrustedKey) {
+	if _, err := s.Ensure(t.Context(), "gen", ""); !errors.Is(err, ErrUntrustedKey) {
 		t.Fatalf("err = %v, want ErrUntrustedKey", err)
 	}
 	if hub.fetches.Load() != 0 {
@@ -158,7 +158,7 @@ func TestEnsureKeyRefreshFailureFailsClosed(t *testing.T) {
 	hub.keysStatus = 500
 	s := newStore(t, srv, nil) // unpinned: refresh is attempted, and fails
 
-	_, err := s.Ensure(t.Context(), "gen")
+	_, err := s.Ensure(t.Context(), "gen", "")
 	if err == nil {
 		t.Fatal("unavailable key list accepted")
 	}
@@ -175,7 +175,7 @@ func TestEnsureArtifactFetchFailure(t *testing.T) {
 	hub.artifactStatus = 500
 	s := newStore(t, srv, [][]byte{hub.pub})
 
-	path, err := s.Ensure(t.Context(), "gen")
+	path, err := s.Ensure(t.Context(), "gen", "")
 	if err == nil {
 		t.Fatal("failed fetch accepted")
 	}
@@ -201,7 +201,7 @@ func TestEnsureTempFileFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := s.Ensure(t.Context(), "gen"); err == nil {
+	if _, err := s.Ensure(t.Context(), "gen", ""); err == nil {
 		t.Fatal("missing cache dir accepted")
 	}
 	if hub.fetches.Load() != 0 {
@@ -220,7 +220,7 @@ func TestEnsurePublishFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := s.Ensure(t.Context(), "gen")
+	got, err := s.Ensure(t.Context(), "gen", "")
 	if err == nil {
 		t.Fatal("unpublishable artifact reported as ready")
 	}

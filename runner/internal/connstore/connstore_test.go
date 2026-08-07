@@ -135,7 +135,7 @@ func TestEnsureFetchVerifyCache(t *testing.T) {
 	hub, srv := newFakeHub(t)
 	s := newStore(t, srv, nil)
 
-	path, err := s.Ensure(t.Context(), "gen")
+	path, err := s.Ensure(t.Context(), "gen", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestEnsureFetchVerifyCache(t *testing.T) {
 	}
 
 	// Cache hit: verified by re-hash, no refetch.
-	if _, err := s.Ensure(t.Context(), "gen"); err != nil {
+	if _, err := s.Ensure(t.Context(), "gen", ""); err != nil {
 		t.Fatal(err)
 	}
 	if hub.fetches.Load() != 1 {
@@ -162,7 +162,7 @@ func TestEnsureFetchVerifyCache(t *testing.T) {
 	if err := os.WriteFile(path, []byte("tampered"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Ensure(t.Context(), "gen"); err != nil {
+	if _, err := s.Ensure(t.Context(), "gen", ""); err != nil {
 		t.Fatal(err)
 	}
 	if hub.fetches.Load() != 2 {
@@ -180,7 +180,7 @@ func TestEnsureServerTamperFailsClosed(t *testing.T) {
 
 	// Registry serves different bytes than the signed manifest promises.
 	hub.serveArtifact = func() []byte { return []byte("evil bytes") }
-	path, err := s.Ensure(t.Context(), "gen")
+	path, err := s.Ensure(t.Context(), "gen", "")
 	if err == nil {
 		t.Fatal("tampered artifact accepted")
 	}
@@ -208,7 +208,7 @@ func TestEnsureUntrustedKeyFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := newStore(t, srv, [][]byte{otherPub})
-	if _, err := s.Ensure(t.Context(), "gen"); !errors.Is(err, ErrUntrustedKey) {
+	if _, err := s.Ensure(t.Context(), "gen", ""); !errors.Is(err, ErrUntrustedKey) {
 		t.Fatalf("untrusted key: err = %v, want ErrUntrustedKey", err)
 	}
 	if hub.fetches.Load() != 0 {
@@ -219,7 +219,7 @@ func TestEnsureUntrustedKeyFailsClosed(t *testing.T) {
 func TestEnsurePinnedKeyAccepts(t *testing.T) {
 	hub, srv := newFakeHub(t)
 	s := newStore(t, srv, [][]byte{hub.pub})
-	if _, err := s.Ensure(t.Context(), "gen"); err != nil {
+	if _, err := s.Ensure(t.Context(), "gen", ""); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -229,7 +229,7 @@ func TestEnsureBadSignature(t *testing.T) {
 	hub.sig = append([]byte{}, hub.sig...)
 	hub.sig[0] ^= 0xff
 	s := newStore(t, srv, [][]byte{hub.pub})
-	if _, err := s.Ensure(t.Context(), "gen"); !errors.Is(err, consign.ErrBadSignature) {
+	if _, err := s.Ensure(t.Context(), "gen", ""); !errors.Is(err, consign.ErrBadSignature) {
 		t.Fatalf("bad signature: err = %v", err)
 	}
 	if hub.fetches.Load() != 0 {
@@ -249,7 +249,7 @@ func TestEnsureV2DescriptorVerifies(t *testing.T) {
 	hub, srv := newFakeHub(t)
 	hub.signV2([]byte(`{"name":"gen","version":"1.0.0","actions":[{"action":"gen","direction":"source"}]}`))
 	s := newStore(t, srv, [][]byte{hub.pub})
-	if _, err := s.Ensure(t.Context(), "gen"); err != nil {
+	if _, err := s.Ensure(t.Context(), "gen", ""); err != nil {
 		t.Fatalf("v2 descriptor artifact rejected: %v", err)
 	}
 }
@@ -261,7 +261,7 @@ func TestEnsureV2DescriptorTamperFailsClosed(t *testing.T) {
 	// must break the v2 signature.
 	hub.serveDescriptor = func() []byte { return []byte(`{"actions":[{"action":"evil","direction":"sink"}]}`) }
 	s := newStore(t, srv, [][]byte{hub.pub})
-	if _, err := s.Ensure(t.Context(), "gen"); !errors.Is(err, consign.ErrBadSignature) {
+	if _, err := s.Ensure(t.Context(), "gen", ""); !errors.Is(err, consign.ErrBadSignature) {
 		t.Fatalf("tampered descriptor: err = %v, want ErrBadSignature", err)
 	}
 	if hub.fetches.Load() != 0 {
@@ -275,7 +275,7 @@ func TestConcurrentEnsure(t *testing.T) {
 	errs := make(chan error, 8)
 	for range 8 {
 		go func() {
-			_, err := s.Ensure(t.Context(), "gen")
+			_, err := s.Ensure(t.Context(), "gen", "")
 			errs <- err
 		}()
 	}
