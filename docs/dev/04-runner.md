@@ -483,6 +483,44 @@ callback does it inside. The comparison is invalid across versions, which
 is why no such benchmark is committed — the latency assertion is the honest
 guard.
 
+## Test-only behaviour (ADR-0048 §5)
+
+Capture tells you what a flow DID; it does not stop a test run writing to a
+real sink. Sampling an SFTP `put` does not stop the file landing on the
+customer's server.
+
+The answer is an option on the REAL step, never a node that stands in for it:
+
+| | Where | In test | Deployed |
+|---|---|---|---|
+| `mock` | connector **sink** step | records what would have been written | inert — the connector writes |
+| `testInput` | connector **source** step | emits the configured records | inert — the connector reads |
+| `probe` | a step type of its own | taps the stream and reports into the capture | compiles to **nothing** |
+
+The connector, its config and its version pin stay in the document in every
+case, so a deployed flow is complete by construction — and the practical
+consequence is that **a mock never has to be removed before shipping**. The
+flow running in production is the same document that was tested, with the
+diversion simply not taken.
+
+`SubmitOpts.Test` is what makes them live, and it is the HUB's statement,
+carried on the lease. A runner that decided for itself could stop a sink
+writing by calling its own work a test.
+
+Two details are load-bearing:
+
+- **A deployed probe is not an operator that does nothing — it is no operator
+  at all.** `applyTransforms` skips it, so a probe left on a canvas costs a
+  deployed flow no batch hand-off, no rename and no telemetry row. "Strictly
+  inert" is a claim about the compiled pipeline, not just its output.
+- **An unchecked mock drives the real sink even in a test run**, which is how
+  an author says "hitting the real system IS the test".
+
+The tests use a connector that is deliberately **not installed**, so every
+assertion is unambiguous: a run that completes proves the diversion held and
+the connector was never touched; a run that fails naming the connector proves
+the real one was used. Nothing depends on which binaries happen to exist.
+
 ## Test-mode data capture (M5c, ADR-0014)
 
 When a task is submitted with capture on (`POST /api/flows/execute?capture=1

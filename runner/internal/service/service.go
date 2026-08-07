@@ -132,6 +132,15 @@ type SubmitOpts struct {
 	Capture bool
 	// CaptureMax bounds the sampled records per step (default 20).
 	CaptureMax int
+	// Test runs this as a TEST execution (ADR-0048): the test-only shapes
+	// become live — @inject emits its records, @probe taps the stream, @mock
+	// stands in for a sink. Deployed (false) all three are inert.
+	//
+	// Separate from Capture on purpose. Capture asks "show me what flowed";
+	// Test says "this is not production", which changes what the flow DOES.
+	// Folding them together would mean turning on capture silently stopped a
+	// sink from writing.
+	Test bool
 	// WebhookBody is the inbound request body bound as the flow's source
 	// when its source is the built-in @webhook (ADR-0016 direct execution).
 	// Required for such flows; ignored otherwise.
@@ -467,7 +476,7 @@ func (s *Service) execute(ctx context.Context, doc *flow.Document, redact func(s
 			}
 		})
 	}
-	p, err := flow.Apply(doc, base, flow.CompileOptions{Gov: taskGov, SpillDir: s.opts.SpillDir})
+	p, err := flow.Apply(doc, base, flow.CompileOptions{Gov: taskGov, SpillDir: s.opts.SpillDir, Test: o.Test})
 	if err != nil {
 		return execResult{}, err
 	}
