@@ -232,3 +232,88 @@ func noticeDetail(out map[string]any, code string) string {
 func noticeSeverity(out map[string]any, code string) string {
 	return noticeField(out, code, "severity")
 }
+
+// The tier is hub-asserted (ADR-0048 §1). A runner naming its own would be
+// able to escape metering, or be handed work it should not see.
+func TestTheTestTierIsSetByTheHubNotTheRunner(t *testing.T) {
+	srv := newServer(t)
+
+	var tok struct{ Token string }
+	call(t, http.MethodPost, srv.URL+"/api/v1/runner-tokens", adminToken, `{}`, &tok)
+	var reg struct {
+		RunnerID string `json:"runner_id"`
+		Secret   string `json:"secret"`
+	}
+	if c := call(t, http.MethodPost, srv.URL+"/api/v1/runners/register", "",
+		`{"token":"`+tok.Token+`","name":"r1"}`, &reg); c != http.StatusCreated {
+		t.Fatalf("register = %d", c)
+	}
+
+	// It registers as production; test capacity is granted, not arrived with.
+	var list struct {
+		Runners []struct {
+			Tier string `json:"tier"`
+		} `json:"runners"`
+	}
+	call(t, http.MethodGet, srv.URL+"/api/v1/runners", adminToken, "", &list)
+	if len(list.Runners) != 1 || list.Runners[0].Tier != "production" {
+		t.Fatalf("runners = %+v, want one production runner", list.Runners)
+	}
+
+	if c := call(t, http.MethodPut, srv.URL+"/api/v1/runners/"+reg.RunnerID+"/tier",
+		adminToken, `{"tier":"test"}`, nil); c != http.StatusNoContent {
+		t.Fatalf("set tier = %d", c)
+	}
+	call(t, http.MethodGet, srv.URL+"/api/v1/runners", adminToken, "", &list)
+	if list.Runners[0].Tier != "test" {
+		t.Fatalf("tier = %q, want test", list.Runners[0].Tier)
+	}
+
+	// A runner cannot set its own — the whole point of asserting it at the hub.
+	if c := call(t, http.MethodPut, srv.URL+"/api/v1/runners/"+reg.RunnerID+"/tier",
+		reg.Secret, `{"tier":"production"}`, nil); c != http.StatusUnauthorized {
+		t.Fatalf("runner self-tiering = %d, want 401", c)
+	}
+	if c := call(t, http.MethodPut, srv.URL+"/api/v1/runners/"+reg.RunnerID+"/tier",
+		adminToken, `{"tier":"staging"}`, nil); c != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown tier = %d, want 422", c)
+	}
+}
+
+// An API execution is test-marked only when it says so. The default is
+// production, because a default of "test" would quietly move billable work off
+// the meter.
+func TestAnExecutionIsProductionUnlessItSaysOtherwise(t *testing.T) {
+	srv := newServer(t)
+	if c := call(t, http.MethodPut, srv.URL+"/api/v1/flows/orders", adminToken, goodFlow, nil); c != http.StatusCreated {
+		t.Fatalf("deploy = %d", c)
+	}
+	if c := call(t, http.MethodPost, srv.URL+"/api/v1/flows/orders/versions/1/publish", adminToken, "", nil); c != http.StatusOK {
+		t.Fatalf("publish = %d", c)
+	}
+	if c := call(t, http.MethodPost, srv.URL+"/api/v1/flows/orders/execute", adminToken, `{}`, nil); c != http.StatusAccepted {
+		t.Fatalf("execute = %d", c)
+	}
+	if c := call(t, http.MethodPost, srv.URL+"/api/v1/flows/orders/execute", adminToken, `{"test":true}`, nil); c != http.StatusAccepted {
+		t.Fatalf("test execute = %d", c)
+	}
+
+	var tasks struct {
+		Tasks []struct {
+			Test bool `json:"test"`
+		} `json:"tasks"`
+	}
+	call(t, http.MethodGet, srv.URL+"/api/v1/tasks?limit=10", adminToken, "", &tasks)
+	if len(tasks.Tasks) != 2 {
+		t.Fatalf("tasks = %d, want 2", len(tasks.Tasks))
+	}
+	marked := 0
+	for _, tk := range tasks.Tasks {
+		if tk.Test {
+			marked++
+		}
+	}
+	if marked != 1 {
+		t.Fatalf("%d of 2 tasks are test-marked, want exactly the one that asked", marked)
+	}
+}

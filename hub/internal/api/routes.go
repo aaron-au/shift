@@ -238,3 +238,35 @@ func (a *api) gatewayConfigChanged(r *http.Request, action, target string) {
 			"event", "hub.gateway_config.bump_failed", "error", err.Error())
 	}
 }
+
+type tierRequest struct {
+	Tier string `json:"tier"`
+}
+
+// setRunnerTier records what a runner is FOR (ADR-0048 §1): "production" or
+// "test".
+//
+// Admin-realm and hub-asserted, exactly as labels are. A runner that could name
+// its own tier could claim production capacity to escape metering, or claim
+// test capacity to be handed work it should not see — and neither is reachable
+// because nothing the runner sends is consulted.
+func (a *api) setRunnerTier(w http.ResponseWriter, r *http.Request) {
+	var req tierRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRouteBody)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if !store.ValidTier(req.Tier) {
+		writeErr(w, http.StatusUnprocessableEntity,
+			fmt.Errorf("tier must be %q or %q", store.TierProduction, store.TierTest))
+		return
+	}
+	id := r.PathValue("id")
+	if err := a.st.SetRunnerTier(r.Context(), id, req.Tier); err != nil {
+		writeLookupErr(w, err)
+		return
+	}
+	_ = a.st.Audit(r.Context(), actor(r), "runner.set-tier", id, map[string]any{"tier": req.Tier})
+	slog.Info("runner tier set", "event", "hub.runner.tier_set", "runner", id, "tier", req.Tier)
+	w.WriteHeader(http.StatusNoContent)
+}

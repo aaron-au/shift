@@ -301,6 +301,50 @@ return 404 on resolve — cloud hubs hide dangerous connectors "not even
 visible." Empty (self-hosted default) allows everything. Name-based and
 hub-wide today; capability metadata and per-tenant scope are later adds.
 
+## The test tier (ADR-0048 §1/§3)
+
+Testing an integration usually means running it against something real, because
+the alternative is a second licensed environment. So people test in production
+and the platform gets blamed for the outcome.
+
+**Tier is a roster attribute, asserted by the hub** — exactly as placement
+labels are (ADR-0041 §3). `PUT /api/v1/runners/{id}/tier` takes `production` or
+`test`; a runner registers as production and nothing it sends is ever
+consulted. The inverse is what makes it worth enforcing: a runner that could
+self-assert `production` would escape metering, and one that could self-assert
+`test` would receive work it should not see.
+
+**Only two things mark work as a test execution:** the studio's run-now, and an
+API execution passing `{"test": true}`. Not schedules, not webhook routes,
+nothing that arrives unattended. That is not an abuse control, it is the
+definition — a scheduled flow running on test capacity is a production flow
+metered wrong. `Enqueue` and `EnqueueTest` are separate methods rather than one
+taking a boolean: a trailing `bool` on a five-argument call is invisible at the
+call site and transposes silently, and "who can mark work as test" is then a
+grep for one identifier.
+
+**The claim filter reads the roster, never the claim.** `Claim` looks up the
+caller's tier and, for a test runner, restricts the queue to test-marked rows.
+
+The converse is deliberately **not** enforced: test-marked work may also run on
+a production runner. This is a considered deviation from the flattest reading
+of §3 — forbidding it would mean run-now stops working entirely in every
+deployment that has not registered a test runner, turning an additive
+capability into a breaking change. The tier's purpose is to keep test load
+*off* production capacity by choice, not to make testing impossible without it,
+and the marker travels with the task either way so metering still knows what it
+was.
+
+**There is no test-capacity quota, deliberately.** ADR-0048 §2 originally
+derived one from the licensed core budget and was withdrawn before being built
+(2026-08-07): what a customer wants is "run this against my test environment
+and do not let it touch production", and placement labels already choose *which*
+runner while the tier stops that runner being handed production work. A core
+allowance would have added a third mechanism that bought nothing — and "you are
+out of test cores" is a bad refusal on the one path whose purpose is letting
+somebody try something safely. What bounds test usage is §3 (no schedules, no
+webhooks, so nothing unattended) plus fair use.
+
 ## Connector pinning (ADR-0047 §1)
 
 A flow that does not say which connector build it runs takes whatever is

@@ -184,6 +184,7 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("GET /api/v1/connectors/eol", a.admin(a.listEOLs))                                             // ADR-0047 §7
 	mux.Handle("POST /api/v1/connectors/{name}/versions/{version}/eol", a.admin(a.setConnectorEOL))           // ADR-0047 §7
 	mux.Handle("PUT /api/v1/runners/{id}/labels", a.admin(a.setRunnerLabels))                                 // ADR-0041 §3
+	mux.Handle("PUT /api/v1/runners/{id}/tier", a.admin(a.setRunnerTier))                                     // ADR-0048 §1
 	mux.Handle("PUT /api/v1/flows/{name}", a.admin(a.deployFlow))
 	mux.Handle("GET /api/v1/flows", a.admin(a.listFlows))
 	mux.Handle("GET /api/v1/flows/{name}", a.admin(a.getFlow))
@@ -643,6 +644,11 @@ func (a *api) executeFlow(w http.ResponseWriter, r *http.Request) {
 		Version        int    `json:"version"`
 		IdempotencyKey string `json:"idempotency_key"`
 		MaxAttempts    int    `json:"max_attempts"`
+		// Test flags this execution as a TEST run (ADR-0048 §3): metered
+		// separately, excluded from billing, and claimable by a test runner.
+		// It must be stated explicitly — this and the studio's run-now are the
+		// only two things that can set it. Never a schedule, never a webhook.
+		Test bool `json:"test,omitempty"`
 	}
 	if err := readBody(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -654,7 +660,11 @@ func (a *api) executeFlow(w http.ResponseWriter, r *http.Request) {
 		writeErrCode(w, http.StatusUnprocessableEntity, "idempotency_key_reserved", errors.New(`idempotency keys may not use the reserved "sched:" prefix`))
 		return
 	}
-	id, err := a.st.Enqueue(r.Context(), r.PathValue("name"), req.Version, req.IdempotencyKey, req.MaxAttempts)
+	enqueue := a.st.Enqueue
+	if req.Test {
+		enqueue = a.st.EnqueueTest
+	}
+	id, err := enqueue(r.Context(), r.PathValue("name"), req.Version, req.IdempotencyKey, req.MaxAttempts)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, err)
 		return
@@ -667,7 +677,9 @@ func (a *api) executeFlow(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	_ = a.st.Audit(r.Context(), actor(r), "task.enqueue", id, nil)
+	// Audited WITH the tier: §4 wants test usage visible, and "who ran what on
+	// which capacity" starts here rather than in the metering export.
+	_ = a.st.Audit(r.Context(), actor(r), "task.enqueue", id, map[string]any{"test": req.Test})
 	writeJSON(w, http.StatusAccepted, map[string]string{"task_id": id})
 }
 

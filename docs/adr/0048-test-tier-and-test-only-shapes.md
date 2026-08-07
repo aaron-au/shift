@@ -2,7 +2,12 @@
 
 Date: 2026-08-06
 
-Status: **Designed, build pending.** Depends on ADR-0041 (hub-asserted
+Status: **§1/§3 built; §2 withdrawn; §4/§5 pending.** §1 (tier as a hub-asserted roster
+attribute) and §3 (test-marked dispatch) are in `hub/internal/store` +
+`hub/internal/api`; see `docs/dev/06-hub.md`. §2 was withdrawn before being built (see
+below). One deviation is recorded there: test-marked
+work may also run on a PRODUCTION runner, because forbidding it would break
+run-now in every deployment without test capacity. Depends on ADR-0041 (hub-asserted
 identity), ADR-0033 (core-based licensing), ADR-0014 (capture). Pairs with
 ADR-0047, which relies on the test tier as the place a forced connector upgrade
 gets exercised.
@@ -43,14 +48,36 @@ The inverse — a runner self-asserting `tier: production` to escape metering, o
 self-asserting `tier: test` to receive work it should not see — is not
 reachable, because nothing the runner sends is consulted.
 
-### 2. Entitlement is `purchased_cores / 2`
+### 2. ~~Entitlement is `purchased_cores / 2`~~ — WITHDRAWN (2026-08-07)
 
-Test capacity is derived from the licensed core budget the hub already holds
-(ADR-0033), rounded down, minimum one core for any paid tier. Community
-deployments get test capacity on the same ratio.
+The original decision derived a separate test allowance from the licensed core
+budget (ADR-0033), rounded down, minimum one core. It is withdrawn before being
+built. Aaron, 2026-08-07:
 
-It is capacity, not a separate SKU: no second licence to buy, no second thing
-to expire.
+> I don't think we need purchased / 2 as a concept. If the developer can only
+> use test mode they can run it on their existing runner(s) without issue —
+> they just select the appropriate runner for their test environment(s) and
+> test mode. Same result — identical to the / 2 process.
+
+That is right, and the reasoning is worth keeping because it deletes machinery
+rather than adding it. The thing a customer actually wants is *"run this
+against my test environment, and do not let it touch production"*. Two
+mechanisms that already exist deliver exactly that:
+
+- **placement** (ADR-0041 labels) chooses WHICH runner — the one that reaches
+  the test SAP instance, not the live one;
+- **§1's tier** stops that runner being handed production work by accident.
+
+A core allowance would have added a third thing, bought nothing the first two
+do not already give, and dragged the whole licensing budget into a feature that
+does not need it. It would also have had a bad failure shape: "you are out of
+test cores" is a refusal on the one path whose entire purpose is letting
+somebody try something safely.
+
+The commercial claim in §4 survives unchanged — test executions are metered
+separately and excluded from billing — and it no longer needs a quota to sit
+on. What bounds test usage is §3 (no schedules, no webhooks, so nothing
+unattended) plus fair use, which is where §4 already put it.
 
 ### 3. Test runners take test-marked work only
 
