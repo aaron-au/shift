@@ -1,0 +1,226 @@
+# The control plane: postgres, the bootstrap job that mints the trust
+# material, and the hub itself.
+#
+# This is what makes the rest of the bundle a legal configuration. Off-loopback
+# gateway↔runner traffic requires mTLS on both halves (ADR-0041), and mTLS
+# requires somebody to issue certificates — so there is no version of this
+# deployment that works without a control plane. That is the point: "run it
+# without the hub and turn the security off" is not an option the binaries
+# offer any more.
+#
+# Everything lives in shift-internal alongside the runner. The DMZ cannot open
+# a connection to any of it — that policy is unchanged and is still the claim
+# the bundle exists to make falsifiable.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shift-bootstrap
+  namespace: shift-internal
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 128Mi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shift-postgres
+  namespace: shift-internal
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: shift-internal
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: shift-internal
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # one RWO volume; never two writers
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:18-alpine
+          env:
+            - name: POSTGRES_USER
+              value: shift
+            - name: POSTGRES_PASSWORD
+              value: shift-dev-only # demo bundle; a real deployment uses a Secret
+            - name: POSTGRES_DB
+              value: shift
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "shift"]
+            initialDelaySeconds: 3
+            periodSeconds: 2
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: shift-postgres
+---
+# Mints the trust material ONCE onto the shared volume: the control-plane CA,
+# the hub's server certificate, the KEK, and the gateway's identity bundle
+# (ADR-0041). Re-running is a no-op — it keeps existing material rather than
+# regenerating, because regenerating would invalidate the trust every runner
+# and gateway already holds.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: shift-certs
+  namespace: shift-internal
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: certs
+          image: shift/tools:dev
+          imagePullPolicy: IfNotPresent
+          command: ["certs", "-dir", "/bootstrap"]
+          volumeMounts:
+            - name: bootstrap
+              mountPath: /bootstrap
+      volumes:
+        - name: bootstrap
+          persistentVolumeClaim:
+            claimName: shift-bootstrap
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hubd
+  namespace: shift-internal
+spec:
+  selector:
+    app: hubd
+  ports:
+    - name: api
+      port: 8400
+      targetPort: 8400
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hubd
+  namespace: shift-internal
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # shares the RWO bootstrap volume with the seed job
+  selector:
+    matchLabels:
+      app: hubd
+  template:
+    metadata:
+      labels:
+        app: hubd
+    spec:
+      containers:
+        - name: hubd
+          image: shift/hubd:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SHIFT_LOG_LEVEL
+              value: info
+            - name: SHIFT_HUB_LISTEN
+              value: 0.0.0.0:8400
+            - name: SHIFT_HUB_DB
+              value: postgres://shift:shift-dev-only@postgres:5432/shift
+            - name: SHIFT_HUB_TLS_CERT
+              value: /bootstrap/hub.pem
+            - name: SHIFT_HUB_TLS_KEY
+              value: /bootstrap/hub.key
+            - name: SHIFT_HUB_KEK_FILE
+              value: /bootstrap/kek.bin
+            # Runner mTLS (ADR-0044). The hub issues client certificates from
+            # the bundle CA — the same CA that signed the gateway — so a
+            # runner verifying a gateway checks the root that issued its own
+            # identity. "mtls" rather than "both": a bearer fallback is the
+            # configuration this bundle exists to prove unnecessary.
+            - name: SHIFT_HUB_RUNNER_CA_CERT
+              value: /bootstrap/ca.pem
+            - name: SHIFT_HUB_RUNNER_CA_KEY
+              value: /bootstrap/ca.key
+            - name: SHIFT_HUB_RUNNER_AUTH
+              value: both
+            - name: SHIFT_HUB_ADMIN_TOKEN
+              value: bundle-admin-token-dev-only
+          ports:
+            - containerPort: 8400
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8400
+              scheme: HTTPS
+            initialDelaySeconds: 3
+            periodSeconds: 3
+          volumeMounts:
+            - name: bootstrap
+              mountPath: /bootstrap
+      volumes:
+        - name: bootstrap
+          persistentVolumeClaim:
+            claimName: shift-bootstrap
+---
+# Provisions the RUNNING hub: a trusted publisher key, signed connector
+# artifacts, and a single-use runner registration token. Separate from the
+# certs job because it needs the hub answering, not just the volume.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: shift-seed
+  namespace: shift-internal
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: seed
+          image: shift/tools:dev
+          imagePullPolicy: IfNotPresent
+          command: ["seed", "-dir", "/bootstrap", "-hub", "https://hubd:8400"]
+          env:
+            - name: SHIFT_HUB_ADMIN_TOKEN
+              value: bundle-admin-token-dev-only
+            - name: SHIFT_HUB_CA_FILE
+              value: /bootstrap/ca.pem
+          volumeMounts:
+            - name: bootstrap
+              mountPath: /bootstrap
+      volumes:
+        - name: bootstrap
+          persistentVolumeClaim:
+            claimName: shift-bootstrap

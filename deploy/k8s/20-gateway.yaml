@@ -4,23 +4,6 @@
 # is not built yet (ADR-0038 §6a). In a real deployment the hub owns all of
 # this and the gateway holds nothing on disk.
 ---
-# The control-listener shared secret. gatewayd REFUSES TO START if the control
-# listener is non-loopback (as it is here) and this is unset — an
-# unauthenticated /poll on a routable address lets anyone park a fake runner
-# and be handed real inbound payloads.
-#
-# Interim measure: ADR-0038 §6a replaces it with mutual TLS and a per-gateway
-# identity bundle, which also authenticates the gateway TO the runner.
-apiVersion: v1
-kind: Secret
-metadata:
-  name: shift-gateway-control
-  namespace: shift-dmz
-stringData:
-  # A non-secret dev default, like everything in deploy/compose.yml. Generate a
-  # real one per deployment: openssl rand -hex 32
-  token: dev-control-secret-not-for-production
----
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -103,23 +86,29 @@ spec:
             - -public=:8443
             # Binds all interfaces because runners reach it from another pod.
             # The NetworkPolicy above is what keeps this port internal-only —
-            # in production this listener gets mutual TLS as well (not built).
             - -control=:8444
+            # mTLS identity (ADR-0041). Off-loopback the control listener now
+            # REFUSES to start without it: a shared secret cannot tell a
+            # polling runner that this gateway is real, so payload would go to
+            # whatever answered on the address. The bundle is issued by the
+            # same control-plane CA that signs runner identities, which is what
+            # makes the runner's verification meaningful.
+            - -identity=/identity
             - -config=/etc/shift/gateway.json
-          env:
-            # Env rather than a flag: a flag puts the secret into every process
-            # listing on the host.
-            - name: SHIFT_GATEWAY_CONTROL_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: shift-gateway-control
-                  key: token
+          # No SHIFT_GATEWAY_CONTROL_TOKEN. The shared secret is gone from
+          # this bundle deliberately: it authenticated the CALLER to the
+          # gateway and told the runner nothing about the gateway, so it was
+          # the half of the problem that did not matter. mTLS replaces it in
+          # both directions.
           ports:
             - name: public
               containerPort: 8443
             - name: control
               containerPort: 8444
           volumeMounts:
+            - name: identity
+              mountPath: /identity
+              readOnly: true
             - name: config
               mountPath: /etc/shift
               readOnly: true
@@ -137,6 +126,16 @@ spec:
             requests: {cpu: 50m, memory: 32Mi}
             limits: {memory: 128Mi}
       volumes:
+        # The gateway's mTLS identity. It arrives as a Secret because PVCs are
+        # namespace-scoped and the bootstrap volume lives in shift-internal —
+        # the README's setup step copies the three files across. Nothing in the
+        # DMZ reaches into the control plane to fetch it; the material is
+        # pushed to the DMZ, which is the same direction rule as everything
+        # else here (ADR-0038 §2).
+        - name: identity
+          secret:
+            secretName: shift-gateway-identity
+            defaultMode: 0400
         - name: config
           configMap:
             name: shift-gateway-config

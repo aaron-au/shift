@@ -139,6 +139,46 @@ func certs(args []string) error {
 		return err
 	}
 
+	// The GATEWAY's identity (ADR-0041), from the same CA. It is a client
+	// certificate to the hub and a server certificate to runners, so it needs
+	// both usages: the gateway proves itself to a polling runner (which is
+	// what stops payload going to whatever answered on that address) and
+	// authenticates to the hub when config is pushed.
+	//
+	// One CA for hub, runners and gateways is what makes the control plane a
+	// single trust domain — a runner verifying a gateway is checking the same
+	// root that issued its own identity, so "revoke this CA" means one thing.
+	gwKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+	gwTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(3),
+		Subject:      pkix.Name{CommonName: "gatewayd"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().AddDate(5, 0, 0),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		// Every name a runner may dial it by. A StatefulSet addresses each
+		// replica individually (a parked poll belongs to one pod), so the
+		// per-pod DNS names have to be on the certificate or the runner's
+		// verification fails on the very path ADR-0038 §4a requires.
+		DNSNames: []string{
+			"gatewayd", "localhost",
+			"shift-gateway-0.shift-gateway-control.shift-dmz.svc.cluster.local",
+			"shift-gateway-1.shift-gateway-control.shift-dmz.svc.cluster.local",
+		},
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	gwDER, err := x509.CreateCertificate(rand.Reader, gwTmpl, caCert, &gwKey.PublicKey, caKey)
+	if err != nil {
+		return err
+	}
+	gwKeyDER, err := x509.MarshalECPrivateKey(gwKey)
+	if err != nil {
+		return err
+	}
+
 	kek := make([]byte, 32)
 	if _, err := rand.Read(kek); err != nil {
 		return err
@@ -154,12 +194,16 @@ func certs(args []string) error {
 		{"hub.key", pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: srvKeyDER}), 0o600},
 		{"ca.key", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: caKeyDER}), 0o600},
 		{"kek.bin", kek, 0o600},
+		// The gateway identity bundle, named as identity.Load expects.
+		{"gateway.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: gwDER}), 0o644},
+		{"gateway-key.pem", pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: gwKeyDER}), 0o600},
+		{"gateway-id", []byte("bundle-gateway"), 0o644},
 	} {
 		if err := os.WriteFile(filepath.Join(*dir, f.name), f.data, f.mode); err != nil {
 			return err
 		}
 	}
-	log.Print("certs: wrote ca.pem, ca.key, hub.pem, hub.key, kek.bin")
+	log.Print("certs: wrote ca.pem, ca.key, hub.pem, hub.key, kek.bin, gateway.pem, gateway-key.pem, gateway-id")
 	return nil
 }
 
