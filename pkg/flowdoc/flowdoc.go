@@ -708,9 +708,16 @@ func ScalarValue(raw json.RawMessage) (record.Value, error) {
 	}
 }
 
+// IdempotencyKeyField is the config key the runner injects the task's
+// idempotency key under, and the one a sink must honour (ADR-0002).
+const IdempotencyKeyField = "idempotency_key"
+
 // WithSinkConfig returns a copy of the document whose sink config has the
 // given extra fields merged in (used by the runner to inject the task
 // idempotency key before execution).
+//
+// Under fan-out the injected `idempotency_key` is DERIVED per sink —
+// `<task_key>:<stepID>` (ADR-0029 §5). See derivedKeys for why.
 func (d *Document) WithSinkConfig(extra map[string]any) (*Document, error) {
 	out := *d
 	// Graph form (canonical, ADR-0013): the executing sink config lives in a
@@ -722,11 +729,19 @@ func (d *Document) WithSinkConfig(extra map[string]any) (*Document, error) {
 	if len(d.Steps) > 0 {
 		steps := make([]Step, len(d.Steps))
 		copy(steps, d.Steps)
+		derive := d.derivedKeys()
 		for i := range steps {
 			if steps[i].Type != "sink" {
 				continue
 			}
-			merged, err := mergeRawConfig(steps[i].Config, extra)
+			perStep := extra
+			if derive {
+				if key, ok := extra[IdempotencyKeyField].(string); ok && key != "" {
+					perStep = maps.Clone(extra)
+					perStep[IdempotencyKeyField] = key + ":" + steps[i].ID
+				}
+			}
+			merged, err := mergeRawConfig(steps[i].Config, perStep)
 			if err != nil {
 				return nil, fmt.Errorf("flow: step %q sink config: %w", steps[i].ID, err)
 			}
@@ -742,6 +757,50 @@ func (d *Document) WithSinkConfig(extra map[string]any) (*Document, error) {
 	}
 	out.Sink.Config = merged
 	return &out, nil
+}
+
+// derivedKeys reports whether this document's sinks need per-step idempotency
+// keys (ADR-0029 §5).
+//
+// The hub injects ONE key per task, stable across re-dispatch. That is exactly
+// right for a single sink, and wrong the moment two side-effecting sinks write
+// the SAME target: the second write dedupes against the first and one write is
+// silently lost. Nothing fails, nothing is logged — the record is simply not
+// there. ADR-0029 §5 names this case and answers it: seed each sink's key with
+// its own step id, which is distinct by construction and stable in the plan,
+// so a re-dispatched task replays each sink under its own key.
+//
+// Two sinks writing DIFFERENT targets dedupe against different stores, so a
+// shared key is harmless there — which is the common case, and why this went
+// unnoticed. Deriving anyway costs nothing and removes the need to reason
+// about whether two configs point at the same system, which the flow document
+// cannot know.
+//
+// Built-in terminals do not count toward the threshold. @discard, @stop and
+// @response have no side effect and no store to dedupe against, so a flow with
+// one real sink and a @discard branch is still a one-key flow. Letting a
+// side-effect-free terminal change a real sink's key would be a behaviour
+// change for no safety gain — and key changes are not free (see below).
+//
+// A SINGLE-sink flow deliberately keeps the bare task key. Two reasons: it is
+// what ADR-0029 §5 specifies ("no branch, no derivation"), and changing the
+// key a sink sees is itself a hazard — a task in flight across an upgrade
+// would retry under a different key than its first attempt and double-write
+// against a receiver that had already deduped it. Confining the change to
+// multi-sink documents keeps that window to the flows that were already
+// broken, where a doubled write replaces a silently lost one.
+func (d *Document) derivedKeys() bool {
+	sinks := 0
+	for i := range d.Steps {
+		s := &d.Steps[i]
+		if s.Type == "sink" && !IsBuiltinConnector(s.Connector) {
+			sinks++
+			if sinks > 1 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // mergeRawConfig unmarshals a JSON object config (may be empty), overlays

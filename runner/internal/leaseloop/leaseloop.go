@@ -138,11 +138,16 @@ func (l *Loop) execute(ctx context.Context, t *hubclient.LeasedTask, ttl time.Du
 		// Step idempotency (ADR-0002): the sink sees a key that is stable
 		// across re-dispatched attempts of the same task, so at-least-once
 		// delivery cannot double side effects on idempotent receivers.
+		//
+		// Under fan-out WithSinkConfig derives a per-sink key from this one
+		// (ADR-0029 §5, issue #61): two side-effecting sinks writing the SAME
+		// target under one key means the second write dedupes against the
+		// first and is silently lost.
 		key := t.IdempotencyKey
 		if key == "" {
 			key = t.ID
 		}
-		doc, err = doc.WithSinkConfig(map[string]any{"idempotency_key": key})
+		doc, err = doc.WithSinkConfig(map[string]any{flowdoc.IdempotencyKeyField: key})
 	}
 	if err != nil {
 		l.report(t.ID, func(ctx context.Context) error {

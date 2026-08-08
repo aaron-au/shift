@@ -154,8 +154,19 @@ fan-in:   { source → ops } × N → merge(concat|join) → ops → sink
 Graphs that nest or mix them — more than one fan-out, or a fan-out and a
 fan-in together — are valid at the hub and drawable on the canvas but **not
 yet executable**; they fail with an explicit error rather than mis-running
-(issue #59). One gap remains tracked: per-branch idempotency keys are not
-derived (#61).
+(issue #59).
+
+**Per-branch idempotency keys (ADR-0029 §5).** A flow with more than one
+side-effecting sink has each sink's injected key derived as
+`<task_key>:<stepID>`. One key across two sinks writing the *same* target
+means the second write dedupes against the first and is silently lost —
+nothing fails, nothing is logged, the record is simply not there. Step ids are
+distinct by construction and stable in the plan, so a re-dispatched attempt
+derives the same keys and an idempotent receiver still dedupes the retry.
+Single-sink flows keep the bare task key: that is what §5 specifies, and
+changing the key a sink sees is itself a hazard for any task in flight across
+the upgrade. Built-in terminals (`@discard`, `@stop`, `@response`) have no
+side effect and do not count toward the threshold.
 
 ### The error model: one cause, and a deliberate stop (ADR-0031)
 

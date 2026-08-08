@@ -13,9 +13,6 @@ nodes (`ui.html`). Three gaps remain open, each with an issue:
 - **Test-mode capture (ADR-0014) is dropped on DAG flows.** `executeMulti`
   discards the `*captureSampler`, so `?capture=1` silently yields nothing for
   exactly the multi-path flows where per-branch inspection matters. Issue #60.
-- **Per-branch idempotency keys (§5) are not derived.** `WithSinkConfig`
-  injects one key into every sink rather than `<task_key>:<branchStepID>`.
-  Issue #61.
 
 Fan-out spill (§2) is deliberately absent: the bounded branch queues block
 instead, which is memory-bounded and matches this ADR's own "the tee runs at
