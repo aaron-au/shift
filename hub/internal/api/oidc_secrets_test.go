@@ -195,6 +195,14 @@ func TestSecretEndpoints(t *testing.T) {
 // content assertions (leak checks need the exact bytes).
 func call2t(t *testing.T, method, url, token, body string) (string, int) {
 	t.Helper()
+	raw, _, code := call3t(t, method, url, token, body)
+	return raw, code
+}
+
+// call3t is call2t plus the response headers, for the contracts that live
+// outside the body — media-type parameters, pagination cursors.
+func call3t(t *testing.T, method, url, token, body string) (string, http.Header, int) {
+	t.Helper()
 	var rd io.Reader
 	if body != "" {
 		rd = strings.NewReader(body)
@@ -215,5 +223,5 @@ func call2t(t *testing.T, method, url, token, body string) (string, int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(raw), resp.StatusCode
+	return string(raw), resp.Header, resp.StatusCode
 }

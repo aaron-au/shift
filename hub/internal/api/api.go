@@ -183,8 +183,20 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("POST /api/v1/connectors/collect", a.admin(a.collectConnectors))                               // ADR-0047 §2
 	mux.Handle("GET /api/v1/connectors/eol", a.admin(a.listEOLs))                                             // ADR-0047 §7
 	mux.Handle("POST /api/v1/connectors/{name}/versions/{version}/eol", a.admin(a.setConnectorEOL))           // ADR-0047 §7
-	mux.Handle("PUT /api/v1/runners/{id}/labels", a.admin(a.setRunnerLabels))                                 // ADR-0041 §3
-	mux.Handle("PUT /api/v1/runners/{id}/tier", a.admin(a.setRunnerTier))                                     // ADR-0048 §1
+	// Bulk upgrade, three staged steps (ADR-0047 §9).
+	//
+	// Batches live at their OWN prefix rather than under /connectors/. They are
+	// not connector resources — a batch is a set of flow republishes — and the
+	// nesting would also be ambiguous: `/connectors/upgrades/{id}` and
+	// `/connectors/{name}/upgrade` both match `/connectors/upgrades/upgrade`,
+	// with neither more specific, which stdlib routing rejects at registration.
+	mux.Handle("GET /api/v1/connectors/{name}/upgrade", a.admin(a.locateUpgrades))         // §9 step 1
+	mux.Handle("POST /api/v1/connectors/{name}/upgrade/test", a.admin(a.stageUpgradeTest)) // §9 step 2
+	mux.Handle("GET /api/v1/connector-upgrades", a.admin(a.listUpgradeBatches))            // §9 audit
+	mux.Handle("GET /api/v1/connector-upgrades/{id}", a.admin(a.getUpgradeBatch))          // §9 progress
+	mux.Handle("POST /api/v1/connector-upgrades/{id}/publish", a.admin(a.publishUpgradeBatch))
+	mux.Handle("PUT /api/v1/runners/{id}/labels", a.admin(a.setRunnerLabels)) // ADR-0041 §3
+	mux.Handle("PUT /api/v1/runners/{id}/tier", a.admin(a.setRunnerTier))     // ADR-0048 §1
 	mux.Handle("PUT /api/v1/flows/{name}", a.admin(a.deployFlow))
 	mux.Handle("GET /api/v1/flows", a.admin(a.listFlows))
 	mux.Handle("GET /api/v1/flows/{name}", a.admin(a.getFlow))
@@ -597,28 +609,9 @@ func (a *api) publishFlow(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("version must be a positive integer"))
 		return
 	}
-	// Publishing drags a flow forward (ADR-0047 §4): a version being published
-	// may not pin a connector build that has fallen outside the support
-	// window. That is where the version limitation lives — bounded by the last
-	// time somebody edited the flow rather than by a calendar, and landing at
-	// the one moment a developer is already in the builder with it open.
-	// A pin whose end-of-life has passed cannot run at all (ADR-0047 §7), so
-	// publishing it produces a flow that fails at its first task. Refused in
-	// BOTH directions — unlike the currency gate below, blocking a rollback
-	// here costs nothing, because rolling back to a connector that no longer
-	// resolves does not give anybody a working flow.
-	if dead := a.deadPinsFor(r, name, version); len(dead) > 0 {
-		writeErrCode(w, http.StatusUnprocessableEntity, "connector_end_of_life",
-			errors.New(strings.Join(dead, "; ")))
-		return
-	}
-	if stale, err := a.staleUpgradePins(r, name, version); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	} else if len(stale) > 0 {
-		writeErrCode(w, http.StatusUnprocessableEntity, "connector_out_of_window",
-			fmt.Errorf("%s — unpin the step (or set a version inside the window) and publish again",
-				strings.Join(stale, "; ")))
+	if err := a.publishGate(r, name, version); err != nil {
+		status, code := publishRefusal(err)
+		writeErrCode(w, status, code, err)
 		return
 	}
 	err = a.st.PublishFlow(r.Context(), name, version)

@@ -108,3 +108,47 @@ func (d *Document) PinConnectors(resolve func(connector string) (string, error))
 	}
 	return pin(&d.Sink)
 }
+
+// RepinConnector moves every step using one connector to a specific build, in
+// place, and reports which steps moved. It is the mechanical half of a bulk
+// upgrade (ADR-0047 §9).
+//
+// Where PinConnectors deliberately leaves pinned steps alone, this one exists
+// to overwrite them — which is why it takes an explicit connector and an
+// explicit version rather than a resolver. A bulk upgrade is somebody saying
+// "move these flows to v0.5.0", so the target is stated once, up front, and
+// applied identically to every flow in the batch. Nothing here reads the
+// registry: which version is newest can change between the report and the
+// publish, and a batch that silently retargeted itself mid-run would be the
+// unannounced-change problem ADR-0047 exists to remove.
+//
+// The result is a DRAFT. Rewriting pins does not publish anything, so the
+// staged document can be tested before it becomes what runs (§9 step 2).
+func (d *Document) RepinConnector(connector, version string) []string {
+	if connector == "" || IsBuiltinConnector(connector) || !ConnectorVersionPattern.MatchString(version) {
+		return nil
+	}
+	var moved []string
+	repin := func(id string, ep *Endpoint) {
+		if ep.Connector != connector || ep.Version == version {
+			return
+		}
+		ep.Version = version
+		moved = append(moved, id)
+	}
+	if len(d.Steps) > 0 {
+		for i := range d.Steps {
+			s := &d.Steps[i]
+			if !isConnectorType(s.Type) {
+				continue
+			}
+			ep := s.Endpoint()
+			repin(s.ID, &ep)
+			s.Version = ep.Version
+		}
+		return moved
+	}
+	repin("source", &d.Source)
+	repin("sink", &d.Sink)
+	return moved
+}

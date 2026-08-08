@@ -517,6 +517,61 @@ EOL is version-level, not per platform: yank is per `(os, arch)` because a bad
 the release, and an EOL that left one platform live would be an EOL that did
 not happen.
 
+## Bulk connector upgrade (ADR-0047 §9)
+
+Republishing flows one at a time after every connector release is the friction
+that makes people stop upgrading — and a platform whose users have stopped
+upgrading is one where a connector security fix ships to a registry nobody
+moves to. Bulk is what makes the support window (§5) something an operator can
+actually satisfy. But a mass republish is a mass change against live data, so
+it is **three steps and never one button**:
+
+| Step | Route | What it does |
+|---|---|---|
+| 1. Locate | `GET /api/v1/connectors/{name}/upgrade?to=` | Reports every published flow pinning this connector below the target, with the **folded** compatibility diff per flow. Read-only. |
+| 2. Test | `POST /api/v1/connectors/{name}/upgrade/test` | Stages a draft per flow with the pin moved, queues a **test-tier** run of each draft (ADR-0048), returns a batch. |
+| 3. Publish-all | `POST /api/v1/connector-upgrades/{id}/publish` | Publishes those drafts as one audited batch. **409 unless every flow passed.** |
+
+Two properties make the staging load-bearing rather than ceremonial:
+
+- **The draft that was tested is the draft that ships.** Step 3 publishes the
+  exact documents step 2 ran — not equivalent ones rebuilt from the same
+  inputs. Rebuilding at publish time would test one artifact and deploy
+  another, and the difference would only appear when the registry moved
+  between the two steps.
+- **The target is fixed at stage time.** A release landing mid-batch cannot
+  retarget it. Re-resolving "newest" per step would be the unannounced change
+  the whole ADR removes, wearing a batch as a disguise.
+
+Other decisions worth knowing:
+
+- **Only each flow's current published version** is a candidate. Its
+  predecessor is retained so a rollback has somewhere to land (§2);
+  republishing it forward inside a bulk action would destroy exactly that.
+- **Staging is all-or-nothing.** One unresolvable flow refuses the whole
+  batch. A batch quietly missing a flow would pass its own gate and report
+  success having left that flow behind.
+- **"Not passed" includes still-running.** An absent result is not a good
+  result; letting a leased task through would make step 2 decoration.
+- **The batch is claimed before anything publishes**, so two operators
+  pressing the button together produce one publish and one 409. The
+  consequence is that a batch is **spent once pressed**, even if every flow in
+  it was then refused: the fix is to stage a new one, not to re-press. That is
+  the right way round — a retryable publish-all is a publish-all that can
+  republish a flow twice, and the drafts are still there to stage again.
+- **The same publish gates apply** (`publishGate`, shared with the single
+  publish route): a flow whose *other* connector is stale or past EOL is
+  refused and named in `failed`, and the rest of the batch still publishes. A
+  bulk route that skipped those gates would be the way to publish what the
+  ordinary route refuses — and the reason to reach for it would be that the
+  ordinary route refused.
+
+Migration 0023 holds `connector_upgrade_batches` + `connector_upgrade_flows`;
+the flow rows are the audit record, carrying which build each flow moved off,
+its draft version, and the review notices it carried at the moment it went
+live. Studio: **Marketplace → Versions → Upgrade flows…**, which walks the
+three screens and disables Publish until the tests are in.
+
 ## Connector retention (ADR-0047 §2/§3)
 
 Pinning made a published flow immutable about which build it runs, which
@@ -599,9 +654,21 @@ promoted to typed columns here rather than re-derived from `result`.
   Surfaced as the studio **Usage** window.
 - **Export pull:** `GET /api/v1/usage/events?since_id=&limit=` (admin) —
   cursor-based incremental pull the external billing platform ingests; `next` is
-  the cursor for the following page (0 = caught up). `?format=csv` streams.
+  the cursor for the following page (0 = caught up).
   A global/cross-tenant pull is future work (needs a system-scoped credential;
   the hub is not the account master).
+- **CSV export:** `?format=csv` streams the same rows. Because a CSV header is
+  optional in RFC 4180 and signalled in the *media type*, the response says
+  which one it sent: `text/csv; charset=utf-8; header=present|absent`.
+  `?header=absent` drops the names so a consumer paging the cursor can
+  concatenate pages without a header row landing mid-file; the columns and
+  their order are identical either way. The cursor also travels as
+  `X-Shift-Next-Cursor`, so a headless consumer never parses the body to page.
+  **The column list is a contract** with a billing consumer we cannot see, and
+  is pinned by `TestUsageEventsExport`. New columns go on the END — a new name
+  is ignored by name-based readers and leaves existing indices intact for
+  positional ones. Inserting mid-list is the change that breaks a reader
+  silently, with values of the right type in the wrong fields.
 - **Deferred:** quota/plan enforcement (external platform) and engine
   **bytes-processed** (the engine measures `ArenaBytes` but never reports it;
   adding it needs byte accounting in `stream.OpStats` threaded runner→hub — a

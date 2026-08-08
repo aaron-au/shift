@@ -181,3 +181,109 @@ func TestVersionValidation(t *testing.T) {
 		})
 	}
 }
+
+// RepinConnector is the mechanical half of a bulk upgrade (ADR-0047 §9), and
+// its whole job is the thing PinConnectors deliberately will not do:
+// overwrite an existing pin. What it must NOT do is touch anything else.
+func TestRepinMovesOneConnectorAndLeavesTheRestAlone(t *testing.T) {
+	both := `{
+	  "name": "sync",
+	  "steps": [
+	    {"id":"in","type":"source","connector":"sftp","action":"get","version":"1.0.0","onSuccess":"out"},
+	    {"id":"out","type":"sink","connector":"sftp","action":"put","version":"1.0.0"}
+	  ],
+	  "start": "in"
+	}`
+	doc, err := Parse([]byte(both))
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := doc.RepinConnector("sftp", "2.0.0")
+	if len(moved) != 2 {
+		t.Fatalf("moved %v, want BOTH sftp steps — a flow half-upgraded runs two builds at once", moved)
+	}
+	for _, p := range doc.ConnectorPins() {
+		if p.Version != "2.0.0" {
+			t.Fatalf("step %q left at %q", p.StepID, p.Version)
+		}
+	}
+
+	mixed := `{
+	  "name": "orders",
+	  "steps": [
+	    {"id":"in","type":"source","connector":"sftp","action":"get","version":"1.0.0","onSuccess":"out"},
+	    {"id":"out","type":"sink","connector":"http","action":"post","version":"0.9.0"}
+	  ],
+	  "start": "in"
+	}`
+	doc, err = Parse([]byte(mixed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved := doc.RepinConnector("sftp", "2.0.0"); len(moved) != 1 || moved[0] != "in" {
+		t.Fatalf("moved %v, want only the sftp step", moved)
+	}
+	pins := map[string]string{}
+	for _, p := range doc.ConnectorPins() {
+		pins[p.StepID] = p.Version
+	}
+	// A bulk upgrade of one connector that also moved a different connector
+	// would be an unannounced change inside an action somebody approved for
+	// something else — the exact failure ADR-0047 exists to remove.
+	if pins["out"] != "0.9.0" {
+		t.Fatalf("the http step moved to %q; a batch must touch only its own connector", pins["out"])
+	}
+}
+
+// Reporting "nothing moved" is what lets the caller refuse the whole batch
+// rather than stage a flow that was never going to change.
+func TestRepinReportsWhenThereIsNothingToMove(t *testing.T) {
+	raw := `{
+	  "name": "orders",
+	  "source": {"connector":"sftp","action":"get","version":"2.0.0"},
+	  "sink": {"connector":"@discard","action":""}
+	}`
+	doc, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved := doc.RepinConnector("sftp", "2.0.0"); len(moved) != 0 {
+		t.Fatalf("moved %v: a step already at the target has not moved", moved)
+	}
+	if moved := doc.RepinConnector("http", "2.0.0"); len(moved) != 0 {
+		t.Fatalf("moved %v: no step uses that connector", moved)
+	}
+	// The linear form is the same model, so it repins the same way.
+	if moved := doc.RepinConnector("sftp", "3.0.0"); len(moved) != 1 || moved[0] != "source" {
+		t.Fatalf("moved %v, want the linear source", moved)
+	}
+	if doc.Source.Version != "3.0.0" {
+		t.Fatalf("linear source pin = %q", doc.Source.Version)
+	}
+}
+
+// A version the caller never validated must not reach a stored document: an
+// unusable pin resolves to nothing at dispatch, which is a flow that fails at
+// its first task. Built-ins have no artifact to pin at all.
+func TestRepinRefusesWhatCannotBeAPin(t *testing.T) {
+	raw := `{
+	  "name": "orders",
+	  "source": {"connector":"sftp","action":"get","version":"1.0.0"},
+	  "sink": {"connector":"@discard","action":""}
+	}`
+	doc, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"", "not a version", "../../etc/passwd"} {
+		if moved := doc.RepinConnector("sftp", bad); len(moved) != 0 {
+			t.Fatalf("repin to %q moved %v", bad, moved)
+		}
+	}
+	if doc.Source.Version != "1.0.0" {
+		t.Fatalf("a refused repin still rewrote the pin: %q", doc.Source.Version)
+	}
+	if moved := doc.RepinConnector("@discard", "1.0.0"); len(moved) != 0 {
+		t.Fatalf("repinned a built-in: %v", moved)
+	}
+}

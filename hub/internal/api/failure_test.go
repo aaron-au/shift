@@ -372,6 +372,36 @@ func TestUsageEventsExport(t *testing.T) {
 		}
 	}
 
+	// A headless page carries the SAME columns in the same order, minus the
+	// names — so a paging consumer can concatenate pages without a header row
+	// landing mid-file. Whether row 1 is data is declared in the media type
+	// (RFC 4180), never guessed from the body.
+	headless, hdrs, c := call3t(t, "GET", srv.URL+"/api/v1/usage/events?format=csv&header=absent", adminToken, "")
+	if c != 200 {
+		t.Fatalf("headless csv = %d", c)
+	}
+	if ct := hdrs.Get("Content-Type"); !strings.Contains(ct, "header=absent") {
+		t.Fatalf("headless Content-Type = %q, want the RFC 4180 header=absent parameter", ct)
+	}
+	bare := strings.Split(strings.TrimRight(headless, "\n"), "\n")
+	if len(bare) != 3 {
+		t.Fatalf("headless csv = %d lines, want 3 rows and no header:\n%s", len(bare), headless)
+	}
+	if strings.HasPrefix(bare[0], "id,at,") {
+		t.Fatalf("header=absent still emitted the header: %q", bare[0])
+	}
+	// Same column count in both modes: dropping the names must not drop or
+	// reorder a field, or the positional contract silently differs by mode.
+	if got, want := strings.Count(bare[0], ","), strings.Count(lines[0], ","); got != want {
+		t.Fatalf("headless row has %d separators, headed header has %d", got, want)
+	}
+	// The cursor a JSON caller reads from the body travels in a header here,
+	// so a headless consumer never has to parse the payload to page.
+	if hdrs.Get("X-Shift-Next-Cursor") != "0" {
+		t.Fatalf("next cursor = %q, want 0 (a partial page means caught up)",
+			hdrs.Get("X-Shift-Next-Cursor"))
+	}
+
 	// Time-bounded rollup: both bounds parse as RFC3339, and neither is optional
 	// to get right — a typo is a 400, never a silently empty report.
 	var rep struct {

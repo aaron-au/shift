@@ -12,6 +12,14 @@ import (
 // defaultUsageWindow is the range served when the caller gives no since/until.
 const defaultUsageWindow = 30 * 24 * time.Hour
 
+// headerParam renders the RFC 4180 `header` media-type parameter.
+func headerParam(present bool) string {
+	if present {
+		return "present"
+	}
+	return "absent"
+}
+
 // usageReport serves GET /api/v1/usage (M6d): the account-scoped usage rollup
 // (totals + per-flow + daily series) over [since, until). Both bounds are
 // optional RFC3339; default is the last 30 days. Metadata only — counts and
@@ -74,13 +82,33 @@ func (a *api) usageEventsExport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if q.Get("format") == "csv" {
-		w.Header().Set("Content-Type", "text/csv")
+		// RFC 4180 makes the header row optional and signals its presence in the
+		// MEDIA TYPE, not in the body — without the parameter a strict consumer
+		// cannot tell whether row 1 is data. So say which one we sent.
+		//
+		// `?header=absent` exists because this endpoint is PAGINATED: a consumer
+		// looping `curl >> usage.csv` over the cursor would otherwise get a
+		// header row interleaved at every page boundary. Each page is a valid
+		// standalone document either way; this makes the obvious ingest pattern
+		// correct too. Column order is identical in both modes — it is the
+		// positional contract whether or not the names are sent with it.
+		header := q.Get("header") != "absent"
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8; header="+headerParam(header))
 		w.Header().Set("Content-Disposition", `attachment; filename="usage.csv"`)
+		// A headless page still needs the cursor the JSON body carries. `id` is
+		// column 0 so it is derivable, but a consumer should not have to parse
+		// the payload to page: 0 means caught up, same as JSON's `next`.
+		w.Header().Set("X-Shift-Next-Cursor", strconv.FormatInt(next, 10))
 		cw := csv.NewWriter(w)
-		// "test" is a column, not a filter: the billing platform must be able to
-		// exclude those rows itself (ADR-0048 §4), and dropping them here would
-		// also hide the usage §4 exists to make visible.
-		_ = cw.Write([]string{"id", "at", "source", "flow_name", "outcome", "records_in", "records_out", "exec_seconds", "test"})
+		if header {
+			// "test" is a column, not a filter: the billing platform must be able
+			// to exclude those rows itself (ADR-0048 §4), and dropping them here
+			// would also hide the usage §4 exists to make visible. It is appended
+			// LAST deliberately — a new name is ignored by name-based consumers
+			// and leaves indices 0..7 untouched for positional ones. Inserting a
+			// column mid-list is the shape that breaks a reader silently.
+			_ = cw.Write([]string{"id", "at", "source", "flow_name", "outcome", "records_in", "records_out", "exec_seconds", "test"})
+		}
 		for _, e := range events {
 			_ = cw.Write([]string{
 				strconv.FormatInt(e.ID, 10), e.At.UTC().Format(time.RFC3339),
