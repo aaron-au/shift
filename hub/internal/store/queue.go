@@ -329,12 +329,13 @@ func (s *Store) Fail(ctx context.Context, taskID, runnerID, errMsg string) (requ
 
 	var attempt, maxAttempts int
 	var acct, flowName string
+	var isTest bool
 	var started, finished *time.Time
 	err = tx.QueryRow(ctx,
-		`SELECT attempt, max_attempts, account_id, flow_name, started_at FROM tasks
+		`SELECT attempt, max_attempts, account_id, flow_name, started_at, test FROM tasks
 		 WHERE id = $1 AND leased_by = $2 AND state = 'leased'
 		 FOR UPDATE`,
-		taskID, runnerID).Scan(&attempt, &maxAttempts, &acct, &flowName, &started)
+		taskID, runnerID).Scan(&attempt, &maxAttempts, &acct, &flowName, &started, &isTest)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, ErrLeaseLost
 	}
@@ -365,7 +366,7 @@ func (s *Store) Fail(ctx context.Context, taskID, runnerID, errMsg string) (requ
 	// billable execution outcome — it will meter once it reaches a terminal
 	// state. No result payload on failure, so record counts are zero.
 	if !requeued {
-		if err := recordUsage(ctx, tx, acct, UsageSourceTask, flowName, "failed", 0, 0, execSeconds(started, finished)); err != nil {
+		if err := recordUsage(ctx, tx, acct, UsageSourceTask, flowName, "failed", 0, 0, execSeconds(started, finished), isTest); err != nil {
 			return false, err
 		}
 	}
@@ -381,13 +382,14 @@ func (s *Store) finish(ctx context.Context, taskID, runnerID, state, errMsg stri
 
 	var attempt int
 	var acct, flowName string
+	var isTest bool
 	var started, finished *time.Time
 	err = tx.QueryRow(ctx,
 		`UPDATE tasks SET state = $3, finished_at = now(), result = $4, error = NULLIF($5,''),
 		        leased_by = NULL, lease_expires_at = NULL
 		 WHERE id = $1 AND leased_by = $2 AND state = 'leased'
-		 RETURNING attempt, account_id, flow_name, started_at, finished_at`,
-		taskID, runnerID, state, result, errMsg).Scan(&attempt, &acct, &flowName, &started, &finished)
+		 RETURNING attempt, account_id, flow_name, started_at, finished_at, test`,
+		taskID, runnerID, state, result, errMsg).Scan(&attempt, &acct, &flowName, &started, &finished, &isTest)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrLeaseLost
 	}
@@ -404,7 +406,9 @@ func (s *Store) finish(ctx context.Context, taskID, runnerID, state, errMsg stri
 	// (M6d). Counts come from the runner's result; the task's own account_id is
 	// authoritative over the request context.
 	in, out := parseResultMetrics(result)
-	if err := recordUsage(ctx, tx, acct, UsageSourceTask, flowName, state, in, out, execSeconds(started, finished)); err != nil {
+	// The task's OWN test marker decides, not the request context: the flag
+	// travelled with the work from the moment it was enqueued (ADR-0048 §3).
+	if err := recordUsage(ctx, tx, acct, UsageSourceTask, flowName, state, in, out, execSeconds(started, finished), isTest); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

@@ -77,13 +77,17 @@ func (a *api) usageEventsExport(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/csv")
 		w.Header().Set("Content-Disposition", `attachment; filename="usage.csv"`)
 		cw := csv.NewWriter(w)
-		_ = cw.Write([]string{"id", "at", "source", "flow_name", "outcome", "records_in", "records_out", "exec_seconds"})
+		// "test" is a column, not a filter: the billing platform must be able to
+		// exclude those rows itself (ADR-0048 §4), and dropping them here would
+		// also hide the usage §4 exists to make visible.
+		_ = cw.Write([]string{"id", "at", "source", "flow_name", "outcome", "records_in", "records_out", "exec_seconds", "test"})
 		for _, e := range events {
 			_ = cw.Write([]string{
 				strconv.FormatInt(e.ID, 10), e.At.UTC().Format(time.RFC3339),
 				csvSafe(e.Source), csvSafe(e.FlowName), csvSafe(e.Outcome),
 				strconv.FormatInt(e.RecordsIn, 10), strconv.FormatInt(e.RecordsOut, 10),
 				strconv.FormatFloat(e.ExecSeconds, 'f', 3, 64),
+				strconv.FormatBool(e.Test),
 			})
 		}
 		cw.Flush()

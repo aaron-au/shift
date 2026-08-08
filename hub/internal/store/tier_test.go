@@ -182,3 +182,91 @@ func TestScheduledWorkIsNeverTestMarked(t *testing.T) {
 		t.Fatal("a test runner claimed scheduled work; schedules must never be test-marked")
 	}
 }
+
+// Test executions are metered SEPARATELY and excluded from billing
+// (ADR-0048 §4). There is no quota on test usage, so the measurement is the
+// whole control — a billable total that silently included test runs would
+// invoice somebody for trying something out.
+func TestTestExecutionsAreMeteredApartFromBillable(t *testing.T) {
+	s := open(t)
+	ctx := t.Context()
+
+	v := deploy(t, s, "orders", `{
+	  "name": "orders",
+	  "source": {"connector":"gen","action":"records"},
+	  "sink": {"connector":"@discard","action":""}
+	}`)
+	if err := s.PublishFlow(ctx, "orders", v); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	runner := newRunner(t, s, "r1")
+
+	// Two production runs and one test run, all completing.
+	run := func(test bool, key string) {
+		t.Helper()
+		enqueue := s.Enqueue
+		if test {
+			enqueue = s.EnqueueTest
+		}
+		if _, err := enqueue(ctx, "orders", 0, key, 1); err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+		claimed, err := s.Claim(ctx, runner, time.Minute)
+		if err != nil || claimed == nil {
+			t.Fatalf("claim: %v, %v", claimed, err)
+		}
+		if err := s.Complete(ctx, claimed.ID, runner,
+			[]byte(`{"records_in":10,"records_out":10}`)); err != nil {
+			t.Fatalf("complete: %v", err)
+		}
+	}
+	run(false, "p1")
+	run(false, "p2")
+	run(true, "t1")
+
+	rep, err := s.Usage(ctx, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Totals.Executions != 2 {
+		t.Fatalf("billable executions = %d, want 2 — a test run was billed", rep.Totals.Executions)
+	}
+	if rep.Totals.RecordsIn != 20 {
+		t.Fatalf("billable records = %d, want 20 (test records must not count)", rep.Totals.RecordsIn)
+	}
+	if rep.Test.Executions != 1 {
+		t.Fatalf("test executions = %d, want 1 — test usage must be VISIBLE, not just excluded", rep.Test.Executions)
+	}
+	if rep.Test.RecordsIn != 10 {
+		t.Fatalf("test records = %d, want 10", rep.Test.RecordsIn)
+	}
+
+	// Per flow, both are visible: "who is hammering test mode" is the question
+	// the visibility exists to answer, and an account total cannot answer it.
+	if len(rep.ByFlow) != 1 {
+		t.Fatalf("by_flow = %+v", rep.ByFlow)
+	}
+	if rep.ByFlow[0].Executions != 2 || rep.ByFlow[0].TestExecutions != 1 {
+		t.Fatalf("by_flow = %+v, want 2 billable and 1 test", rep.ByFlow[0])
+	}
+
+	// The export carries the flag per ROW rather than dropping test rows: the
+	// billing platform must be able to classify what it receives, and dropping
+	// them would hide the usage this exists to surface.
+	events, err := s.UsageEventsSince(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("exported %d events, want all 3", len(events))
+	}
+	marked := 0
+	for _, e := range events {
+		if e.Test {
+			marked++
+		}
+	}
+	if marked != 1 {
+		t.Fatalf("%d exported events are test-marked, want exactly 1", marked)
+	}
+}

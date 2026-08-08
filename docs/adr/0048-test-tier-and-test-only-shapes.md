@@ -2,8 +2,10 @@
 
 Date: 2026-08-06
 
-Status: **§1/§3 built; §2 withdrawn; §5 revised (2026-08-07) and in build;
-§4 pending.** §1 (tier as a hub-asserted roster
+Status: **BUILT.** §1/§3 (test tier + test-marked dispatch), §4 (separate
+metering), §5 (revised 2026-08-07: step options, not substitute nodes). §2 was
+withdrawn before being built. See `docs/dev/06-hub.md` and
+`docs/dev/04-runner.md`. §1 (tier as a hub-asserted roster
 attribute) and §3 (test-marked dispatch) are in `hub/internal/store` +
 `hub/internal/api`; see `docs/dev/06-hub.md`. §2 was withdrawn before being built (see
 below). One deviation is recorded there: test-marked

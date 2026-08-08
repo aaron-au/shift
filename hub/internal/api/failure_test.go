@@ -352,13 +352,15 @@ func TestUsageEventsExport(t *testing.T) {
 		t.Fatalf("garbage limit = %d with %d events", c, len(all.Events))
 	}
 
-	// CSV rendering: fixed header, one row per event.
+	// CSV rendering: fixed header, one row per event. The header is a CONTRACT
+	// with whatever ingests the export, so it is pinned here — a column added
+	// or renamed without a deliberate change breaks a consumer we cannot see.
 	body, c := call2t(t, "GET", srv.URL+"/api/v1/usage/events?format=csv", adminToken, "")
 	if c != 200 {
 		t.Fatalf("csv export = %d", c)
 	}
 	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
-	if lines[0] != "id,at,source,flow_name,outcome,records_in,records_out,exec_seconds" {
+	if lines[0] != "id,at,source,flow_name,outcome,records_in,records_out,exec_seconds,test" {
 		t.Fatalf("csv header = %q", lines[0])
 	}
 	if len(lines) != 4 {

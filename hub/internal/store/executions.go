@@ -46,8 +46,11 @@ func (s *Store) RecordDirectExecution(ctx context.Context, runnerID string, e Di
 		return "", err
 	}
 	// source is the trigger (webhook|api); outcome mirrors the reported state.
+	// Never test-marked, and said rather than defaulted: a direct execution
+	// arrives over the data plane from a webhook or a caller, which §3 excludes
+	// from test capacity by definition — those are production ingress.
 	if err := recordUsage(ctx, tx, acct, e.Trigger, e.FlowName, e.State,
-		e.RecordsIn, e.RecordsOut, execSeconds(e.Started, e.Finished)); err != nil {
+		e.RecordsIn, e.RecordsOut, execSeconds(e.Started, e.Finished), false); err != nil {
 		return "", err
 	}
 	return id, tx.Commit(ctx)
