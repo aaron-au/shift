@@ -1,10 +1,10 @@
 {
   "_note": "Recorded connector action surface — the LAST RELEASED shape. The compatibility gate (ADR-0047 §8) diffs the current build against this and refuses a declared compat class the diff cannot support. Regenerate deliberately with SHIFT_UPDATE_SURFACE=1 and review the diff; it is the only record of what was shipped.",
   "name": "azureblob",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "descriptor": {
     "name": "azureblob",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "actions": [
       {
         "action": "put",
@@ -66,7 +66,8 @@
               "enum": [
                 "ndjson",
                 "csv",
-                "xml"
+                "xml",
+                "edi"
               ],
               "default": "ndjson"
             },
@@ -195,7 +196,8 @@
               "enum": [
                 "ndjson",
                 "csv",
-                "xml"
+                "xml",
+                "edi"
               ],
               "default": "ndjson"
             },

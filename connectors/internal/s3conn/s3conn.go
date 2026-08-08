@@ -36,7 +36,7 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "s3",
-		Version: "0.2.0",
+		Version: "0.3.0",
 		Meta: &sdk.ConnectorMeta{
 			Description: "AWS S3 and S3-compatible (MinIO/Ceph/R2) object storage: pick a verb (get/put/list/delete). Static tenant credentials; SSRF-guarded.",
 			Category:    "object-storage",

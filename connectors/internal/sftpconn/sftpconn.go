@@ -26,7 +26,7 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "sftp",
-		Version: "0.3.0",
+		Version: "0.4.0",
 		Meta: &sdk.ConnectorMeta{
 			Description: "SFTP file operations: pick a verb (get/put/list/delete/mkdir/rmdir/rename) and a path. Host-key verified.",
 			Category:    "file-transfer",

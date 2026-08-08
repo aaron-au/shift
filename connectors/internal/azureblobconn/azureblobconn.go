@@ -36,7 +36,7 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "azureblob",
-		Version: "0.2.0",
+		Version: "0.3.0",
 		Meta: &sdk.ConnectorMeta{
 			Description: "Azure Blob Storage: pick a verb (get/put/list/delete). Static-credential auth (account key, connection string, or container SAS). Network-guarded.",
 			Category:    "cloud-storage",

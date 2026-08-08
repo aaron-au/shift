@@ -29,7 +29,7 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "fs",
-		Version: "0.2.0",
+		Version: "0.3.0",
 		Meta: &sdk.ConnectorMeta{
 			Description: "Local/mounted filesystem: pick a verb (get/put/list/delete/mkdir/rmdir) and a path. All paths are jailed within a configured root.",
 			Category:    "file-transfer",

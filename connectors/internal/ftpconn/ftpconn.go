@@ -35,7 +35,7 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "ftp",
-		Version: "0.2.0",
+		Version: "0.3.0",
 		Meta: &sdk.ConnectorMeta{
 			Description: "FTP/FTPS file operations: pick a verb (get/put/list/delete/mkdir/rmdir/rename) and a path. Explicit TLS (FTPS) on by default; certificate verified.",
 			Category:    "file-transfer",

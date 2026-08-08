@@ -251,3 +251,63 @@ func TestTheConnectionSchemaIsComparedToo(t *testing.T) {
 		t.Fatalf("change is located at %q, want connection", got.Changes[0].Where)
 	}
 }
+
+// An enum is a contract, not decoration. Narrowing one makes every stored
+// config that used the dropped value invalid, and the change is invisible to a
+// field-level diff — no field is added, removed, or retyped — so without this
+// the connector ships looking unchanged.
+//
+// This is a real escape: adding a format to a connector's enum passed the gate
+// silently until the check existed.
+func TestNarrowingAnEnumIsBreakingAndWideningIsNot(t *testing.T) {
+	schema := func(vals string) []byte {
+		return []byte(`{"type":"object","properties":{"format":{"type":"string","enum":` + vals + `}}}`)
+	}
+
+	widened := compat.Compare(
+		descriptorWith(t, "get", "source", schema(`["ndjson","csv"]`)),
+		descriptorWith(t, "get", "source", schema(`["ndjson","csv","xml"]`)),
+	)
+	if widened.Class != compat.Compatible {
+		t.Errorf("widening an enum classified as %v, want compatible", widened.Class)
+	}
+	if !mentions(widened, `"xml"`) {
+		t.Errorf("widening was not reported at all: %+v", widened)
+	}
+
+	narrowed := compat.Compare(
+		descriptorWith(t, "get", "source", schema(`["ndjson","csv","xml"]`)),
+		descriptorWith(t, "get", "source", schema(`["ndjson","csv"]`)),
+	)
+	if narrowed.Class != compat.Breaking {
+		t.Errorf("narrowing an enum classified as %v, want breaking", narrowed.Class)
+	}
+
+	// Newly constraining a free-text field breaks anything already set to a
+	// value outside the new set.
+	constrained := compat.Compare(
+		descriptorWith(t, "get", "source", []byte(`{"type":"object","properties":{"format":{"type":"string"}}}`)),
+		descriptorWith(t, "get", "source", schema(`["ndjson"]`)),
+	)
+	if constrained.Class != compat.Breaking {
+		t.Errorf("newly restricting a field to a fixed set classified as %v, want breaking", constrained.Class)
+	}
+}
+
+// descriptorWith builds a one-action descriptor carrying a config schema.
+func descriptorWith(t *testing.T, action, dir string, schema []byte) sdk.Descriptor {
+	t.Helper()
+	return sdk.Descriptor{
+		Name: "demo", Version: "1.0.0",
+		Actions: []sdk.ActionDescriptor{{Action: action, Direction: dir, ConfigSchema: schema}},
+	}
+}
+
+func mentions(r compat.Report, want string) bool {
+	for _, c := range r.Changes {
+		if strings.Contains(c.Detail, want) {
+			return true
+		}
+	}
+	return false
+}

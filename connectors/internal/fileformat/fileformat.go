@@ -16,12 +16,14 @@ package fileformat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
 	"strings"
 
 	"github.com/aaron-au/shift/engine/format/csvf"
+	"github.com/aaron-au/shift/engine/format/edi"
 	"github.com/aaron-au/shift/engine/format/ndjson"
 	"github.com/aaron-au/shift/engine/format/xmlf"
 	"github.com/aaron-au/shift/engine/record"
@@ -32,6 +34,9 @@ const (
 	NDJSON = "ndjson"
 	CSV    = "csv"
 	XML    = "xml"
+	// EDI covers both wire syntaxes; which one a file uses is detected from
+	// its own interchange header, never configured.
+	EDI = "edi"
 
 	// Default is what an unset format means. NDJSON, because it is the only
 	// one of the three that is lossless for the hierarchical record model:
@@ -40,7 +45,7 @@ const (
 )
 
 // Supported lists every format, in the order a config form should offer them.
-var Supported = []string{NDJSON, CSV, XML}
+var Supported = []string{NDJSON, CSV, XML, EDI}
 
 // SchemaEnum renders the format field for a connector's JSON config schema, so
 // the studio's dropdown and this package's validation cannot disagree.
@@ -113,6 +118,8 @@ func NewReader(format string, r io.Reader, opts Options) (Reader, error) {
 		return csvf.NewReader(r, csvf.ReaderOptions{Comma: opts.Comma, NoHeader: opts.NoHeader}), nil
 	case XML:
 		return xmlf.NewReader(r, xmlf.ReaderOptions{RecordElement: opts.RecordElement}), nil
+	case EDI:
+		return edi.NewReader(r, edi.ReaderOptions{}), nil
 	default:
 		return nil, fmt.Errorf("fileformat: no reader for format %q", format)
 	}
@@ -130,6 +137,13 @@ func NewWriter(format string, w io.Writer, opts Options) (Writer, error) {
 			RootElement:   opts.RootElement,
 			RecordElement: opts.RecordElement,
 		}), nil
+	case EDI:
+		// Read-only for now. Writing EDI means composing envelopes with
+		// correct control numbers and segment counts — a semantic layer, not a
+		// serialiser — so a node that offers it must fail here rather than
+		// write something a trading partner will reject.
+		return nil, errors.New("fileformat: EDI is read-only; writing an interchange needs envelope " +
+			"construction (control numbers, segment counts) that this connector does not do")
 	default:
 		return nil, fmt.Errorf("fileformat: no writer for format %q", format)
 	}
