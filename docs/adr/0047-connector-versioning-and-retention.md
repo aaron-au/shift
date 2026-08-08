@@ -2,7 +2,7 @@
 
 Date: 2026-08-06
 
-Status: **§1–§7 built; §8–§9 pending.** Extends ADR-0011 (signed registry) and
+Status: **§1–§7 and §9 built; §8 pending.** Extends ADR-0011 (signed registry) and
 ADR-0013/0029 (flow model). Consumes the review registry from ADR-0042 §7.
 
 Built so far: resolution moved from dispatch to publish (§1) — `flowdoc` steps
@@ -16,7 +16,10 @@ collection, and a yank response that names the flows still pinned. Currency
 advise rather than refuse, and a publish gate that drags a flow forward without
 ever blocking a rollback. End-of-life (§7) — a required reason, a named list
 of the flows that will stop, escalating notices, and a 410 that says what
-happened rather than a 404 that reads as a typo. See `docs/dev/06-hub.md`.
+happened rather than a 404 that reads as a typo. Bulk upgrade (§9) — locate,
+stage-and-test on the test tier, publish-all, with the batch durable across all
+three so the drafts that were tested are the ones that ship and a release
+landing mid-batch cannot retarget it. See `docs/dev/06-hub.md`.
 
 ## Context
 

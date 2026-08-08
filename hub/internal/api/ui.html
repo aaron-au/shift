@@ -793,8 +793,104 @@ async function openVersions(name) {
     box.innerHTML = `<div class="ops"><b>${esc(name)}</b> — versions
       <table class="mvlist"><thead><tr><th>Version</th><th>Platform</th><th>Size</th><th>State</th><th></th></tr></thead>
       <tbody>${rows}</tbody></table>
+      <div class="mrow" style="margin-top:.4rem"><button class="ghost" onclick="locateUpgrades('${escJS(name)}')" title="Find every flow behind a build and move them forward together (ADR-0047 §9)">Upgrade flows…</button></div>
       <div class="hint" style="margin:.4rem 0 0">Yank withdraws a version from NEW pins; flows already pinned to it keep running (ADR-0047 §3). "Used by" lists those flows.</div></div>`;
   } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+// --- bulk upgrade: locate → test → publish-all (ADR-0047 §9) -----------------
+//
+// Three screens rather than one button, and the sequence is the feature. Each
+// screen only offers the next step, so there is no path from "these forty
+// flows are behind" straight to "republish them all" — which is the shape that
+// makes a mass change against live data feel like a refresh.
+
+// locateUpgrades: step 1. A report, showing what crossing the span COSTS per
+// flow rather than just how far behind it is.
+async function locateUpgrades(name, target) {
+  const box = $('mkt-detail');
+  box.innerHTML = '<div class="ops hint">locating…</div>';
+  try {
+    let url = `/api/v1/connectors/${encodeURIComponent(name)}/upgrade`;
+    if (target) url += '?to=' + encodeURIComponent(target);
+    const r = await api(url);
+    const flows = r.flows || [];
+    if (!flows.length) {
+      box.innerHTML = `<div class="ops"><b>${esc(name)} → ${esc(r.target)}</b><div class="hint" style="margin-top:.3rem">
+        Every published flow is already at ${esc(r.target)} or newer. Nothing to upgrade.</div>
+        <div class="mrow"><button class="ghost" onclick="openVersions('${escJS(name)}')">← versions</button></div></div>`;
+      return;
+    }
+    const rows = flows.map(f => `<tr>
+      <td><label><input type="checkbox" class="upg-pick" value="${esc(f.flow)}" checked> ${esc(f.flow)}</label></td>
+      <td class="mono">${esc(f.pinned)}</td>
+      <td class="mono">${f.behind} behind</td>
+      <td>${(f.breaking || []).length ? '<span class="bad">breaking</span>' : '<span class="good">no breaking hop</span>'}</td>
+      </tr><tr><td colspan="4" class="hint" style="padding-top:0">${esc(f.summary)} — steps: ${esc((f.steps || []).join(', '))}</td></tr>`).join('');
+    box.innerHTML = `<div class="ops"><b>${esc(name)} → ${esc(r.target)}</b> — ${flows.length} flow${flows.length === 1 ? '' : 's'} behind
+      <table class="mvlist"><thead><tr><th>Flow</th><th>Pinned</th><th></th><th>Crossing</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="hint">Each flow's CURRENT published version only. The version before it is left alone deliberately — it is the rollback target.</div>
+      <div class="mrow"><button onclick="stageUpgrade('${escJS(name)}','${escJS(r.target)}')">Stage &amp; test selected</button>
+        <button class="ghost" onclick="openVersions('${escJS(name)}')">Cancel</button></div>
+      <div class="hint">Staging creates a draft per flow with the pin moved, and runs each draft on the test tier. Nothing is published yet.</div></div>`;
+  } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+// stageUpgrade: step 2. Creates the drafts and queues their test runs, then
+// hands off to the batch view — which is where the publish button lives, and
+// only becomes usable once every test has passed.
+async function stageUpgrade(name, target) {
+  const picked = Array.from(document.querySelectorAll('.upg-pick')).filter(c => c.checked).map(c => c.value);
+  if (!picked.length) { alert('Select at least one flow.'); return; }
+  const box = $('mkt-detail');
+  box.innerHTML = '<div class="ops hint">staging drafts and queueing test runs…</div>';
+  try {
+    const r = await api(`/api/v1/connectors/${encodeURIComponent(name)}/upgrade/test`,
+      {method: 'POST', body: JSON.stringify({to: target, flows: picked})});
+    showUpgradeBatch(r.id);
+  } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+// showUpgradeBatch: step 3, and the waiting room for step 2.
+//
+// The publish button is disabled until every flow's test task has completed —
+// the hub refuses anyway, but a button that looks available and then 409s
+// teaches people the gate is noise.
+async function showUpgradeBatch(id) {
+  const box = $('mkt-detail');
+  try {
+    const b = await api('/api/v1/connector-upgrades/' + encodeURIComponent(id));
+    const flows = b.flows || [];
+    const pending = flows.filter(f => f.task_state !== 'completed');
+    const rows = flows.map(f => {
+      const st = {completed: ['good', 'passed'], failed: ['bad', 'failed'], running: ['warn', 'running'], queued: ['hint', 'queued']}[f.task_state] || ['hint', f.task_state || 'not queued'];
+      return `<tr><td>${esc(f.flow)}</td><td class="mono">${esc(f.from)} → ${esc(b.target)}</td>
+        <td class="mono">draft v${f.draft_version}</td><td><span class="${st[0]}">${esc(st[1])}</span></td></tr>`;
+    }).join('');
+    const done = !!b.published_at;
+    box.innerHTML = `<div class="ops"><b>${esc(b.connector)} → ${esc(b.target)}</b> — batch ${esc(b.id.slice(0, 8))}
+      <table class="mvlist"><thead><tr><th>Flow</th><th>Move</th><th>Draft</th><th>Test</th></tr></thead><tbody>${rows}</tbody></table>
+      ${done ? '<div class="hint">Published. The drafts above are live.</div>' : `
+      <div class="hint">${pending.length
+        ? `${pending.length} flow${pending.length === 1 ? '' : 's'} still to pass. Publishing is blocked until every one has — a run that has not finished has proven nothing.`
+        : 'Every draft passed. Publishing makes exactly these drafts live — the same documents that were tested.'}</div>
+      <div class="mrow">
+        <button ${pending.length ? 'disabled' : ''} onclick="publishUpgradeBatch('${escJS(b.id)}')">Publish all ${flows.length}</button>
+        <button class="ghost" onclick="showUpgradeBatch('${escJS(b.id)}')">Refresh</button></div>`}
+      </div>`;
+  } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+async function publishUpgradeBatch(id) {
+  try {
+    const r = await api('/api/v1/connector-upgrades/' + encodeURIComponent(id) + '/publish', {method: 'POST'});
+    if ((r.failed || []).length) {
+      alert('Published ' + (r.published || []).length + '.\n\nRefused:\n' +
+        r.failed.map(f => f.flow + ': ' + f.error).join('\n'));
+    }
+    showUpgradeBatch(id);
+    refresh();
+  } catch (e) { alert('publish: ' + e.message); }
 }
 
 // eolState says whether a version is dying or already dead (ADR-0047 §7).

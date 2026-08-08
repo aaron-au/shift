@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/aaron-au/shift/hub/internal/store"
@@ -100,6 +101,67 @@ func (a *api) setConnectorEOL(w http.ResponseWriter, r *http.Request) {
 		// Named, not counted: the next step is telling these people.
 		"flows": refs,
 	})
+}
+
+// errDeadPin and errStalePin are the two ways publishGate REFUSES, as opposed
+// to the ways it fails. They carry different error codes because they need
+// different actions: one is "upgrade when you can", the other is "this will
+// not run at all".
+//
+// Anything publishGate returns that is neither is a lookup that broke — a
+// database outage, most obviously — and must surface as a 500. A gate that
+// reported an unreachable database as "your pins are stale" would send
+// somebody editing a flow that was never the problem.
+var (
+	errDeadPin  = errors.New("connector end of life")
+	errStalePin = errors.New("connector outside the support window")
+)
+
+// publishGate is every reason a version may not be published, in one place.
+//
+// It is shared by the single publish route and by bulk publish-all (ADR-0047
+// §9). Two implementations would eventually differ, and the difference would
+// be discovered by somebody reaching for the bulk route precisely because the
+// ordinary one refused.
+//
+//   - §7 END OF LIFE: a pin past its deadline cannot resolve, so publishing it
+//     produces a flow that fails at its first task. Refused in BOTH directions
+//     — unlike currency, blocking a rollback costs nothing here, because
+//     rolling back onto a connector that no longer resolves gives nobody a
+//     working flow.
+//   - §4 SUPPORT WINDOW: publishing drags a flow forward, so a version being
+//     published may not pin a build that has fallen outside the window. That
+//     is where the age limitation lives — bounded by the last time somebody
+//     edited the flow rather than by a calendar, and landing at the one moment
+//     a developer already has it open. Rollbacks are exempt; staleUpgradePins
+//     applies that exemption.
+func (a *api) publishGate(r *http.Request, name string, version int) error {
+	if dead := a.deadPinsFor(r, name, version); len(dead) > 0 {
+		return fmt.Errorf("%w: %s", errDeadPin, strings.Join(dead, "; "))
+	}
+	stale, err := a.staleUpgradePins(r, name, version)
+	if err != nil {
+		return err
+	}
+	if len(stale) > 0 {
+		return fmt.Errorf("%w: %s — unpin the step (or set a version inside the window) and publish again",
+			errStalePin, strings.Join(stale, "; "))
+	}
+	return nil
+}
+
+// publishRefusal maps a publishGate error to its HTTP status and error code.
+// Only the two refusal sentinels are 422; everything else is the hub failing,
+// not the flow being wrong.
+func publishRefusal(err error) (int, string) {
+	switch {
+	case errors.Is(err, errDeadPin):
+		return http.StatusUnprocessableEntity, "connector_end_of_life"
+	case errors.Is(err, errStalePin):
+		return http.StatusUnprocessableEntity, "connector_out_of_window"
+	default:
+		return http.StatusInternalServerError, "internal"
+	}
 }
 
 // listEOLs: GET /api/v1/connectors/eol — every scheduled end-of-life with the
