@@ -90,6 +90,9 @@ func (a *api) registerCert(w http.ResponseWriter, r *http.Request, token, name, 
 	}
 	_ = a.st.Audit(r.Context(), "runner:"+id, "runner.register", name,
 		map[string]string{"auth": "mtls", "cert_serial": issued.Serial})
+	// Same as the bearer path: a new runner is a roster change, and a roster
+	// the gateways have not been told about is a runner that cannot serve.
+	a.rosterChanged(r.Context())
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"runner_id":   id,
 		"certificate": string(issued.CertPEM),

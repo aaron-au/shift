@@ -520,6 +520,7 @@ func TestSyncGateways(t *testing.T) {
 		_, _ = io.WriteString(w, `{"gateways":[
 			{"id":"a","url":"https://gw-a.example:8444"},
 			{"id":"b","url":""},
+			{"id":"","url":"https://gw-d.example:8444"},
 			{"id":"c","url":"https://gw-c.example:8444"}]}`)
 	})
 	c := newClient(t, mux)
@@ -529,8 +530,15 @@ func TestSyncGateways(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A record with no URL is nothing to dial; polling "" would fail forever
-	// at the backoff ceiling with nothing useful in the log.
-	want := []string{"https://gw-a.example:8444", "https://gw-c.example:8444"}
+	// at the backoff ceiling with nothing useful in the log. A record with no
+	// ID is dropped for a sharper reason: the id is what the gateway's
+	// certificate is verified against, so polling it unpinned would accept any
+	// holder of a control-plane certificate — every runner in the fleet
+	// included.
+	want := []Gateway{
+		{ID: "a", URL: "https://gw-a.example:8444"},
+		{ID: "c", URL: "https://gw-c.example:8444"},
+	}
 	if len(addrs) != len(want) {
 		t.Fatalf("addrs = %v, want %v", addrs, want)
 	}

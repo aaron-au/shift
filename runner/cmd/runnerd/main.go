@@ -306,7 +306,7 @@ func main() {
 	// redeploying every runner, and a runner whose labels match no route
 	// polls nothing. Without a hub, the flag is the whole list.
 	addrs := splitList(*gatewayAddrs)
-	var discover func(context.Context) ([]string, error)
+	var discover func(context.Context) ([]gwclient.Gateway, error)
 	if client != nil {
 		discover = client.SyncGateways
 	}

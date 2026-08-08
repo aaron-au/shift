@@ -108,7 +108,10 @@ spec:
         - name: certs
           image: shift/tools:dev
           imagePullPolicy: IfNotPresent
-          command: ["certs", "-dir", "/bootstrap"]
+          # args, NOT command: the image ENTRYPOINT is shift-bootstrap and
+          # these are its subcommand. Kubernetes `command:` REPLACES the
+          # entrypoint, which is why compose's `command:` does not port across.
+          args: ["certs", "-dir", "/bootstrap"]
           volumeMounts:
             - name: bootstrap
               mountPath: /bootstrap
@@ -175,6 +178,22 @@ spec:
               value: /bootstrap/ca.key
             - name: SHIFT_HUB_RUNNER_AUTH
               value: both
+            # Gateway adoption + configuration push (ADR-0049). The SAME CA as
+            # runners and the hub itself, which is the point of one control
+            # plane trust domain: a runner verifying a gateway checks the root
+            # that issued its own identity, and the hub presents a client
+            # certificate from it when it pushes policy.
+            #
+            # Setting these is what turns the gateway from a box holding a
+            # hand-placed config file into one the hub OWNS: routes and the
+            # runner roster are derived from hub state on every pass and
+            # pushed. Without them the hub mints no gateway identity, never
+            # dials, and a polling runner is refused because no roster ever
+            # arrives (ADR-0041 fail-closed).
+            - name: SHIFT_HUB_GATEWAY_CA_CERT
+              value: /bootstrap/ca.pem
+            - name: SHIFT_HUB_GATEWAY_CA_KEY
+              value: /bootstrap/ca.key
             - name: SHIFT_HUB_ADMIN_TOKEN
               value: bundle-admin-token-dev-only
           ports:
@@ -211,7 +230,7 @@ spec:
         - name: seed
           image: shift/tools:dev
           imagePullPolicy: IfNotPresent
-          command: ["seed", "-dir", "/bootstrap", "-hub", "https://hubd:8400"]
+          args: ["seed", "-dir", "/bootstrap", "-hub", "https://hubd:8400"]
           env:
             - name: SHIFT_HUB_ADMIN_TOKEN
               value: bundle-admin-token-dev-only

@@ -1,45 +1,16 @@
 # The gateway: the sole publicly reachable component (ADR-0038).
 #
-# Its configuration comes from a ConfigMap here because the hub's config push
-# is not built yet (ADR-0038 §6a). In a real deployment the hub owns all of
-# this and the gateway holds nothing on disk.
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: shift-gateway-config
-  namespace: shift-dmz
-data:
-  # NOTE on "selector": it is deliberately EMPTY, and an empty selector
-  # matches any runner. Placement became hub-asserted in ADR-0041 — the
-  # runner proves WHO it is, the hub says WHAT it is — so a runner no longer
-  # labels itself. This bundle has no hub, so a selector here would match
-  # nothing and every request would 503. (JSON has no comments, hence this
-  # note living on the ConfigMap rather than beside the field.)
-  gateway.json: |
-    {
-      "version": 2,
-      "routes": [
-        {
-          "path": "/orders",
-          "method": "POST",
-          "flow": "echo",
-          "selector": {},
-          "auth_token_sha256": "7c43ef5ae21d43ce2743f770c68e24def1a43ee2f416d2438410c8af7af2ff2c",
-          "auth_principal": "acme-erp",
-          "max_body_bytes": 1048576
-        },
-        {
-          "path": "/fanout",
-          "method": "POST",
-          "flow": "fanout",
-          "selector": {},
-          "auth_token_sha256": "7c43ef5ae21d43ce2743f770c68e24def1a43ee2f416d2438410c8af7af2ff2c",
-          "auth_principal": "acme-erp",
-          "max_body_bytes": 1048576
-        }
-      ]
-    }
+# It holds NO configuration of its own. No routes file, no roster, no
+# hand-placed certificate — it starts empty, generates its own key, and waits
+# to be adopted by the hub (ADR-0049). Everything it serves arrives over the
+# control channel: routes, the runner roster, its own identity.
+#
+# That is not just tidiness. Placement is hub-asserted (ADR-0041) — the runner
+# proves WHO it is with a client certificate, the hub says WHAT it is — so the
+# roster CANNOT be a static file here without the DMZ box becoming the
+# authority on which runners are legitimate. The gateway fails closed on a
+# runner it has not been vouched for, which is why an unadopted gateway
+# refuses every poll rather than serving traffic to whoever shows up.
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -87,14 +58,27 @@ spec:
             # Binds all interfaces because runners reach it from another pod.
             # The NetworkPolicy above is what keeps this port internal-only —
             - -control=:8444
-            # mTLS identity (ADR-0041). Off-loopback the control listener now
-            # REFUSES to start without it: a shared secret cannot tell a
-            # polling runner that this gateway is real, so payload would go to
-            # whatever answered on the address. The bundle is issued by the
-            # same control-plane CA that signs runner identities, which is what
-            # makes the runner's verification meaningful.
-            - -identity=/identity
-            - -config=/etc/shift/gateway.json
+            # Adoption state (ADR-0049). The gateway generates its own key
+            # here and waits; the hub dials, proves it holds this gateway's
+            # one-time install token, and issues the identity. No -identity:
+            # the hand-placed bundle is superseded, and two sources of identity
+            # is one too many (the binary refuses both together).
+            #
+            # No -config either. Routes and the runner roster are hub state,
+            # pushed over this same channel.
+            - -state=/state
+          env:
+            # Each replica is a SEPARATE gateway with its own hub record, its
+            # own install token and its own identity — so the token file is
+            # selected by pod name. Kubernetes expands $(VAR) from earlier env
+            # entries, which is what makes one Secret serve both replicas
+            # without either being able to read the other's token by accident.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SHIFT_GATEWAY_INSTALL_TOKEN_FILE
+              value: /install/$(POD_NAME)
           # No SHIFT_GATEWAY_CONTROL_TOKEN. The shared secret is gone from
           # this bundle deliberately: it authenticated the CALLER to the
           # gateway and told the runner nothing about the gateway, so it was
@@ -106,39 +90,63 @@ spec:
             - name: control
               containerPort: 8444
           volumeMounts:
-            - name: identity
-              mountPath: /identity
-              readOnly: true
-            - name: config
-              mountPath: /etc/shift
+            - name: state
+              mountPath: /state
+            - name: install
+              mountPath: /install
               readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          # A TCP probe, and that is a consequence of mTLS rather than a
+          # shortcut. The control listener requires a client certificate on
+          # EVERY connection — there is no unauthenticated /healthz — so the
+          # kubelet, which holds no identity in this trust domain, cannot make
+          # an application-level check. Issuing it one would mean minting a
+          # control-plane certificate for the orchestrator, which is a much
+          # worse trade than a weaker probe.
+          #
+          # What this still proves is what readiness is for here: the process
+          # is up and the listener is accepting. Whether the gateway can serve
+          # is answered by /healthz on the PUBLIC port, which is where an
+          # operator looks anyway.
           readinessProbe:
-            httpGet:
-              path: /healthz
+            tcpSocket:
               port: control
             periodSeconds: 5
           resources:
             requests: {cpu: 50m, memory: 32Mi}
             limits: {memory: 128Mi}
       volumes:
-        # The gateway's mTLS identity. It arrives as a Secret because PVCs are
-        # namespace-scoped and the bootstrap volume lives in shift-internal —
-        # the README's setup step copies the three files across. Nothing in the
-        # DMZ reaches into the control plane to fetch it; the material is
-        # pushed to the DMZ, which is the same direction rule as everything
-        # else here (ADR-0038 §2).
-        - name: identity
+        # The one-time install tokens, one key per pod name. This is a
+        # BOOTSTRAP credential, not a standing one: it proves the pairing
+        # exchange once and is burned at adoption, after which the gateway's
+        # own key is pinned by the hub and the token is worthless. Nothing in
+        # the DMZ reaches inward to fetch it — the material is pushed to the
+        # DMZ, the same direction rule as everything else (ADR-0038 §2).
+        - name: install
           secret:
-            secretName: shift-gateway-identity
-            defaultMode: 0400
-        - name: config
-          configMap:
-            name: shift-gateway-config
+            secretName: shift-gateway-install
+            # 0444, not 0400: the container runs as UID 65532 and a Secret's
+            # files are owned by root, so owner-only would be unreadable by the
+            # process that needs them. Confidentiality rests on Kubernetes RBAC
+            # over the Secret, not on file mode inside a pod that holds nothing
+            # else.
+            defaultMode: 0444
+  # Per-pod, because adoption state is the one thing a gateway must survive a
+  # restart with. The install token is single-use; a gateway that lost its
+  # anchor key on every reschedule would need re-issuing by hand each time.
+  # It holds a key and a certificate — no payload, no configuration of record.
+  volumeClaimTemplates:
+    - metadata:
+        name: state
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 32Mi
 ---
 # The public front door. NodePort so `minikube service` can reach it without
 # a cloud load balancer.

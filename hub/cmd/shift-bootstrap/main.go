@@ -123,8 +123,16 @@ func certs(args []string) error {
 		NotAfter:     time.Now().AddDate(5, 0, 0),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     []string{"hubd", "localhost"},
-		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		// Both the short name (compose, same-namespace Kubernetes) and the
+		// cluster FQDN. A runner in another namespace can only reach the hub
+		// by its fully-qualified name, and a certificate that omits it fails
+		// verification at registration — before the runner has any identity
+		// to report the failure with.
+		DNSNames: []string{
+			"hubd", "localhost",
+			"hubd.shift-internal.svc.cluster.local",
+		},
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
 	}
 	caCert, err := x509.ParseCertificate(caDER)
 	if err != nil {
