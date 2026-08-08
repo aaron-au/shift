@@ -219,6 +219,8 @@ func appendStringified(dst []byte, v record.Value) ([]byte, error) {
 		return strconv.AppendInt(dst, v.Int(), 10), nil
 	case record.KindFloat:
 		return strconv.AppendFloat(dst, v.Float(), 'g', -1, 64), nil
+	case record.KindDecimal, record.KindTimestamp, record.KindDate, record.KindTime:
+		return v.AppendText(dst), nil
 	case record.KindBool:
 		return strconv.AppendBool(dst, v.Bool()), nil
 	case record.KindNull:

@@ -2,8 +2,10 @@ package stream
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/aaron-au/shift/engine/record"
 )
@@ -125,6 +127,10 @@ func coerceValue(bld *record.Builder, v record.Value, to record.Kind) (record.Va
 		switch v.Kind() {
 		case record.KindFloat:
 			return record.Int(int64(v.Float())), nil
+		case record.KindDecimal:
+			// Truncates toward zero, like the float case above. A decimal
+			// asked to become an int is being told its fraction is unwanted.
+			return record.Int(int64(v.Float())), nil
 		case record.KindString:
 			n, err := strconv.ParseInt(v.String(), 10, 64)
 			if err != nil {
@@ -139,14 +145,66 @@ func coerceValue(bld *record.Builder, v record.Value, to record.Kind) (record.Va
 		}
 	case record.KindFloat:
 		switch v.Kind() {
-		case record.KindInt:
-			return record.Float(float64(v.Int())), nil
+		case record.KindInt, record.KindDecimal:
+			return record.Float(v.Float()), nil // widening a decimal here is the caller's stated intent
 		case record.KindString:
 			f, err := strconv.ParseFloat(v.String(), 64)
 			if err != nil {
 				return record.Value{}, fmt.Errorf("cannot parse %q as float", v.String())
 			}
 			return record.Float(f), nil
+		}
+	case record.KindDecimal:
+		switch v.Kind() {
+		case record.KindInt:
+			return record.Decimal(v.Int(), 0), nil // exact: an int is a decimal at scale 0
+		case record.KindString, record.KindBytes:
+			d, err := record.ParseDecimal(v.Bytes())
+			if err != nil {
+				return record.Value{}, err
+			}
+			return d, nil
+		case record.KindFloat:
+			// There is no exact decimal for most floats, so this recovers the
+			// shortest decimal that round-trips the float — the same digits
+			// the float would print. It cannot undo precision the value lost
+			// before it arrived; declaring the field a decimal at its source
+			// is what avoids that (ADR-0051 §5).
+			var buf [32]byte
+			text := strconv.AppendFloat(buf[:0], v.Float(), 'f', -1, 64)
+			d, err := record.ParseDecimal(text)
+			if err != nil {
+				return record.Value{}, fmt.Errorf("cannot represent %v as a decimal: %w", v.Float(), err)
+			}
+			return d, nil
+		}
+	case record.KindTimestamp:
+		switch v.Kind() {
+		case record.KindString, record.KindBytes:
+			return record.ParseTimestamp(v.Bytes())
+		case record.KindInt:
+			// Epoch numbers are common but their unit is not written down, and
+			// guessing seconds where the source meant milliseconds is a
+			// 1000-fold error that looks like a plausible date.
+			return record.Value{}, errors.New("cannot coerce an int to a timestamp: the epoch unit is ambiguous; parse from text instead")
+		}
+	case record.KindDate:
+		switch v.Kind() {
+		case record.KindString, record.KindBytes:
+			return record.ParseDate(v.Bytes())
+		case record.KindTimestamp:
+			// The date as the timestamp's own offset sees it, not as UTC does.
+			return record.DateAt(v.AsTime()), nil
+		}
+	case record.KindTime:
+		switch v.Kind() {
+		case record.KindString, record.KindBytes:
+			return record.ParseTimeOfDay(v.Bytes())
+		case record.KindTimestamp:
+			t := v.AsTime()
+			h, m, s := t.Clock()
+			return record.TimeOfDay(int64(h)*int64(time.Hour) + int64(m)*int64(time.Minute) +
+				int64(s)*int64(time.Second) + int64(t.Nanosecond())), nil
 		}
 	case record.KindBool:
 		if v.Kind() == record.KindString {
@@ -165,6 +223,11 @@ func coerceValue(bld *record.Builder, v record.Value, to record.Kind) (record.Va
 			bld.StringLiteral(strconv.FormatInt(v.Int(), 10))
 		case record.KindFloat:
 			bld.StringLiteral(strconv.FormatFloat(v.Float(), 'g', -1, 64))
+		case record.KindDecimal, record.KindTimestamp, record.KindDate, record.KindTime:
+			// One canonical rendering, shared with the format writers, so a
+			// coerced string and a written field never disagree.
+			var buf [40]byte
+			bld.String(v.AppendText(buf[:0]))
 		case record.KindBool:
 			bld.StringLiteral(strconv.FormatBool(v.Bool()))
 		case record.KindBytes:

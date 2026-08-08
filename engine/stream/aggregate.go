@@ -23,7 +23,9 @@ type AggOp uint8
 // Supported aggregate functions.
 const (
 	AggCount AggOp = iota // records per group (null-agnostic, COUNT(*))
-	AggSum                // numeric sum (float64 accumulation)
+	// AggSum accumulates exactly for KindInt and KindDecimal inputs (128-bit,
+	// ADR-0051 §3) and in float64 only once a KindFloat has been seen.
+	AggSum
 	AggMin
 	AggMax
 )
@@ -96,17 +98,42 @@ func SpillBytes(p *Pipeline) func() int64 {
 	return func() int64 { return 0 }
 }
 
-// accum is one aggregate function's running state.
+// accum is one aggregate function's running state. Each accum serves exactly
+// one Agg, so the fields are effectively a union: count for AggCount, the sums
+// for AggSum, ext for AggMin/AggMax.
+//
+// Sums keep two accumulators rather than one: an exact 128-bit total for
+// KindInt and KindDecimal, and a float64 total used from the moment a
+// KindFloat appears in the column (ADR-0051 §3).
+//
+// ext holds the running extreme as record.ScalarBits: the inline payload of a
+// scalar, 16 bytes instead of a Value's 88. That is not a micro-optimisation
+// here — one Value per group per agg moved the aggregate's peak RSS by nearly a
+// factor of two at a million groups. It is also why the extreme is safe to
+// retain across batch boundaries at all: a numeric scalar has no arena or slab
+// pointers to dangle, and observe rejects every non-numeric kind before it can
+// reach here.
 type accum struct {
-	count    int64
-	sum      float64
-	min, max float64
-	seen     bool
+	count int64
+
+	sum     record.ExactSum // exact while inexact is false
+	fsum    float64         // takes over once a float has been seen
+	inexact bool
+
+	ext  record.ScalarBits // running MIN or MAX; numeric scalar only, see above
+	seen bool
 }
+
+// accumBytes is the in-memory size of one accum, for governor accounting:
+// count (8) + the exact sum's 128-bit state (24) + the float sum (8) + the
+// extreme's inline bits (16) + flags and padding. Deliberately rounded up —
+// under-reporting here means the watermark is crossed without anyone noticing,
+// which is how a bounded-memory aggregate stops being one.
+const accumBytes = 72
 
 // groupCost approximates per-group state bytes for governor accounting.
 func groupCost(keyLen, naggs int) int64 {
-	return int64(keyLen) + 64 + int64(naggs)*48
+	return int64(keyLen) + 64 + int64(naggs)*accumBytes
 }
 
 // maxSpilledKeyBytes guards merge reads against corrupt segment data.
@@ -128,6 +155,11 @@ type aggSource struct {
 	emitPart  int
 	emitQueue []emitGroup
 	outBatch  *record.Batch
+
+	// extBatch hosts extremes decoded from spilled segments. They are inline
+	// scalars, so nothing is ever allocated in its arena and it never needs
+	// resetting; readAccum rejects anything that would break that.
+	extBatch *record.Batch
 
 	// scratch
 	keyBuf bytes.Buffer
@@ -168,6 +200,7 @@ func (a *aggSource) consume(ctx context.Context) error {
 	a.segs = make([][]spill.Segment, a.spec.Partitions)
 	a.keyEnc = spill.NewEncoder(&a.keyBuf)
 	a.outBatch = record.NewBatch()
+	a.extBatch = record.NewBatch()
 
 	for {
 		b, err := a.up.Next(ctx)
@@ -218,37 +251,91 @@ func (a *aggSource) observe(rec record.Value) error {
 			a.spec.Gov.Reserve(cost) // post-spill: account unconditionally
 		}
 		a.reserved += cost
+		// No sentinels to seed: an extreme starts unset and `seen` says so,
+		// which is what lets MIN over decimals stay a decimal rather than
+		// beginning life as ±Inf.
 		accs = make([]accum, len(a.spec.Aggs))
-		for i := range accs {
-			accs[i].min = math.Inf(1)
-			accs[i].max = math.Inf(-1)
-		}
 		part[string(keyBytes)] = accs
 	}
 	for i, ag := range a.spec.Aggs {
-		switch ag.Op {
-		case AggCount:
+		if ag.Op == AggCount {
 			accs[i].count++
 			continue
-		default:
 		}
 		v, ok := ag.From.Get(rec)
 		if !ok || v.IsNull() {
 			continue
 		}
-		var f float64
-		switch v.Kind() {
-		case record.KindInt, record.KindFloat:
-			f = v.Float()
-		default:
+		if !v.IsNumeric() {
 			return fmt.Errorf("aggregate: %s is %v, want numeric", ag.From, v.Kind())
 		}
-		acc := &accs[i]
-		acc.seen = true
-		acc.count++
-		acc.sum += f
-		acc.min = math.Min(acc.min, f)
-		acc.max = math.Max(acc.max, f)
+		if err := accs[i].observe(ag.Op, v); err != nil {
+			return fmt.Errorf("aggregate: %s: %w", ag.From, err)
+		}
+	}
+	return nil
+}
+
+// observe folds one non-null numeric value into the accumulator for op.
+func (ac *accum) observe(op AggOp, v record.Value) error {
+	switch op {
+	case AggSum:
+		if err := ac.addToSum(v); err != nil {
+			return err
+		}
+	case AggMin, AggMax:
+		if err := ac.extend(op, v); err != nil {
+			return err
+		}
+	}
+	ac.seen = true
+	ac.count++
+	return nil
+}
+
+// addToSum keeps the sum exact for as long as the column allows.
+func (ac *accum) addToSum(v record.Value) error {
+	if ac.inexact {
+		return ac.addFloat(v.Float())
+	}
+	if v.Kind() == record.KindFloat {
+		// The first float in the column: carry the exact total over and stay
+		// in float64 from here. Mixing exact and inexact numbers is legal and
+		// documented as lossy (ADR-0051 §4) — the alternative, refusing the
+		// record, would fail a flow over a distinction its author did not make.
+		ac.inexact = true
+		ac.fsum = ac.sum.Float()
+		return ac.addFloat(v.Float())
+	}
+	return ac.sum.Add(v)
+}
+
+func (ac *accum) addFloat(f float64) error {
+	ac.fsum += f
+	return nil
+}
+
+// extend moves the running extreme if v lies beyond it.
+func (ac *accum) extend(op AggOp, v record.Value) error {
+	bits, ok := record.ScalarBitsOf(v)
+	if !ok {
+		// Unreachable via observe, which checks IsNumeric first. Kept as a
+		// guard because storing bits of an arena-backed value would leave the
+		// extreme pointing into a recycled batch.
+		return fmt.Errorf("%v cannot be held as an extreme", v.Kind())
+	}
+	if !ac.seen {
+		ac.ext = bits
+		return nil
+	}
+	c, cmpOK := record.Compare(v, ac.ext.Value())
+	if !cmpOK {
+		// Reached by NaN, which is ordered against nothing. Reporting it beats
+		// emitting an extreme that silently depends on arrival order.
+		return fmt.Errorf("cannot order %v against the running extreme (%v)", v.Kind(), ac.ext.Kind)
+	}
+	if (op == AggMin && c < 0) || (op == AggMax && c > 0) {
+		ac.ext = bits
 	}
 	return nil
 }
@@ -286,8 +373,20 @@ func (a *aggSource) spillAll() error {
 	return nil
 }
 
+// Accumulator flags, as spilled.
+const (
+	flagSeen    byte = 1 << 0
+	flagInexact byte = 1 << 1
+)
+
+// writePartition spills one partition's state. Every field of every accum is
+// written regardless of the agg's op: the alternative — writing only the fields
+// the op uses — couples the segment layout to the spec, and a mismatch between
+// writer and reader would surface as a plausible wrong total rather than as an
+// error.
 func writePartition(w *bufio.Writer, part map[string][]accum) error {
 	var scratch [binary.MaxVarintLen64]byte
+	enc := spill.NewEncoder(w)
 	putUvarint := func(v uint64) error {
 		n := binary.PutUvarint(scratch[:], v)
 		_, err := w.Write(scratch[:n])
@@ -309,23 +408,138 @@ func writePartition(w *bufio.Writer, part map[string][]accum) error {
 			if err := putUvarint(uint64(ac.count)); err != nil { //nolint:gosec // count is never negative
 				return err
 			}
-			if err := putF64(ac.sum); err != nil {
-				return err
-			}
-			if err := putF64(ac.min); err != nil {
-				return err
-			}
-			if err := putF64(ac.max); err != nil {
-				return err
-			}
-			b := byte(0)
+			flags := byte(0)
 			if ac.seen {
-				b = 1
+				flags |= flagSeen
 			}
-			if err := w.WriteByte(b); err != nil {
+			if ac.inexact {
+				flags |= flagInexact
+			}
+			if err := w.WriteByte(flags); err != nil {
+				return err
+			}
+			// The exact accumulator's 128-bit state, then the float one.
+			if err := putUvarint(ac.sum.Hi); err != nil {
+				return err
+			}
+			if err := putUvarint(ac.sum.Lo); err != nil {
+				return err
+			}
+			neg := byte(0)
+			if ac.sum.Neg {
+				neg = 1
+			}
+			if err := w.WriteByte(neg); err != nil {
+				return err
+			}
+			//nolint:gosec // int8 -> byte is lossless for all 256 values; readAccum reverses it
+			if err := w.WriteByte(byte(ac.sum.Scale)); err != nil {
+				return err
+			}
+			if err := putF64(ac.fsum); err != nil {
+				return err
+			}
+			// The extreme rides as a value, through the codec that already
+			// knows every numeric kind (an unset extreme spills as null).
+			if err := enc.Encode(ac.ext.Value()); err != nil {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// readAccum reads one spilled accumulator, the inverse of writePartition.
+func (a *aggSource) readAccum(r *bufio.Reader, dec *spill.Decoder, ac *accum) error {
+	c, err := binary.ReadUvarint(r)
+	if err != nil {
+		return err
+	}
+	ac.count = int64(c) //nolint:gosec // written from a non-negative int64 by writePartition
+	flags, err := r.ReadByte()
+	if err != nil {
+		return err
+	}
+	ac.seen = flags&flagSeen != 0
+	ac.inexact = flags&flagInexact != 0
+
+	if ac.sum.Hi, err = binary.ReadUvarint(r); err != nil {
+		return err
+	}
+	if ac.sum.Lo, err = binary.ReadUvarint(r); err != nil {
+		return err
+	}
+	neg, err := r.ReadByte()
+	if err != nil {
+		return err
+	}
+	ac.sum.Neg = neg == 1
+	scale, err := r.ReadByte()
+	if err != nil {
+		return err
+	}
+	ac.sum.Scale = int8(scale) //nolint:gosec // reverses the byte written by writePartition
+	var raw [8]byte
+	if _, err := io.ReadFull(r, raw[:]); err != nil {
+		return err
+	}
+	ac.fsum = math.Float64frombits(binary.LittleEndian.Uint64(raw[:]))
+
+	// The extreme comes back through the value codec. It is retained beyond
+	// this batch, so it must be an inline scalar — a corrupt segment claiming a
+	// string would otherwise leave ext pointing into a recycled arena.
+	if err := dec.Decode(a.extBatch.Builder()); err != nil {
+		return err
+	}
+	ext := a.extBatch.Builder().Finish()
+	if !ext.IsNull() && !ext.IsNumeric() {
+		return fmt.Errorf("aggregate: spilled extreme is %v, want a number (corrupt segment?)", ext.Kind())
+	}
+	bits, ok := record.ScalarBitsOf(ext)
+	if !ok {
+		return fmt.Errorf("aggregate: spilled extreme is %v, which is not an inline scalar (corrupt segment?)", ext.Kind())
+	}
+	ac.ext = bits
+	return nil
+}
+
+// merge folds a spilled accumulator into this one.
+func (ac *accum) merge(op AggOp, o accum) error {
+	switch op {
+	case AggSum:
+		if o.seen {
+			if err := ac.mergeSum(o); err != nil {
+				return err
+			}
+		}
+	case AggMin, AggMax:
+		if o.seen {
+			if err := ac.extend(op, o.ext.Value()); err != nil {
+				return err
+			}
+		}
+	case AggCount:
+		// The count below is the whole state.
+	}
+	ac.count += o.count
+	ac.seen = ac.seen || o.seen
+	return nil
+}
+
+// mergeSum combines two sums, which may be in different modes: whichever side
+// has already gone inexact drags the other with it, since a float64 total
+// cannot be recovered into exact digits.
+func (ac *accum) mergeSum(o accum) error {
+	switch {
+	case ac.inexact && o.inexact:
+		ac.fsum += o.fsum
+	case ac.inexact:
+		ac.fsum += o.sum.Float()
+	case o.inexact:
+		ac.inexact = true
+		ac.fsum = ac.sum.Float() + o.fsum
+	default:
+		return ac.sum.AddSum(o.sum)
 	}
 	return nil
 }
@@ -355,32 +569,17 @@ func (a *aggSource) mergePartition(pidx int) (map[string][]accum, error) {
 				return nil, err
 			}
 			incoming := make([]accum, len(a.spec.Aggs))
+			dec := spill.NewDecoder(r, 0)
 			for i := range incoming {
-				c, err := binary.ReadUvarint(r)
-				if err != nil {
+				if err := a.readAccum(r, dec, &incoming[i]); err != nil {
 					return nil, err
 				}
-				incoming[i].count = int64(c) //nolint:gosec // written from a non-negative int64 by writePartition
-				var raw [8]byte
-				for _, dst := range []*float64{&incoming[i].sum, &incoming[i].min, &incoming[i].max} {
-					if _, err := io.ReadFull(r, raw[:]); err != nil {
-						return nil, err
-					}
-					*dst = math.Float64frombits(binary.LittleEndian.Uint64(raw[:]))
-				}
-				sb, err := r.ReadByte()
-				if err != nil {
-					return nil, err
-				}
-				incoming[i].seen = sb == 1
 			}
 			if have, ok := part[string(keyScratch)]; ok {
 				for i := range have {
-					have[i].count += incoming[i].count
-					have[i].sum += incoming[i].sum
-					have[i].min = math.Min(have[i].min, incoming[i].min)
-					have[i].max = math.Max(have[i].max, incoming[i].max)
-					have[i].seen = have[i].seen || incoming[i].seen
+					if err := have[i].merge(a.spec.Aggs[i].Op, incoming[i]); err != nil {
+						return nil, fmt.Errorf("aggregate: merging spilled state: %w", err)
+					}
 				}
 			} else {
 				part[string(keyScratch)] = incoming
@@ -436,20 +635,23 @@ func (a *aggSource) emit() (*record.Batch, error) {
 			case AggCount:
 				bld.Int(ac.count)
 			case AggSum:
-				if ac.seen {
-					bld.Float(ac.sum)
-				} else {
-					bld.Null()
+				switch {
+				case !ac.seen:
+					bld.Null() // no non-null input: no sum, not zero
+				case ac.inexact:
+					bld.Float(ac.fsum)
+				default:
+					// An int column sums to an int, a decimal column to a
+					// decimal at the finest scale any input used.
+					sv, err := ac.sum.Value()
+					if err != nil {
+						return nil, fmt.Errorf("aggregate %s: %w", ag.Out, err)
+					}
+					bld.Value(sv)
 				}
-			case AggMin:
+			case AggMin, AggMax:
 				if ac.seen {
-					bld.Float(ac.min)
-				} else {
-					bld.Null()
-				}
-			case AggMax:
-				if ac.seen {
-					bld.Float(ac.max)
+					bld.Value(ac.ext.Value()) // keeps the input's kind and scale
 				} else {
 					bld.Null()
 				}

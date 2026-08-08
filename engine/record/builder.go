@@ -1,6 +1,9 @@
 package record
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // Builder constructs values inside a Batch. It is stack-based: scalars and
 // containers are emitted depth-first; when a container closes, its children
@@ -58,6 +61,23 @@ func (b *Builder) Int(v int64) { b.push(Int(v)) }
 
 // Float emits a float value.
 func (b *Builder) Float(v float64) { b.push(Float(v)) }
+
+// Decimal emits an exact decimal value equal to coef × 10^-scale.
+func (b *Builder) Decimal(coef int64, scale int8) { b.push(Decimal(coef, scale)) }
+
+// Timestamp emits an instant, with zoneOffset kept for rendering only.
+func (b *Builder) Timestamp(unixNano int64, zoneOffset time.Duration) {
+	b.push(Timestamp(unixNano, zoneOffset))
+}
+
+// TimestampAt emits an instant taken from t, preserving t's zone offset.
+func (b *Builder) TimestampAt(t time.Time) { b.push(TimestampAt(t)) }
+
+// Date emits a calendar date as whole days since 1970-01-01.
+func (b *Builder) Date(days int64) { b.push(Date(days)) }
+
+// TimeOfDay emits a time of day as nanoseconds since midnight.
+func (b *Builder) TimeOfDay(nanos int64) { b.push(TimeOfDay(nanos)) }
 
 // String emits a string value, copying s into the batch arena.
 func (b *Builder) String(s []byte) {
@@ -190,7 +210,10 @@ func (b *Builder) Finish() Value {
 // beyond its source batch's lifetime (e.g. aggregate state).
 func CopyValue(dst *Batch, v Value) Value {
 	switch v.kind {
-	case KindNull, KindBool, KindInt, KindFloat:
+	// Every scalar whose payload is inline (num plus aux) copies by value;
+	// only the arena-backed and slab-backed kinds below need real work.
+	case KindNull, KindBool, KindInt, KindFloat,
+		KindDecimal, KindTimestamp, KindDate, KindTime:
 		return v
 	case KindString, KindBytes:
 		return Value{kind: v.kind, str: dst.arena.copyIn(v.str)}

@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aaron-au/shift/engine/record"
 )
@@ -26,6 +28,18 @@ func sampleValue(b *record.Batch) record.Value {
 	bld.Null()
 	bld.KeyLiteral("blob")
 	bld.Bytes([]byte{0, 1, 2, 255})
+	// The ADR-0051 kinds ride in the shared sample so the round-trip AND the
+	// byte-by-byte truncation sweep cover their tags too.
+	bld.KeyLiteral("amount")
+	bld.Decimal(1010, 2)
+	bld.KeyLiteral("owed")
+	bld.Decimal(-5, 3)
+	bld.KeyLiteral("at")
+	bld.TimestampAt(time.Date(2026, 8, 8, 9, 30, 0, 0, time.FixedZone("AEST", 10*60*60)))
+	bld.KeyLiteral("on")
+	bld.Date(-1)
+	bld.KeyLiteral("tod")
+	bld.TimeOfDay(int64(90 * time.Second))
 	bld.KeyLiteral("list")
 	bld.BeginList()
 	bld.Int(1)
@@ -63,6 +77,14 @@ func valueEqualJSONish(t *testing.T, a, b record.Value) bool {
 		}
 		return true
 	default:
+		// EqualScalar compares decimals numerically, so 10.10 and 10.1 are
+		// equal to it — which would let a codec that dropped the scale pass.
+		// The canonical text distinguishes them, and a timestamp's stored
+		// offset likewise.
+		if at, bt := a.Text(), b.Text(); at != bt {
+			t.Logf("text differs: %q vs %q", at, bt)
+			return false
+		}
 		return a.EqualScalar(b)
 	}
 }
@@ -92,6 +114,50 @@ func TestCodecRoundTrip(t *testing.T) {
 	}
 	if err := dec.Decode(dst.Builder()); !errors.Is(err, io.EOF) {
 		t.Fatalf("want EOF at boundary, got %v", err)
+	}
+}
+
+// TestSpillingKeepsExactValuesExact is the point of the new tags: aggregate
+// state that spills to scratch and comes back must be the same value, not a
+// value that compares equal. A dropped scale or a normalised zone offset both
+// survive an EqualScalar check, so this asserts the canonical text.
+func TestSpillingKeepsExactValuesExact(t *testing.T) {
+	src := record.NewBatch()
+	bld := src.Builder()
+	bld.BeginList()
+	bld.Decimal(1010, 2)          // 10.10 — trailing zero is information
+	bld.Decimal(math.MinInt64, 2) // the int64 floor at a scale
+	bld.Decimal(101, -3)          // negative scale
+	bld.Decimal(0, 9)             // zero is not scaleless
+	bld.TimestampAt(time.Date(2026, 8, 8, 9, 30, 0, 0, time.FixedZone("AEST", 10*60*60)))
+	bld.TimestampAt(time.Date(1969, 7, 20, 20, 17, 40, 0, time.UTC)) // pre-epoch, negative nanos
+	bld.Date(-25567)
+	bld.TimeOfDay(int64(23*time.Hour + 59*time.Minute + 59*time.Second + 999999999))
+	bld.EndList()
+	v := bld.Finish()
+
+	want := make([]string, v.Len())
+	for i := range v.Len() {
+		want[i] = v.Index(i).Text()
+	}
+
+	var buf bytes.Buffer
+	if err := NewEncoder(&buf).Encode(v); err != nil {
+		t.Fatal(err)
+	}
+	dst := record.NewBatch()
+	if err := NewDecoder(bufio.NewReader(&buf), 0).Decode(dst.Builder()); err != nil {
+		t.Fatal(err)
+	}
+	got := dst.Builder().Finish()
+
+	if got.Len() != v.Len() {
+		t.Fatalf("decoded %d values, want %d", got.Len(), v.Len())
+	}
+	for i := range got.Len() {
+		if text := got.Index(i).Text(); text != want[i] {
+			t.Errorf("value %d: %q came back as %q", i, want[i], text)
+		}
 	}
 }
 

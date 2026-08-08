@@ -9,6 +9,7 @@ import (
 
 	"github.com/aaron-au/shift/engine/record"
 	"github.com/aaron-au/shift/engine/spill"
+	"github.com/aaron-au/shift/sdk"
 	"github.com/aaron-au/shift/sdk/connectorpb"
 )
 
@@ -110,7 +111,14 @@ func (s *SourceStream) Close() error {
 // action. The Push stream opens on the first Write call.
 func (p *Process) Sink(action string, config []byte) *SinkStream {
 	s := &SinkStream{p: p, action: action, config: config}
-	s.enc = spill.NewEncoder(&s.buf)
+	// A connector that negotiated protocol 1 predates the exact decimal and
+	// temporal kinds, so its decoder would meet an unknown tag. The
+	// restricted encoder refuses those kinds up front and says why.
+	if p.info.ProtocolVersion < sdk.ProtocolVersionExactKinds {
+		s.enc = spill.NewEncoderProtocol1(&s.buf)
+	} else {
+		s.enc = spill.NewEncoder(&s.buf)
+	}
 	return s
 }
 

@@ -100,6 +100,7 @@ and varying distinct keys shows what it actually is:
 | 1,000 | 17.7 MiB | 0 B | 4.78 s |
 
 **Sizing rule: aggregate RSS ≈ 18 MiB + ~150 B per distinct key.**
+(Superseded — see "Re-measured after ADR-0051" at the end of this document.)
 
 Spilling *appears* close to free — the 2 MiB watermark spills 20% more than
 64 MiB and runs marginally *faster*. **Do not generalise that.** These runs
@@ -187,4 +188,47 @@ from the 80 MiB figure and is optimistic for this shape.
 - Float parsing allocates (`strconv.ParseFloat` needs a string); ~1 alloc/record on float-heavy schemas.
 - NDJSON read dominates pipeline cost (63%); tokenizer SIMD-style batching is the next lever.
 - Aggregate merge-phase memory should reserve against the governor with partition-size feedback.
-- Sum accumulates in float64 (precision on large int sums); decimal/int128 accumulation later.
+- ~~Sum accumulates in float64~~ — done in ADR-0051; see below for the cost.
+
+## Re-measured after ADR-0051 (2026-08-08)
+
+Exact decimal/temporal kinds made `SUM` accumulate in 128 bits and `MIN`/`MAX`
+keep the input's own kind and scale (closing issue #4). That state is wider than
+three `float64`s, so the **aggregate** figures above were re-measured. Same
+machine class, same deterministic generator.
+
+The streaming numbers are unaffected and were not re-run in anger: `Value` did
+not grow (the scale and zone offset ride in existing padding, asserted by
+`TestValueStaysEightyEightBytes`), so nothing on the per-record path changed.
+Spot check: `transform` at 64 MiB still peaks at **22.5 MiB**.
+
+Cardinality sweep, 1 GiB input, 2 MiB watermark — directly comparable to the
+table above:
+
+| Groups | Peak RSS (was) | Spill (was) | Wall (was) |
+|---|---|---|---|
+| 1,000,000 | **202.0 MiB** (154.4) | 291.7 MiB (408) | 8.98 s (7.53) |
+| 100,000 | **36.6 MiB** (33.0) | 279.4 MiB (387) | 7.49 s (6.58) |
+| 10,000 | **22.3 MiB** (22.2) | 162.3 MiB (112) | 6.46 s (5.24) |
+| 1,000 | **17.4 MiB** (17.7) | 0 B (0 B) | 4.86 s (4.78) |
+
+**Revised sizing rule: aggregate RSS ≈ 17 MiB + ~195 B per distinct key**
+(was ~150 B). The intercept is unchanged, which is the tell: the cost is
+per-group accumulator state and nothing else. One `accum` went from 40 to 72
+bytes — an `ExactSum` (24) plus the extreme's inline `record.ScalarBits` (16)
+in place of three `float64`s.
+
+Worth recording that the first implementation held the extreme as a full
+`record.Value`, at 88 bytes rather than 16, and that measured **317.9 MiB** at
+1M groups — a 1.9× regression rather than 1.3×. Nothing about the output
+differed, which is exactly why it needed measuring rather than reasoning about:
+`record.ScalarBits` exists because of this number.
+
+The RSS gates in `make bench` are unaffected and still pass with headroom
+(`aggregate` at 100k groups: 45.3 MiB against a 120 MiB ceiling).
+
+Being explicit about the trade: high-cardinality aggregates now cost about 30%
+more memory in exchange for sums that are correct. For a flow summing money that
+is not a trade at all — the previous number was cheaper because it was wrong.
+The sizing rule is what to plan against, and issue #3 (merge accounting) is
+still the lever that would move the constant.
