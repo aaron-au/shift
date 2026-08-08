@@ -1,0 +1,101 @@
+{
+  "_note": "Recorded connector action surface — the LAST RELEASED shape. The compatibility gate (ADR-0047 §8) diffs the current build against this and refuses a declared compat class the diff cannot support. Regenerate deliberately with SHIFT_UPDATE_SURFACE=1 and review the diff; it is the only record of what was shipped.",
+  "name": "soap",
+  "version": "0.1.0",
+  "descriptor": {
+    "name": "soap",
+    "version": "0.1.0",
+    "actions": [
+      {
+        "action": "call",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "SOAP call",
+          "required": [
+            "endpoint",
+            "envelope_template"
+          ],
+          "properties": {
+            "endpoint": {
+              "type": "string",
+              "title": "Endpoint URL",
+              "description": "SOAP service URL (http/https)"
+            },
+            "soap_action": {
+              "type": "string",
+              "title": "SOAPAction",
+              "description": "SOAPAction header value (may be empty)"
+            },
+            "soap_version": {
+              "type": "string",
+              "title": "SOAP version",
+              "enum": [
+                "1.1",
+                "1.2"
+              ],
+              "default": "1.1"
+            },
+            "envelope_template": {
+              "type": "string",
+              "title": "Envelope template",
+              "description": "SOAP envelope XML; ${name} placeholders are filled from params (values XML-escaped)"
+            },
+            "params": {
+              "type": "object",
+              "title": "Parameters",
+              "description": "Values substituted into ${name} placeholders in the template",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "auth": {
+              "type": "object",
+              "title": "Basic authentication",
+              "properties": {
+                "username": {
+                  "type": "string",
+                  "title": "Username",
+                  "x-shift-secret": true
+                },
+                "password": {
+                  "type": "string",
+                  "title": "Password",
+                  "x-shift-secret": true
+                }
+              }
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (SSRF guard off)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Timeout (seconds)",
+              "default": 60
+            },
+            "max_response_bytes": {
+              "type": "integer",
+              "title": "Max response size (bytes)",
+              "default": 16777216
+            }
+          }
+        }
+      }
+    ],
+    "meta": {
+      "description": "Call a SOAP/XML web service: POST an envelope (with ${param} placeholders) and parse the XML response into records. Faults surface as errors. SSRF-guarded.",
+      "category": "protocol",
+      "icon": "🧼",
+      "tags": [
+        "rpc",
+        "soap",
+        "web-service",
+        "wsdl",
+        "xml"
+      ]
+    }
+  }
+}

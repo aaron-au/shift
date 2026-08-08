@@ -108,6 +108,7 @@ github.com/aaron-au/shift/runner/internal/service 71
 github.com/aaron-au/shift/runner/internal/task 86
 github.com/aaron-au/shift/runner/internal/webhook 98
 github.com/aaron-au/shift/sdk 83
+github.com/aaron-au/shift/sdk/compat 94
 github.com/aaron-au/shift/sdk/host 86
 
 # The gateway is the DMZ front door (ADR-0038). Its packages are small and

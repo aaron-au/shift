@@ -2,7 +2,7 @@
 
 Date: 2026-08-06
 
-Status: **§1–§7 and §9 built; §8 pending.** Extends ADR-0011 (signed registry) and
+Status: **BUILT** (§1–§9). Extends ADR-0011 (signed registry) and
 ADR-0013/0029 (flow model). Consumes the review registry from ADR-0042 §7.
 
 Built so far: resolution moved from dispatch to publish (§1) — `flowdoc` steps
@@ -19,7 +19,11 @@ of the flows that will stop, escalating notices, and a 410 that says what
 happened rather than a 404 that reads as a typo. Bulk upgrade (§9) — locate,
 stage-and-test on the test tier, publish-all, with the batch durable across all
 three so the drafts that were tested are the ones that ship and a release
-landing mid-batch cannot retarget it. See `docs/dev/06-hub.md`.
+landing mid-batch cannot retarget it. The compatibility gate (§8) — `sdk/compat`
+diffs a connector's action surface against the shape it last released and
+`sdktest.CheckSurface` fails the build when the declared class cannot support
+it, so the class every other section reads is checked rather than promised.
+See `docs/dev/06-hub.md` and `docs/dev/03-connector-protocol.md`.
 
 ## Context
 

@@ -1,0 +1,477 @@
+{
+  "_note": "Recorded connector action surface — the LAST RELEASED shape. The compatibility gate (ADR-0047 §8) diffs the current build against this and refuses a declared compat class the diff cannot support. Regenerate deliberately with SHIFT_UPDATE_SURFACE=1 and review the diff; it is the only record of what was shipped.",
+  "name": "ftp",
+  "version": "0.1.0",
+  "descriptor": {
+    "name": "ftp",
+    "version": "0.1.0",
+    "actions": [
+      {
+        "action": "put",
+        "direction": "sink",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "FTP file",
+          "required": [
+            "host",
+            "path"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "title": "Host",
+              "description": "FTP server hostname or IP"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "default": 21
+            },
+            "user": {
+              "type": "string",
+              "title": "Username",
+              "description": "Defaults to 'anonymous' when empty"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "explicit_tls": {
+              "type": "boolean",
+              "title": "Explicit TLS (FTPS / AUTH TLS)",
+              "description": "Encrypt the connection and verify the server certificate. On by default; plaintext credentials are refused unless allow_local.",
+              "default": true
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; also permits plaintext credentials)",
+              "default": false
+            },
+            "insecure_tls": {
+              "type": "boolean",
+              "title": "Skip FTPS certificate verification (self-signed dev servers only)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            },
+            "path": {
+              "type": "string",
+              "title": "Remote path",
+              "description": "Path to the remote file"
+            },
+            "format": {
+              "type": "string",
+              "title": "Format",
+              "enum": [
+                "ndjson",
+                "csv"
+              ],
+              "default": "ndjson"
+            }
+          }
+        }
+      },
+      {
+        "action": "delete",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "FTP operation",
+          "required": [
+            "host",
+            "path"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "title": "Host",
+              "description": "FTP server hostname or IP"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "default": 21
+            },
+            "user": {
+              "type": "string",
+              "title": "Username",
+              "description": "Defaults to 'anonymous' when empty"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "explicit_tls": {
+              "type": "boolean",
+              "title": "Explicit TLS (FTPS / AUTH TLS)",
+              "description": "Encrypt the connection and verify the server certificate. On by default; plaintext credentials are refused unless allow_local.",
+              "default": true
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; also permits plaintext credentials)",
+              "default": false
+            },
+            "insecure_tls": {
+              "type": "boolean",
+              "title": "Skip FTPS certificate verification (self-signed dev servers only)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            },
+            "path": {
+              "type": "string",
+              "title": "Remote path",
+              "description": "Target file/directory"
+            }
+          }
+        }
+      },
+      {
+        "action": "get",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "FTP file",
+          "required": [
+            "host",
+            "path"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "title": "Host",
+              "description": "FTP server hostname or IP"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "default": 21
+            },
+            "user": {
+              "type": "string",
+              "title": "Username",
+              "description": "Defaults to 'anonymous' when empty"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "explicit_tls": {
+              "type": "boolean",
+              "title": "Explicit TLS (FTPS / AUTH TLS)",
+              "description": "Encrypt the connection and verify the server certificate. On by default; plaintext credentials are refused unless allow_local.",
+              "default": true
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; also permits plaintext credentials)",
+              "default": false
+            },
+            "insecure_tls": {
+              "type": "boolean",
+              "title": "Skip FTPS certificate verification (self-signed dev servers only)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            },
+            "path": {
+              "type": "string",
+              "title": "Remote path",
+              "description": "Path to the remote file"
+            },
+            "format": {
+              "type": "string",
+              "title": "Format",
+              "enum": [
+                "ndjson",
+                "csv"
+              ],
+              "default": "ndjson"
+            }
+          }
+        }
+      },
+      {
+        "action": "list",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "FTP list",
+          "required": [
+            "host",
+            "path"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "title": "Host",
+              "description": "FTP server hostname or IP"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "default": 21
+            },
+            "user": {
+              "type": "string",
+              "title": "Username",
+              "description": "Defaults to 'anonymous' when empty"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "explicit_tls": {
+              "type": "boolean",
+              "title": "Explicit TLS (FTPS / AUTH TLS)",
+              "description": "Encrypt the connection and verify the server certificate. On by default; plaintext credentials are refused unless allow_local.",
+              "default": true
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; also permits plaintext credentials)",
+              "default": false
+            },
+            "insecure_tls": {
+              "type": "boolean",
+              "title": "Skip FTPS certificate verification (self-signed dev servers only)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            },
+            "path": {
+              "type": "string",
+              "title": "Remote directory",
+              "description": "Directory to list; emits one record per entry {name,path,size,type,mod_time}"
+            }
+          }
+        }
+      },
+      {
+        "action": "mkdir",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "FTP operation",
+          "required": [
+            "host",
+            "path"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "title": "Host",
+              "description": "FTP server hostname or IP"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "default": 21
+            },
+            "user": {
+              "type": "string",
+              "title": "Username",
+              "description": "Defaults to 'anonymous' when empty"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "explicit_tls": {
+              "type": "boolean",
+              "title": "Explicit TLS (FTPS / AUTH TLS)",
+              "description": "Encrypt the connection and verify the server certificate. On by default; plaintext credentials are refused unless allow_local.",
+              "default": true
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; also permits plaintext credentials)",
+              "default": false
+            },
+            "insecure_tls": {
+              "type": "boolean",
+              "title": "Skip FTPS certificate verification (self-signed dev servers only)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            },
+            "path": {
+              "type": "string",
+              "title": "Remote path",
+              "description": "Target file/directory"
+            }
+          }
+        }
+      },
+      {
+        "action": "rename",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "FTP rename",
+          "required": [
+            "host",
+            "from",
+            "to"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "title": "Host",
+              "description": "FTP server hostname or IP"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "default": 21
+            },
+            "user": {
+              "type": "string",
+              "title": "Username",
+              "description": "Defaults to 'anonymous' when empty"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "explicit_tls": {
+              "type": "boolean",
+              "title": "Explicit TLS (FTPS / AUTH TLS)",
+              "description": "Encrypt the connection and verify the server certificate. On by default; plaintext credentials are refused unless allow_local.",
+              "default": true
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; also permits plaintext credentials)",
+              "default": false
+            },
+            "insecure_tls": {
+              "type": "boolean",
+              "title": "Skip FTPS certificate verification (self-signed dev servers only)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            },
+            "from": {
+              "type": "string",
+              "title": "From path"
+            },
+            "to": {
+              "type": "string",
+              "title": "To path"
+            }
+          }
+        }
+      },
+      {
+        "action": "rmdir",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "FTP rmdir",
+          "required": [
+            "host",
+            "path"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "title": "Host",
+              "description": "FTP server hostname or IP"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "default": 21
+            },
+            "user": {
+              "type": "string",
+              "title": "Username",
+              "description": "Defaults to 'anonymous' when empty"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "explicit_tls": {
+              "type": "boolean",
+              "title": "Explicit TLS (FTPS / AUTH TLS)",
+              "description": "Encrypt the connection and verify the server certificate. On by default; plaintext credentials are refused unless allow_local.",
+              "default": true
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; also permits plaintext credentials)",
+              "default": false
+            },
+            "insecure_tls": {
+              "type": "boolean",
+              "title": "Skip FTPS certificate verification (self-signed dev servers only)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            },
+            "path": {
+              "type": "string",
+              "title": "Remote directory"
+            },
+            "recursive": {
+              "type": "boolean",
+              "title": "Recursive",
+              "description": "Remove non-empty directories and their contents",
+              "default": false
+            }
+          }
+        }
+      }
+    ],
+    "meta": {
+      "description": "FTP/FTPS file operations: pick a verb (get/put/list/delete/mkdir/rmdir/rename) and a path. Explicit TLS (FTPS) on by default; certificate verified.",
+      "category": "file-transfer",
+      "icon": "📂",
+      "tags": [
+        "csv",
+        "file",
+        "ftp",
+        "ftps",
+        "ndjson"
+      ]
+    }
+  }
+}

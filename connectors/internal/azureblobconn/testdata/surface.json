@@ -1,0 +1,266 @@
+{
+  "_note": "Recorded connector action surface — the LAST RELEASED shape. The compatibility gate (ADR-0047 §8) diffs the current build against this and refuses a declared compat class the diff cannot support. Regenerate deliberately with SHIFT_UPDATE_SURFACE=1 and review the diff; it is the only record of what was shipped.",
+  "name": "azureblob",
+  "version": "0.1.0",
+  "descriptor": {
+    "name": "azureblob",
+    "version": "0.1.0",
+    "actions": [
+      {
+        "action": "put",
+        "direction": "sink",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "Azure blob",
+          "required": [
+            "blob"
+          ],
+          "properties": {
+            "account": {
+              "type": "string",
+              "title": "Storage account",
+              "description": "Account name (used with account_key)"
+            },
+            "account_key": {
+              "type": "string",
+              "title": "Account key",
+              "description": "Shared key for the account",
+              "x-shift-secret": true
+            },
+            "connection_string": {
+              "type": "string",
+              "title": "Connection string",
+              "description": "Full storage connection string (alternative to account+key)",
+              "x-shift-secret": true
+            },
+            "sas_url": {
+              "type": "string",
+              "title": "Container SAS URL",
+              "description": "Container-scoped SAS URL (alternative to account credentials; container field then unused)",
+              "x-shift-secret": true
+            },
+            "container": {
+              "type": "string",
+              "title": "Container",
+              "description": "Blob container name (required unless a container SAS URL is used)"
+            },
+            "endpoint": {
+              "type": "string",
+              "title": "Blob endpoint",
+              "description": "Override service endpoint for Azurite/custom clouds, e.g. http://127.0.0.1:10000/devstoreaccount1"
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; needed for Azurite)",
+              "default": false
+            },
+            "blob": {
+              "type": "string",
+              "title": "Blob",
+              "description": "Blob name/key within the container"
+            },
+            "format": {
+              "type": "string",
+              "title": "Format",
+              "enum": [
+                "ndjson",
+                "csv"
+              ],
+              "default": "ndjson"
+            }
+          }
+        }
+      },
+      {
+        "action": "delete",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "Azure blob delete",
+          "required": [
+            "blob"
+          ],
+          "properties": {
+            "account": {
+              "type": "string",
+              "title": "Storage account",
+              "description": "Account name (used with account_key)"
+            },
+            "account_key": {
+              "type": "string",
+              "title": "Account key",
+              "description": "Shared key for the account",
+              "x-shift-secret": true
+            },
+            "connection_string": {
+              "type": "string",
+              "title": "Connection string",
+              "description": "Full storage connection string (alternative to account+key)",
+              "x-shift-secret": true
+            },
+            "sas_url": {
+              "type": "string",
+              "title": "Container SAS URL",
+              "description": "Container-scoped SAS URL (alternative to account credentials; container field then unused)",
+              "x-shift-secret": true
+            },
+            "container": {
+              "type": "string",
+              "title": "Container",
+              "description": "Blob container name (required unless a container SAS URL is used)"
+            },
+            "endpoint": {
+              "type": "string",
+              "title": "Blob endpoint",
+              "description": "Override service endpoint for Azurite/custom clouds, e.g. http://127.0.0.1:10000/devstoreaccount1"
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; needed for Azurite)",
+              "default": false
+            },
+            "blob": {
+              "type": "string",
+              "title": "Blob",
+              "description": "Blob name/key to delete (idempotent: a missing blob is a success)"
+            }
+          }
+        }
+      },
+      {
+        "action": "get",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "Azure blob",
+          "required": [
+            "blob"
+          ],
+          "properties": {
+            "account": {
+              "type": "string",
+              "title": "Storage account",
+              "description": "Account name (used with account_key)"
+            },
+            "account_key": {
+              "type": "string",
+              "title": "Account key",
+              "description": "Shared key for the account",
+              "x-shift-secret": true
+            },
+            "connection_string": {
+              "type": "string",
+              "title": "Connection string",
+              "description": "Full storage connection string (alternative to account+key)",
+              "x-shift-secret": true
+            },
+            "sas_url": {
+              "type": "string",
+              "title": "Container SAS URL",
+              "description": "Container-scoped SAS URL (alternative to account credentials; container field then unused)",
+              "x-shift-secret": true
+            },
+            "container": {
+              "type": "string",
+              "title": "Container",
+              "description": "Blob container name (required unless a container SAS URL is used)"
+            },
+            "endpoint": {
+              "type": "string",
+              "title": "Blob endpoint",
+              "description": "Override service endpoint for Azurite/custom clouds, e.g. http://127.0.0.1:10000/devstoreaccount1"
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; needed for Azurite)",
+              "default": false
+            },
+            "blob": {
+              "type": "string",
+              "title": "Blob",
+              "description": "Blob name/key within the container"
+            },
+            "format": {
+              "type": "string",
+              "title": "Format",
+              "enum": [
+                "ndjson",
+                "csv"
+              ],
+              "default": "ndjson"
+            }
+          }
+        }
+      },
+      {
+        "action": "list",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "Azure blob list",
+          "properties": {
+            "account": {
+              "type": "string",
+              "title": "Storage account",
+              "description": "Account name (used with account_key)"
+            },
+            "account_key": {
+              "type": "string",
+              "title": "Account key",
+              "description": "Shared key for the account",
+              "x-shift-secret": true
+            },
+            "connection_string": {
+              "type": "string",
+              "title": "Connection string",
+              "description": "Full storage connection string (alternative to account+key)",
+              "x-shift-secret": true
+            },
+            "sas_url": {
+              "type": "string",
+              "title": "Container SAS URL",
+              "description": "Container-scoped SAS URL (alternative to account credentials; container field then unused)",
+              "x-shift-secret": true
+            },
+            "container": {
+              "type": "string",
+              "title": "Container",
+              "description": "Blob container name (required unless a container SAS URL is used)"
+            },
+            "endpoint": {
+              "type": "string",
+              "title": "Blob endpoint",
+              "description": "Override service endpoint for Azurite/custom clouds, e.g. http://127.0.0.1:10000/devstoreaccount1"
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; needed for Azurite)",
+              "default": false
+            },
+            "prefix": {
+              "type": "string",
+              "title": "Prefix",
+              "description": "List blobs whose name starts with this prefix (empty = whole container); emits one record per blob {name,size,etag,last_modified,content_type}"
+            }
+          }
+        }
+      }
+    ],
+    "meta": {
+      "description": "Azure Blob Storage: pick a verb (get/put/list/delete). Static-credential auth (account key, connection string, or container SAS). Network-guarded.",
+      "category": "cloud-storage",
+      "icon": "🔷",
+      "tags": [
+        "azure",
+        "blob",
+        "csv",
+        "ndjson",
+        "storage"
+      ]
+    }
+  }
+}

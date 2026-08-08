@@ -216,6 +216,69 @@ Guidelines (enforced by review, informed by the existing connectors):
 - The spawn path itself is covered by
   `connectors/launch_integration_test.go`; you don't need to re-test it.
 
+## The compatibility gate (ADR-0047 §8)
+
+ADR-0047 builds real machinery on the compatibility class a connector version
+declares: §5's currency notices fold it across a span, and §9's bulk upgrade
+tells an operator what crossing three releases will cost before they move
+forty flows. All of that is only as good as the declaration underneath — and a
+class chosen by a human at publish time, about a diff they wrote weeks
+earlier, is the promise that rots first and quietly.
+
+So it is checked. Every connector carries:
+
+```go
+func TestSurfaceStaysCompatible(t *testing.T) {
+    sdktest.CheckSurface(t, httpconn.Connector(), "testdata/surface.json")
+}
+```
+
+`testdata/surface.json` records the **last released** action surface —
+identity, the class it shipped under, and the canonical descriptor.
+`sdk/compat` diffs the current build against it and computes the smallest
+honest class; the gate then enforces four rules:
+
+1. **The declared class covers the computed one.** Declaring something
+   *stronger* is always allowed — a publisher who knows a "compatible" change
+   will surprise people has a real reason to say breaking.
+2. **A changed surface moves the version.** A pin that resolves to a
+   different shape is a pin that means nothing (§1).
+3. **An unchanged surface may not claim a class.** §5 and §9 render breaking
+   hops loudly; a false one spends attention that the real ones need.
+4. **A released version's class is not rewritten.** A class describes a hop
+   somebody already took.
+
+How changes classify — config schemas are *studio metadata* (ADR-0018), never
+enforced at run time, which is why a schema appearing cannot break a flow:
+
+| Change | Class |
+|---|---|
+| Action removed, or its direction flipped | breaking |
+| Config field removed, retyped, or newly required | breaking |
+| `x-shift-secret` dropped from a field | breaking |
+| Config schema removed entirely | behaviour-change |
+| Schema present but not an object schema (uncomparable) | behaviour-change |
+| New action; new optional field; field relaxed to optional | compatible |
+| Config schema added where there was none | compatible |
+
+Nested properties are walked, so a required field three levels down is caught
+— it breaks a flow exactly as hard as a top-level one.
+
+**Set `Compat` on the connector** when you release: it is the publisher's own
+statement, and it is deliberately *not* in the descriptor, whose canonical
+bytes are hashed into the signed manifest (ADR-0018 parity).
+
+To re-record after a legitimate change, review the diff and run:
+
+```
+SHIFT_UPDATE_SURFACE=1 go test ./connectors/internal/<x>conn/ -run TestSurface
+```
+
+**What the gate cannot see is behaviour.** No static check knows that an HTTP
+source started following redirects. That is the honest boundary, and it is
+exactly why §6 keeps `behaviour-change` as a human judgement the gate accepts
+without proof.
+
 ## Host-side lifecycle (runner integration)
 
 `host.Launch` → `*host.Process` → `.Source(action, config)` /

@@ -1,0 +1,470 @@
+{
+  "_note": "Recorded connector action surface — the LAST RELEASED shape. The compatibility gate (ADR-0047 §8) diffs the current build against this and refuses a declared compat class the diff cannot support. Regenerate deliberately with SHIFT_UPDATE_SURFACE=1 and review the diff; it is the only record of what was shipped.",
+  "name": "sftp",
+  "version": "0.2.0",
+  "descriptor": {
+    "name": "sftp",
+    "version": "0.2.0",
+    "actions": [
+      {
+        "action": "put",
+        "direction": "sink",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "SFTP file",
+          "required": [
+            "host",
+            "user",
+            "path"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "title": "Host",
+              "description": "SFTP server hostname or IP"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "default": 22
+            },
+            "user": {
+              "type": "string",
+              "title": "Username"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "private_key": {
+              "type": "string",
+              "title": "Private key (PEM)",
+              "x-shift-secret": true
+            },
+            "host_key": {
+              "type": "string",
+              "title": "Host key",
+              "description": "Server public key (authorized_keys line, e.g. 'ssh-ed25519 AAAA...'). Required unless allow_local."
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; also permits an unverified host key)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            },
+            "path": {
+              "type": "string",
+              "title": "Remote path",
+              "description": "Path to the remote file"
+            },
+            "format": {
+              "type": "string",
+              "title": "Format",
+              "enum": [
+                "ndjson",
+                "csv"
+              ],
+              "default": "ndjson"
+            }
+          }
+        }
+      },
+      {
+        "action": "delete",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "SFTP operation",
+          "required": [
+            "host",
+            "user",
+            "path"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "title": "Host",
+              "description": "SFTP server hostname or IP"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "default": 22
+            },
+            "user": {
+              "type": "string",
+              "title": "Username"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "private_key": {
+              "type": "string",
+              "title": "Private key (PEM)",
+              "x-shift-secret": true
+            },
+            "host_key": {
+              "type": "string",
+              "title": "Host key",
+              "description": "Server public key (authorized_keys line, e.g. 'ssh-ed25519 AAAA...'). Required unless allow_local."
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; also permits an unverified host key)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            },
+            "path": {
+              "type": "string",
+              "title": "Remote path",
+              "description": "Target file/directory"
+            }
+          }
+        }
+      },
+      {
+        "action": "get",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "SFTP file",
+          "required": [
+            "host",
+            "user",
+            "path"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "title": "Host",
+              "description": "SFTP server hostname or IP"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "default": 22
+            },
+            "user": {
+              "type": "string",
+              "title": "Username"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "private_key": {
+              "type": "string",
+              "title": "Private key (PEM)",
+              "x-shift-secret": true
+            },
+            "host_key": {
+              "type": "string",
+              "title": "Host key",
+              "description": "Server public key (authorized_keys line, e.g. 'ssh-ed25519 AAAA...'). Required unless allow_local."
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; also permits an unverified host key)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            },
+            "path": {
+              "type": "string",
+              "title": "Remote path",
+              "description": "Path to the remote file"
+            },
+            "format": {
+              "type": "string",
+              "title": "Format",
+              "enum": [
+                "ndjson",
+                "csv"
+              ],
+              "default": "ndjson"
+            }
+          }
+        }
+      },
+      {
+        "action": "list",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "SFTP list",
+          "required": [
+            "host",
+            "user",
+            "path"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "title": "Host",
+              "description": "SFTP server hostname or IP"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "default": 22
+            },
+            "user": {
+              "type": "string",
+              "title": "Username"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "private_key": {
+              "type": "string",
+              "title": "Private key (PEM)",
+              "x-shift-secret": true
+            },
+            "host_key": {
+              "type": "string",
+              "title": "Host key",
+              "description": "Server public key (authorized_keys line, e.g. 'ssh-ed25519 AAAA...'). Required unless allow_local."
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; also permits an unverified host key)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            },
+            "path": {
+              "type": "string",
+              "title": "Remote directory",
+              "description": "Directory to list; emits one record per entry {name,path,size,mode,mod_time,is_dir}"
+            }
+          }
+        }
+      },
+      {
+        "action": "mkdir",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "SFTP operation",
+          "required": [
+            "host",
+            "user",
+            "path"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "title": "Host",
+              "description": "SFTP server hostname or IP"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "default": 22
+            },
+            "user": {
+              "type": "string",
+              "title": "Username"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "private_key": {
+              "type": "string",
+              "title": "Private key (PEM)",
+              "x-shift-secret": true
+            },
+            "host_key": {
+              "type": "string",
+              "title": "Host key",
+              "description": "Server public key (authorized_keys line, e.g. 'ssh-ed25519 AAAA...'). Required unless allow_local."
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; also permits an unverified host key)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            },
+            "path": {
+              "type": "string",
+              "title": "Remote path",
+              "description": "Target file/directory"
+            }
+          }
+        }
+      },
+      {
+        "action": "rename",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "SFTP rename",
+          "required": [
+            "host",
+            "user",
+            "from",
+            "to"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "title": "Host",
+              "description": "SFTP server hostname or IP"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "default": 22
+            },
+            "user": {
+              "type": "string",
+              "title": "Username"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "private_key": {
+              "type": "string",
+              "title": "Private key (PEM)",
+              "x-shift-secret": true
+            },
+            "host_key": {
+              "type": "string",
+              "title": "Host key",
+              "description": "Server public key (authorized_keys line, e.g. 'ssh-ed25519 AAAA...'). Required unless allow_local."
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; also permits an unverified host key)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            },
+            "from": {
+              "type": "string",
+              "title": "From path"
+            },
+            "to": {
+              "type": "string",
+              "title": "To path"
+            }
+          }
+        }
+      },
+      {
+        "action": "rmdir",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "SFTP rmdir",
+          "required": [
+            "host",
+            "user",
+            "path"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "title": "Host",
+              "description": "SFTP server hostname or IP"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "default": 22
+            },
+            "user": {
+              "type": "string",
+              "title": "Username"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "private_key": {
+              "type": "string",
+              "title": "Private key (PEM)",
+              "x-shift-secret": true
+            },
+            "host_key": {
+              "type": "string",
+              "title": "Host key",
+              "description": "Server public key (authorized_keys line, e.g. 'ssh-ed25519 AAAA...'). Required unless allow_local."
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; also permits an unverified host key)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            },
+            "path": {
+              "type": "string",
+              "title": "Remote directory"
+            },
+            "recursive": {
+              "type": "boolean",
+              "title": "Recursive",
+              "description": "Remove non-empty directories and their contents",
+              "default": false
+            }
+          }
+        }
+      }
+    ],
+    "meta": {
+      "description": "SFTP file operations: pick a verb (get/put/list/delete/mkdir/rmdir/rename) and a path. Host-key verified.",
+      "category": "file-transfer",
+      "icon": "📁",
+      "tags": [
+        "csv",
+        "file",
+        "ndjson",
+        "sftp",
+        "ssh"
+      ]
+    }
+  }
+}

@@ -1,0 +1,171 @@
+{
+  "_note": "Recorded connector action surface — the LAST RELEASED shape. The compatibility gate (ADR-0047 §8) diffs the current build against this and refuses a declared compat class the diff cannot support. Regenerate deliberately with SHIFT_UPDATE_SURFACE=1 and review the diff; it is the only record of what was shipped.",
+  "name": "amqp",
+  "version": "0.1.0",
+  "descriptor": {
+    "name": "amqp",
+    "version": "0.1.0",
+    "actions": [
+      {
+        "action": "publish",
+        "direction": "sink",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "AMQP publish",
+          "properties": {
+            "url": {
+              "type": "string",
+              "title": "AMQP URL",
+              "description": "amqp://user:pass@host:port/vhost or amqps://... (overrides the split fields below)",
+              "x-shift-secret": true
+            },
+            "host": {
+              "type": "string",
+              "title": "Host",
+              "description": "Broker hostname or IP (used when url is empty)"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "description": "Default 5672 (amqp) or 5671 (amqps)"
+            },
+            "user": {
+              "type": "string",
+              "title": "Username",
+              "default": "guest"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "vhost": {
+              "type": "string",
+              "title": "Virtual host",
+              "default": "/"
+            },
+            "tls": {
+              "type": "boolean",
+              "title": "Use TLS (amqps)",
+              "default": false
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal brokers (SSRF guard off)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            },
+            "exchange": {
+              "type": "string",
+              "title": "Exchange",
+              "description": "Target exchange ('' = the default exchange, where routing_key is the queue name)"
+            },
+            "routing_key": {
+              "type": "string",
+              "title": "Routing key"
+            }
+          }
+        }
+      },
+      {
+        "action": "consume",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "AMQP consume",
+          "required": [
+            "queue"
+          ],
+          "properties": {
+            "url": {
+              "type": "string",
+              "title": "AMQP URL",
+              "description": "amqp://user:pass@host:port/vhost or amqps://... (overrides the split fields below)",
+              "x-shift-secret": true
+            },
+            "host": {
+              "type": "string",
+              "title": "Host",
+              "description": "Broker hostname or IP (used when url is empty)"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "description": "Default 5672 (amqp) or 5671 (amqps)"
+            },
+            "user": {
+              "type": "string",
+              "title": "Username",
+              "default": "guest"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "vhost": {
+              "type": "string",
+              "title": "Virtual host",
+              "default": "/"
+            },
+            "tls": {
+              "type": "boolean",
+              "title": "Use TLS (amqps)",
+              "default": false
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal brokers (SSRF guard off)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            },
+            "queue": {
+              "type": "string",
+              "title": "Queue",
+              "description": "Queue to consume from"
+            },
+            "durable": {
+              "type": "boolean",
+              "title": "Declare queue durable",
+              "default": false
+            },
+            "max_messages": {
+              "type": "integer",
+              "title": "Max messages",
+              "description": "Stop after this many messages (0 = drain the queue then stop)",
+              "default": 0
+            },
+            "prefetch": {
+              "type": "integer",
+              "title": "Prefetch / batch size",
+              "description": "Messages fetched per Next batch (also the channel QoS prefetch)",
+              "default": 256
+            }
+          }
+        }
+      }
+    ],
+    "meta": {
+      "description": "AMQP 0-9-1 (RabbitMQ): publish records to an exchange, or consume records from a queue. SSRF-guarded.",
+      "category": "messaging",
+      "icon": "🐰",
+      "tags": [
+        "amqp",
+        "messaging",
+        "ndjson",
+        "queue",
+        "rabbitmq"
+      ]
+    }
+  }
+}

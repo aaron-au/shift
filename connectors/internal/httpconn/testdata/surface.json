@@ -1,0 +1,152 @@
+{
+  "_note": "Recorded connector action surface — the LAST RELEASED shape. The compatibility gate (ADR-0047 §8) diffs the current build against this and refuses a declared compat class the diff cannot support. Regenerate deliberately with SHIFT_UPDATE_SURFACE=1 and review the diff; it is the only record of what was shipped.",
+  "name": "http",
+  "version": "0.1.0",
+  "descriptor": {
+    "name": "http",
+    "version": "0.1.0",
+    "actions": [
+      {
+        "action": "post",
+        "direction": "sink",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "HTTP request",
+          "required": [
+            "url"
+          ],
+          "properties": {
+            "url": {
+              "type": "string",
+              "title": "URL",
+              "description": "Target URL (http/https)"
+            },
+            "headers": {
+              "type": "object",
+              "title": "Headers",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "auth": {
+              "type": "object",
+              "title": "Authentication",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "title": "Type",
+                  "enum": [
+                    "",
+                    "basic",
+                    "bearer"
+                  ]
+                },
+                "user": {
+                  "type": "string",
+                  "title": "User"
+                },
+                "pass": {
+                  "type": "string",
+                  "title": "Password",
+                  "x-shift-secret": true
+                },
+                "token": {
+                  "type": "string",
+                  "title": "Token",
+                  "x-shift-secret": true
+                }
+              }
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (SSRF guard off)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Timeout (seconds)",
+              "default": 300
+            }
+          }
+        }
+      },
+      {
+        "action": "get",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "HTTP request",
+          "required": [
+            "url"
+          ],
+          "properties": {
+            "url": {
+              "type": "string",
+              "title": "URL",
+              "description": "Target URL (http/https)"
+            },
+            "headers": {
+              "type": "object",
+              "title": "Headers",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "auth": {
+              "type": "object",
+              "title": "Authentication",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "title": "Type",
+                  "enum": [
+                    "",
+                    "basic",
+                    "bearer"
+                  ]
+                },
+                "user": {
+                  "type": "string",
+                  "title": "User"
+                },
+                "pass": {
+                  "type": "string",
+                  "title": "Password",
+                  "x-shift-secret": true
+                },
+                "token": {
+                  "type": "string",
+                  "title": "Token",
+                  "x-shift-secret": true
+                }
+              }
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (SSRF guard off)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Timeout (seconds)",
+              "default": 300
+            }
+          }
+        }
+      }
+    ],
+    "meta": {
+      "description": "Stream records from an HTTP GET (NDJSON) and POST records to an HTTP endpoint. SSRF-guarded.",
+      "category": "protocol",
+      "icon": "🌐",
+      "tags": [
+        "api",
+        "http",
+        "ndjson",
+        "rest"
+      ]
+    }
+  }
+}

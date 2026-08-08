@@ -1,0 +1,104 @@
+{
+  "_note": "Recorded connector action surface — the LAST RELEASED shape. The compatibility gate (ADR-0047 §8) diffs the current build against this and refuses a declared compat class the diff cannot support. Regenerate deliberately with SHIFT_UPDATE_SURFACE=1 and review the diff; it is the only record of what was shipped.",
+  "name": "smtp",
+  "version": "0.1.0",
+  "descriptor": {
+    "name": "smtp",
+    "version": "0.1.0",
+    "actions": [
+      {
+        "action": "send",
+        "direction": "sink",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "Send email (SMTP)",
+          "required": [
+            "host",
+            "from",
+            "to"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "title": "SMTP host",
+              "description": "Mail server hostname or IP"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "default": 587
+            },
+            "username": {
+              "type": "string",
+              "title": "Username",
+              "x-shift-secret": true
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "from": {
+              "type": "string",
+              "title": "From",
+              "description": "Sender address (may include a display name)"
+            },
+            "to": {
+              "type": "array",
+              "title": "To",
+              "items": {
+                "type": "string"
+              },
+              "description": "Recipient addresses"
+            },
+            "cc": {
+              "type": "array",
+              "title": "Cc",
+              "items": {
+                "type": "string"
+              }
+            },
+            "subject": {
+              "type": "string",
+              "title": "Subject",
+              "description": "Supports $field placeholders substituted from each record"
+            },
+            "body_template": {
+              "type": "string",
+              "title": "Body template",
+              "description": "Supports $field placeholders; if empty the whole record is rendered as the body"
+            },
+            "starttls": {
+              "type": "boolean",
+              "title": "STARTTLS",
+              "description": "Upgrade the connection with STARTTLS before AUTH (recommended)",
+              "default": true
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off; also permits sending without STARTTLS)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            }
+          }
+        }
+      }
+    ],
+    "meta": {
+      "description": "Send email over SMTP (AUTH + STARTTLS). One email per incoming record; subject/body are $field templates. Network-guarded.",
+      "category": "messaging",
+      "icon": "✉️",
+      "tags": [
+        "email",
+        "mail",
+        "notify",
+        "smtp"
+      ]
+    }
+  }
+}

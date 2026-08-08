@@ -82,6 +82,20 @@ type SinkAction interface {
 type Connector struct {
 	Name    string
 	Version string
+	// Compat is this version's compatibility class relative to the one
+	// before it: "compatible", "behaviour-change" or "breaking"
+	// (ADR-0047 §6). It is the publisher's own statement, and the
+	// compatibility gate (ADR-0047 §8, `sdk/compat` + `sdktest.CheckSurface`)
+	// refuses a build that declares something weaker than the recorded
+	// surface diff can support. Declaring something STRONGER is always
+	// allowed — a publisher who knows a "compatible" change will surprise
+	// people can say breaking, and nothing argues.
+	//
+	// It is deliberately NOT part of the Descriptor: the descriptor's
+	// canonical bytes are hashed into the signed manifest (ADR-0018), and a
+	// field that changes every release would churn that digest for something
+	// the hub already stores per version.
+	Compat string
 	// Sources/Sinks map action names to factories; a fresh instance is
 	// created per stream.
 	Sources map[string]func() SourceAction
