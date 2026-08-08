@@ -5,47 +5,6 @@
 # one. It is a CLIENT of the gateway (ADR-0038 §4), which is what makes the
 # deny-all-ingress-from-DMZ policy survivable.
 apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: shift-runner-flows
-  namespace: shift-internal
-data:
-  # The flow the gateway route names. Registered on the runner at start-up by
-  # the sidecar below; in a real deployment the hub syncs it.
-  echo.json: |
-    {
-      "document": {
-        "name": "echo",
-        "source": {"connector": "@webhook"},
-        "sink": {"connector": "@response"}
-      }
-    }
-  # A v3 DAG flow: fan-out AND fan-in in one graph (ADR-0029). The tee
-  # duplicates every record to both branches and the merge concatenates them,
-  # so one record in comes back as two — which is what makes the topology
-  # visible in the response rather than something you have to take on trust.
-  #
-  # Graphs like this were validated by the hub and drawable on the canvas but
-  # NOT executable until the general segment compiler landed (issue #59), so
-  # this doubles as the deployment-level check that they now run.
-  fanout.json: |
-    {
-      "document": {
-        "name": "fanout",
-        "start": "in",
-        "steps": [
-          {"id": "in", "type": "source", "connector": "@webhook", "action": "ndjson", "onSuccess": "t"},
-          {"id": "t", "type": "tee", "branches": ["a", "b"]},
-          {"id": "a", "type": "filter", "path": "$.id", "op": "exists", "onComplete": "m"},
-          {"id": "b", "type": "filter", "path": "$.id", "op": "exists", "onComplete": "m"},
-          {"id": "m", "type": "merge", "inputs": ["a", "b"], "mode": "concat", "onSuccess": "out"},
-          {"id": "out", "type": "sink", "connector": "@response"}
-        ]
-      }
-    }
----
----
-apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: shift-runner-state
@@ -103,9 +62,6 @@ spec:
             # place itself on a route by editing its own arguments. There is
             # no hub in this bundle, so this runner carries no labels and the
             # route below carries no selector.
-            # Stands in for the hub's webhook sync while these demo flows are
-            # file-provided; the hub is authoritative when attached.
-            - -flows-dir=/etc/shift/flows
           env:
             # The hub. Registering with it is what gets this runner an mTLS
             # IDENTITY (ADR-0044), and that identity is what lets it poll a
@@ -136,9 +92,6 @@ spec:
             requests: {cpu: 100m, memory: 128Mi}
             limits: {memory: 512Mi}
           volumeMounts:
-            - name: flows
-              mountPath: /etc/shift/flows
-              readOnly: true
             - name: scratch
               mountPath: /tmp
             # The bootstrap volume carries the hub CA and the single-use
@@ -154,9 +107,6 @@ spec:
             - name: state
               mountPath: /var/lib/shift
       volumes:
-        - name: flows
-          configMap:
-            name: shift-runner-flows
         - name: bootstrap
           persistentVolumeClaim:
             claimName: shift-bootstrap
