@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aaron-au/shift/connectors/internal/fileformat"
 	"github.com/aaron-au/shift/sdk"
 	"github.com/jlaffaye/ftp"
 )
@@ -34,7 +35,7 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "ftp",
-		Version: "0.1.0",
+		Version: "0.3.0",
 		Meta: &sdk.ConnectorMeta{
 			Description: "FTP/FTPS file operations: pick a verb (get/put/list/delete/mkdir/rmdir/rename) and a path. Explicit TLS (FTPS) on by default; certificate verified.",
 			Category:    "file-transfer",
@@ -85,7 +86,8 @@ var (
 	fileConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"FTP file",
   "required":["host","path"],"properties":{` + connProps + `,
     "path": {"type": "string", "title": "Remote path", "description": "Path to the remote file"},
-    "format": {"type": "string", "title": "Format", "enum": ["ndjson", "csv"], "default": "ndjson"}
+    "format": ` + fileformat.SchemaEnum() + `,
+    "record_element": ` + fileformat.RecordElementProp + `
   }}`
 
 	listConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"FTP list",
@@ -113,14 +115,17 @@ var (
 
 // config is the shared source/sink configuration.
 type config struct {
-	Host           string `json:"host"`
-	Port           int    `json:"port"`
-	User           string `json:"user"`
-	Password       string `json:"password"`
-	Path           string `json:"path"`
-	From           string `json:"from"` // rename: source path
-	To             string `json:"to"`   // rename: destination path
-	Format         string `json:"format"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	User     string `json:"user"`
+	Password string `json:"password"`
+	Path     string `json:"path"`
+	From     string `json:"from"` // rename: source path
+	To       string `json:"to"`   // rename: destination path
+	Format   string `json:"format"`
+	// RecordElement names the XML element that delimits one record.
+	// Ignored by the other formats, which have no equivalent notion.
+	RecordElement  string `json:"record_element,omitempty"`
 	Recursive      bool   `json:"recursive"`    // rmdir: remove non-empty trees
 	ExplicitTLS    *bool  `json:"explicit_tls"` // nil ⇒ default true (FTPS on)
 	AllowLocal     bool   `json:"allow_local"`
@@ -172,13 +177,7 @@ func (c *config) requireFileFormat() error {
 	if c.Path == "" {
 		return errors.New("ftp: path is required")
 	}
-	if c.Format == "" {
-		c.Format = "ndjson"
-	}
-	if c.Format != "ndjson" && c.Format != "csv" {
-		return fmt.Errorf("ftp: unsupported format %q (want ndjson or csv)", c.Format)
-	}
-	return nil
+	return fileformat.Validate("ftp", &c.Format)
 }
 
 // requireDir validates the list config: a remote directory path.

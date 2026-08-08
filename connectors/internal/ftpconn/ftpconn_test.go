@@ -430,7 +430,7 @@ func TestRequireFileFormat(t *testing.T) {
 	if err := (&config{Format: "ndjson"}).requireFileFormat(); err == nil {
 		t.Fatal("missing path: expected error")
 	}
-	c := &config{Path: "/f", Format: "xml"}
+	c := &config{Path: "/f", Format: "parquet"}
 	if err := c.requireFileFormat(); err == nil {
 		t.Fatal("bad format: expected error")
 	}

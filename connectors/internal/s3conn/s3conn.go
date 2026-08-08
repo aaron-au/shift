@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aaron-au/shift/connectors/internal/fileformat"
 	"github.com/aaron-au/shift/sdk"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -35,7 +36,7 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "s3",
-		Version: "0.1.0",
+		Version: "0.3.0",
 		Meta: &sdk.ConnectorMeta{
 			Description: "AWS S3 and S3-compatible (MinIO/Ceph/R2) object storage: pick a verb (get/put/list/delete). Static tenant credentials; SSRF-guarded.",
 			Category:    "object-storage",
@@ -79,7 +80,8 @@ var (
   "required":["bucket","key"],"properties":{` + connProps + `,
     "bucket": {"type": "string", "title": "Bucket"},
     "key": {"type": "string", "title": "Object key", "description": "Full object key/path within the bucket"},
-    "format": {"type": "string", "title": "Format", "enum": ["ndjson", "csv"], "default": "ndjson"}
+    "format": ` + fileformat.SchemaEnum() + `,
+    "record_element": ` + fileformat.RecordElementProp + `
   }}`
 
 	listConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"S3 list",
@@ -105,9 +107,12 @@ type config struct {
 	AccessKeyID     string `json:"access_key_id"`
 	SecretAccessKey string `json:"secret_access_key"`
 	Format          string `json:"format"`
-	PathStyle       bool   `json:"path_style"`
-	AllowLocal      bool   `json:"allow_local"`
-	TimeoutSeconds  int    `json:"timeout_seconds"`
+	// RecordElement names the XML element that delimits one record.
+	// Ignored by the other formats, which have no equivalent notion.
+	RecordElement  string `json:"record_element,omitempty"`
+	PathStyle      bool   `json:"path_style"`
+	AllowLocal     bool   `json:"allow_local"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
 }
 
 // parseConfig unmarshals and validates the connection fields shared by every
@@ -144,13 +149,7 @@ func (c *config) requireKeyFormat() error {
 	if c.Key == "" {
 		return errors.New("s3: key is required")
 	}
-	if c.Format == "" {
-		c.Format = "ndjson"
-	}
-	if c.Format != "ndjson" && c.Format != "csv" {
-		return fmt.Errorf("s3: unsupported format %q (want ndjson or csv)", c.Format)
-	}
-	return nil
+	return fileformat.Validate("s3", &c.Format)
 }
 
 // requireKey validates the delete config: an object key.

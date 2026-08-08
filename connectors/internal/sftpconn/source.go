@@ -3,17 +3,10 @@ package sftpconn
 import (
 	"context"
 
-	"github.com/aaron-au/shift/engine/format/csvf"
-	"github.com/aaron-au/shift/engine/format/ndjson"
+	"github.com/aaron-au/shift/connectors/internal/fileformat"
 	"github.com/aaron-au/shift/engine/record"
 	"github.com/pkg/sftp"
 )
-
-// recordReader is satisfied by both the ndjson and csvf readers: emit batches
-// until io.EOF. The batch is valid only until the next Next (reused).
-type recordReader interface {
-	Next(ctx context.Context) (*record.Batch, error)
-}
 
 // getSource streams a remote file, parsing it into record batches via the
 // configured format. The file is never buffered whole — the format reader
@@ -22,7 +15,7 @@ type getSource struct {
 	cfg    config
 	closer func() error
 	f      *sftp.File
-	reader recordReader
+	reader fileformat.Reader
 }
 
 func (s *getSource) Open(ctx context.Context, config []byte) error {
@@ -42,12 +35,11 @@ func (s *getSource) Open(ctx context.Context, config []byte) error {
 		return err
 	}
 	s.closer, s.f = closer, f
-	switch s.cfg.Format {
-	case "csv":
-		s.reader = csvf.NewReader(f, csvf.ReaderOptions{})
-	default:
-		s.reader = ndjson.NewReader(f, ndjson.ReaderOptions{})
+	rd, err := fileformat.NewReader(s.cfg.Format, f, fileformat.Options{RecordElement: s.cfg.RecordElement})
+	if err != nil {
+		return err
 	}
+	s.reader = rd
 	return nil
 }
 

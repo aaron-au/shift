@@ -210,6 +210,29 @@ func compareSchemas(add func(Class, string, string), where string, oldRaw, newRa
 		if o.Required && !n.Required {
 			add(Compatible, where, fmt.Sprintf("config field %q is no longer required", name))
 		}
+		// An enum NARROWED is breaking and an enum WIDENED is compatible. This
+		// is not a nicety: dropping a value from the list makes every stored
+		// config that used it invalid, and without the check the connector
+		// ships looking unchanged because no field was added or removed.
+		for _, v := range o.Enum {
+			if !slices.Contains(n.Enum, v) {
+				add(Breaking, where, fmt.Sprintf("config field %q no longer accepts %q: flows set to it stop validating", name, v))
+			}
+		}
+		for _, v := range n.Enum {
+			if !slices.Contains(o.Enum, v) {
+				add(Compatible, where, fmt.Sprintf("config field %q accepts a new value %q", name, v))
+			}
+		}
+		if len(o.Enum) > 0 && len(n.Enum) == 0 {
+			// From a closed set to anything at all. Compatible for existing
+			// configs, but the studio loses its dropdown, so it is worth
+			// surfacing rather than passing silently.
+			add(Compatible, where, fmt.Sprintf("config field %q is no longer restricted to a fixed set of values", name))
+		}
+		if len(o.Enum) == 0 && len(n.Enum) > 0 {
+			add(Breaking, where, fmt.Sprintf("config field %q is now restricted to a fixed set of values: flows setting anything else stop validating", name))
+		}
 		if o.Secret != n.Secret {
 			// x-shift-secret drives the studio's secret picker AND signals
 			// that a value must not be typed inline. Losing it is how a
@@ -240,6 +263,10 @@ type field struct {
 	Type     string
 	Required bool
 	Secret   bool
+	// Enum is the field's allowed values, if it constrains them. An enum is
+	// part of the contract, not decoration: a value that used to validate and
+	// no longer does breaks every flow that set it.
+	Enum []string
 }
 
 // fieldsOf flattens an object schema to dotted paths. Nesting is walked
@@ -265,6 +292,7 @@ type objectSchema struct {
 	Required   []string                   `json:"required"`
 	Secret     bool                       `json:"x-shift-secret"`
 	Items      json.RawMessage            `json:"items"`
+	Enum       []any                      `json:"enum"`
 }
 
 func walk(prefix string, s objectSchema, out map[string]field) {
@@ -283,9 +311,26 @@ func walk(prefix string, s objectSchema, out map[string]field) {
 			Type:     child.Type,
 			Required: slices.Contains(s.Required, name),
 			Secret:   child.Secret,
+			Enum:     enumValues(child.Enum),
 		}
 		if child.Type == "object" && child.Properties != nil {
 			walk(path+".", child, out)
 		}
 	}
+}
+
+// enumValues renders a schema enum as comparable strings. Non-string members
+// (a numeric or boolean enum) are formatted rather than skipped: leaving them
+// out would make narrowing such an enum invisible, which is the failure this
+// comparison exists to catch.
+func enumValues(vs []any) []string {
+	if len(vs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(vs))
+	for _, v := range vs {
+		out = append(out, fmt.Sprint(v))
+	}
+	slices.Sort(out)
+	return out
 }

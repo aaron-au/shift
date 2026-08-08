@@ -171,8 +171,30 @@ for which topologies it currently supports (issue #59).
   and is sanitized on write (documented divergence).
 - `csvf`: `encoding/csv` in `ReuseRecord` mode + per-column type hints
   (int/float/bool; empty typed cells → null).
+- `xmlf`: streaming reader over `encoding/xml`'s token stream (at most one
+  record's subtree resident), plus a writer that is its **exact inverse** —
+  attributes back to attributes, `#text` back to character data, a list back
+  to the repeated element that produced it, so a document round-trips.
+  Namespace prefixes deliberately do NOT survive: the reader strips them, so
+  inventing one on the way out would be a guess.
+- `edi`: X12 and EDIFACT, one record per **segment**
+  (`{tag, elements:[[components]]}`). Structure, not semantics — no envelope
+  grouping, no transaction-set validation. Delimiters are discovered from the
+  interchange (X12's fixed-width ISA header, EDIFACT's optional UNA), never
+  configured, because a configured separator disagrees with the file the moment
+  a partner changes theirs. Every element is always a list of components, so a
+  composite arriving where a partner previously sent a scalar does not change
+  the shape downstream. Read-only.
 - Writers stream; the NDJSON writer has an escape fast path and matches
   encoding/json's float formatting choices.
+
+**Reaching a flow.** A format in `engine/format` is invisible until a connector
+offers it. `connectors/internal/fileformat` is the single registry the
+file-shaped connectors (fs, sftp, ftp, s3, azureblob) delegate to for the
+enum, validation, and reader/writer construction — so adding a format is one
+edit rather than one per connector, and an unknown format is an error rather
+than a silent fall-through to NDJSON. `xmlf` shipped without that wiring and
+was unusable from any node until it was added.
 
 ## The proof harness (`engine/cmd/shift-bench`)
 

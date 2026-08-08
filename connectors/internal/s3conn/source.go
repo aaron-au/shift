@@ -3,18 +3,11 @@ package s3conn
 import (
 	"context"
 
-	"github.com/aaron-au/shift/engine/format/csvf"
-	"github.com/aaron-au/shift/engine/format/ndjson"
+	"github.com/aaron-au/shift/connectors/internal/fileformat"
 	"github.com/aaron-au/shift/engine/record"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
-
-// recordReader is satisfied by both the ndjson and csvf readers: emit batches
-// until io.EOF. The batch is valid only until the next Next (reused).
-type recordReader interface {
-	Next(ctx context.Context) (*record.Batch, error)
-}
 
 // getSource streams a single object via GetObject, parsing the body into record
 // batches with the configured format. The body is never buffered whole — the
@@ -22,7 +15,7 @@ type recordReader interface {
 type getSource struct {
 	cfg    config
 	body   interface{ Close() error }
-	reader recordReader
+	reader fileformat.Reader
 }
 
 func (s *getSource) Open(ctx context.Context, cfg []byte) error {
@@ -44,12 +37,11 @@ func (s *getSource) Open(ctx context.Context, cfg []byte) error {
 		return err
 	}
 	s.body = out.Body
-	switch s.cfg.Format {
-	case "csv":
-		s.reader = csvf.NewReader(out.Body, csvf.ReaderOptions{})
-	default:
-		s.reader = ndjson.NewReader(out.Body, ndjson.ReaderOptions{})
+	rd, err := fileformat.NewReader(s.cfg.Format, out.Body, fileformat.Options{RecordElement: s.cfg.RecordElement})
+	if err != nil {
+		return err
 	}
+	s.reader = rd
 	return nil
 }
 

@@ -5,18 +5,11 @@ import (
 	"errors"
 	"io"
 
-	"github.com/aaron-au/shift/engine/format/csvf"
-	"github.com/aaron-au/shift/engine/format/ndjson"
+	"github.com/aaron-au/shift/connectors/internal/fileformat"
 	"github.com/aaron-au/shift/engine/record"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
-
-// recordWriter is satisfied by both the ndjson and csvf writers.
-type recordWriter interface {
-	Write(ctx context.Context, b *record.Batch) error
-	Close() error
-}
 
 // putSink uploads the pipeline's records to a single object via PutObject,
 // encoded with the configured format. To avoid buffering the whole payload in
@@ -28,7 +21,7 @@ type putSink struct {
 	cancel context.CancelFunc
 	pw     *io.PipeWriter
 	pr     *io.PipeReader
-	w      recordWriter
+	w      fileformat.Writer
 	done   chan error // receives the PutObject result once the body is consumed
 }
 
@@ -49,12 +42,11 @@ func (s *putSink) Open(_ context.Context, cfg []byte) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	pr, pw := io.Pipe()
 	s.cancel, s.pr, s.pw = cancel, pr, pw
-	switch s.cfg.Format {
-	case "csv":
-		s.w = csvf.NewWriter(pw, csvf.WriterOptions{})
-	default:
-		s.w = ndjson.NewWriter(pw)
+	wr, err := fileformat.NewWriter(s.cfg.Format, pw, fileformat.Options{RecordElement: s.cfg.RecordElement})
+	if err != nil {
+		return err
 	}
+	s.w = wr
 
 	s.done = make(chan error, 1)
 	go func() {

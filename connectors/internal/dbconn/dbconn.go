@@ -19,6 +19,7 @@ package dbconn
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -36,7 +37,7 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "db",
-		Version: "0.1.0",
+		Version: "0.2.0",
 		Meta: &sdk.ConnectorMeta{
 			Description: "PostgreSQL: query rows (SELECT → records), upsert records (INSERT … ON CONFLICT DO UPDATE), or exec a non-returning statement. Parameterized SQL only; network-guarded.",
 			Category:    "database",
@@ -49,6 +50,10 @@ func Connector() sdk.Connector {
 		Sources: map[string]func() sdk.SourceAction{
 			"query": func() sdk.SourceAction { return &querySource{} },
 			"exec":  func() sdk.SourceAction { return &execSource{} },
+			// Incremental read (ADR-0037): re-runs from the watermark the last
+			// run reached, so a scheduled sync moves forward instead of
+			// re-reading the table every fire.
+			"sync": func() sdk.SourceAction { return &syncSource{} },
 		},
 		Sinks: map[string]func() sdk.SinkAction{
 			"upsert": func() sdk.SinkAction { return &upsertSink{} },
@@ -56,6 +61,7 @@ func Connector() sdk.Connector {
 		Schemas: map[string][]byte{
 			"query":  []byte(querySchema),
 			"exec":   []byte(execSchema),
+			"sync":   []byte(syncSchema),
 			"upsert": []byte(upsertSchema),
 		},
 	}
@@ -81,6 +87,13 @@ var (
   "required":["query"],"properties":{` + connProps + `,
     "query": {"type": "string", "title": "SQL query", "description": "A SELECT statement; each row becomes a record. Use $1,$2,... for parameters."},
     "params": {"type": "array", "title": "Parameters", "description": "Positional values bound to $1,$2,... (parameterized, never concatenated)", "items": {}}
+  }}`
+
+	syncSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"DB sync",
+  "required":["query","cursor_column"],"properties":{` + connProps + `,
+    "query": {"type": "string", "title": "SQL query", "description": "A SELECT that references the cursor as $1 and ORDERs BY the cursor column ascending, e.g. SELECT * FROM orders WHERE updated_at >= $1 ORDER BY updated_at. Use >= with an idempotent sink so rows sharing a watermark are not lost."},
+    "cursor_column": {"type": "string", "title": "Cursor column", "description": "The monotonic column whose highest delivered value becomes the next run's starting point. Must be selected by the query."},
+    "cursor_initial": {"title": "Initial cursor", "description": "Where the FIRST run starts (e.g. \"1970-01-01T00:00:00Z\" or 0). Ignored once a cursor has been stored."}
   }}`
 
 	execSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"DB exec",
@@ -110,10 +123,14 @@ type config struct {
 	AllowLocal     bool   `json:"allow_local"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
 
-	// query / exec
+	// query / exec / sync
 	Query     string `json:"query"`
 	Statement string `json:"statement"`
 	Params    []any  `json:"params"`
+
+	// sync (incremental read)
+	CursorColumn  string          `json:"cursor_column,omitempty"`
+	CursorInitial json.RawMessage `json:"cursor_initial,omitempty"`
 
 	// upsert
 	Table           string   `json:"table"`

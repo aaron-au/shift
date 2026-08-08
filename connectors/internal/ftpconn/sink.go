@@ -5,16 +5,9 @@ import (
 	"errors"
 	"io"
 
-	"github.com/aaron-au/shift/engine/format/csvf"
-	"github.com/aaron-au/shift/engine/format/ndjson"
+	"github.com/aaron-au/shift/connectors/internal/fileformat"
 	"github.com/aaron-au/shift/engine/record"
 )
-
-// recordWriter is satisfied by both the ndjson and csvf writers.
-type recordWriter interface {
-	Write(ctx context.Context, b *record.Batch) error
-	Close() error
-}
 
 // putSink writes records to a remote file via the configured format. FTP's Stor
 // takes a single io.Reader and pulls from it until EOF, so the sink bridges the
@@ -29,7 +22,7 @@ type putSink struct {
 	conn    ftpConn
 	closer  func() error
 	pw      *io.PipeWriter
-	w       recordWriter
+	w       fileformat.Writer
 	tmpPath string
 	storErr chan error
 }
@@ -50,12 +43,11 @@ func (s *putSink) Open(ctx context.Context, config []byte) error {
 
 	pr, pw := io.Pipe()
 	s.pw = pw
-	switch s.cfg.Format {
-	case "csv":
-		s.w = csvf.NewWriter(pw, csvf.WriterOptions{})
-	default:
-		s.w = ndjson.NewWriter(pw)
+	wr, err := fileformat.NewWriter(s.cfg.Format, pw, fileformat.Options{RecordElement: s.cfg.RecordElement})
+	if err != nil {
+		return err
 	}
+	s.w = wr
 	s.storErr = make(chan error, 1)
 	go func() {
 		err := conn.Stor(s.tmpPath, pr)

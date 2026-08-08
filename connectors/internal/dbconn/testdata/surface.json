@@ -1,10 +1,10 @@
 {
   "_note": "Recorded connector action surface — the LAST RELEASED shape. The compatibility gate (ADR-0047 §8) diffs the current build against this and refuses a declared compat class the diff cannot support. Regenerate deliberately with SHIFT_UPDATE_SURFACE=1 and review the diff; it is the only record of what was shipped.",
   "name": "db",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "descriptor": {
     "name": "db",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "actions": [
       {
         "action": "upsert",
@@ -247,6 +247,88 @@
               "title": "Parameters",
               "description": "Positional values bound to $1,$2,... (parameterized, never concatenated)",
               "items": {}
+            }
+          }
+        }
+      },
+      {
+        "action": "sync",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "DB sync",
+          "required": [
+            "query",
+            "cursor_column"
+          ],
+          "properties": {
+            "dsn": {
+              "type": "string",
+              "title": "DSN",
+              "description": "Full connection string (postgres://user:pass@host:port/db?sslmode=...). Overrides the discrete fields below.",
+              "x-shift-secret": true
+            },
+            "host": {
+              "type": "string",
+              "title": "Host",
+              "description": "Database host (used when dsn is empty)"
+            },
+            "port": {
+              "type": "integer",
+              "title": "Port",
+              "default": 5432
+            },
+            "database": {
+              "type": "string",
+              "title": "Database"
+            },
+            "user": {
+              "type": "string",
+              "title": "Username"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "sslmode": {
+              "type": "string",
+              "title": "SSL mode",
+              "enum": [
+                "",
+                "disable",
+                "allow",
+                "prefer",
+                "require",
+                "verify-ca",
+                "verify-full"
+              ],
+              "default": "prefer"
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Connect timeout (seconds)",
+              "default": 30
+            },
+            "query": {
+              "type": "string",
+              "title": "SQL query",
+              "description": "A SELECT that references the cursor as $1 and ORDERs BY the cursor column ascending, e.g. SELECT * FROM orders WHERE updated_at \u003e= $1 ORDER BY updated_at. Use \u003e= with an idempotent sink so rows sharing a watermark are not lost."
+            },
+            "cursor_column": {
+              "type": "string",
+              "title": "Cursor column",
+              "description": "The monotonic column whose highest delivered value becomes the next run's starting point. Must be selected by the query."
+            },
+            "cursor_initial": {
+              "title": "Initial cursor",
+              "description": "Where the FIRST run starts (e.g. \"1970-01-01T00:00:00Z\" or 0). Ignored once a cursor has been stored."
             }
           }
         }

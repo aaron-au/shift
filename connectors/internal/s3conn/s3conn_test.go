@@ -359,7 +359,7 @@ func TestConfigValidation(t *testing.T) {
 		}
 	})
 	t.Run("bad format", func(t *testing.T) {
-		c := config{Key: "k", Format: "xml"}
+		c := config{Key: "k", Format: "parquet"}
 		if err := c.requireKeyFormat(); err == nil {
 			t.Fatal("expected unsupported-format error")
 		}

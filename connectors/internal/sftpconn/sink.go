@@ -4,17 +4,10 @@ import (
 	"context"
 	"errors"
 
-	"github.com/aaron-au/shift/engine/format/csvf"
-	"github.com/aaron-au/shift/engine/format/ndjson"
+	"github.com/aaron-au/shift/connectors/internal/fileformat"
 	"github.com/aaron-au/shift/engine/record"
 	"github.com/pkg/sftp"
 )
-
-// recordWriter is satisfied by both the ndjson and csvf writers.
-type recordWriter interface {
-	Write(ctx context.Context, b *record.Batch) error
-	Close() error
-}
 
 // putSink writes records to a remote file via the configured format. It writes
 // to a temp path and atomically renames on Close, so a partial/failed transfer
@@ -24,7 +17,7 @@ type putSink struct {
 	sc      *sftp.Client
 	closer  func() error
 	f       *sftp.File
-	w       recordWriter
+	w       fileformat.Writer
 	tmpPath string
 }
 
@@ -47,12 +40,11 @@ func (s *putSink) Open(ctx context.Context, config []byte) error {
 		return err
 	}
 	s.f = f
-	switch s.cfg.Format {
-	case "csv":
-		s.w = csvf.NewWriter(f, csvf.WriterOptions{})
-	default:
-		s.w = ndjson.NewWriter(f)
+	wr, err := fileformat.NewWriter(s.cfg.Format, f, fileformat.Options{RecordElement: s.cfg.RecordElement})
+	if err != nil {
+		return err
 	}
+	s.w = wr
 	return nil
 }
 

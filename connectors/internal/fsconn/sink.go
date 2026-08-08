@@ -6,16 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/aaron-au/shift/engine/format/csvf"
-	"github.com/aaron-au/shift/engine/format/ndjson"
+	"github.com/aaron-au/shift/connectors/internal/fileformat"
 	"github.com/aaron-au/shift/engine/record"
 )
-
-// recordWriter is satisfied by both the ndjson and csvf writers.
-type recordWriter interface {
-	Write(ctx context.Context, b *record.Batch) error
-	Close() error
-}
 
 // putSink writes records to a file via the configured format. It writes to a
 // temp file in the destination directory and atomically os.Renames it into
@@ -28,7 +21,7 @@ type putSink struct {
 	dest    string
 	tmpPath string
 	f       *os.File
-	w       recordWriter
+	w       fileformat.Writer
 }
 
 func (s *putSink) Open(_ context.Context, config []byte) error {
@@ -53,12 +46,11 @@ func (s *putSink) Open(_ context.Context, config []byte) error {
 	}
 	s.f = f
 	s.tmpPath = f.Name()
-	switch s.cfg.Format {
-	case "csv":
-		s.w = csvf.NewWriter(f, csvf.WriterOptions{})
-	default:
-		s.w = ndjson.NewWriter(f)
+	wr, err := fileformat.NewWriter(s.cfg.Format, f, fileformat.Options{RecordElement: s.cfg.RecordElement})
+	if err != nil {
+		return err
 	}
+	s.w = wr
 	return nil
 }
 

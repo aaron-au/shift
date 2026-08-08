@@ -30,8 +30,34 @@ shift/
 Record model, pull-based batch pipeline, pooled buffers, spill-over-watermark, JSON/NDJSON + CSV readers/writers, core transforms, `shift-bench` harness with buffered baseline.
 **Exit met** (see `docs/bench-M1.md`): 1 GiB transformed at **24 MiB peak RSS** (bar was 100 MB), zero disk below watermark; spilling aggregate holds 1M groups at 164 MiB with a 337 MiB single-file spill; **80× less memory and 2× faster** than the buffered baseline.
 
-### M1.5 — Format depth
-XML streaming reader; EDI segment reader (X12/EDIFACT — deep domain, timeboxed spike first); DB cursor source with hub-persisted offsets.
+### M1.5 — Format depth ✅ 2026-08-08 (semantic EDI layer deferred)
+- **XML ✅** — streaming reader (`engine/format/xmlf`) plus a WRITER that is its
+  exact inverse, so a document round-trips: attributes back to attributes,
+  `#text` back to character data, a list back to the repeated element that
+  produced it. Namespace prefixes deliberately do not survive — the reader
+  strips them, so inventing one on the way out would be a guess.
+- **EDI ✅ (structural)** — `engine/format/edi` streams X12 and EDIFACT, one
+  record per SEGMENT, delimiters discovered from the interchange itself (X12's
+  fixed-width ISA header, EDIFACT's optional UNA) rather than configured.
+  Every element is always a list of components. Read-only: composing an
+  interchange needs control numbers and segment counts, which is a semantic
+  layer rather than a serialiser. **Deferred:** envelope grouping
+  (ISA/GS/ST → document) and transaction-set validation against an
+  implementation guide — deep, partner-and-version-specific, and buildable on
+  top of the segment stream when a real trading relationship needs it.
+- **DB cursor source ✅** — `db sync`: incremental read from a watermark the
+  hub persists between runs (ADR-0037), so a scheduled sync moves forward
+  instead of re-reading the table. The query must ORDER BY the cursor column
+  ascending and select it; both are enforced, because each fails silently
+  otherwise. An empty run leaves the stored cursor untouched. Not log-based
+  CDC — that captures deletes but needs replication privileges a read-only
+  integration user should not hold.
+- **Wiring, not just formats.** `xmlf` had existed for some time attached to
+  NOTHING: no connector could select it, so "XML is first-class" was true of
+  the engine and false of the product. The format set now lives in one place
+  (`connectors/internal/fileformat`) that fs/sftp/ftp/s3/azureblob delegate to,
+  so adding a format is one edit instead of twenty, and an unknown format is an
+  error rather than a silent fall-through to NDJSON.
 
 ### M2 — Connector runtime + SDK (ADR-0001, ADR-0007) ✅ 2026-07-19
 gRPC connector protocol over UDS (opaque record-batch frames), handshake/versioning, spawn/health lifecycle, Go SDK + sdktest kit. Connectors: `gen` (bench/test) and `http` (streaming GET source, NDJSON POST sink, SSRF guard).

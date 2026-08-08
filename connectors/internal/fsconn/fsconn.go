@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/aaron-au/shift/connectors/internal/fileformat"
 	"github.com/aaron-au/shift/sdk"
 )
 
@@ -28,7 +29,7 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "fs",
-		Version: "0.1.0",
+		Version: "0.3.0",
 		Meta: &sdk.ConnectorMeta{
 			Description: "Local/mounted filesystem: pick a verb (get/put/list/delete/mkdir/rmdir) and a path. All paths are jailed within a configured root.",
 			Category:    "file-transfer",
@@ -70,7 +71,8 @@ var (
 	fileConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"FS file",
   "required":["root","path"],"properties":{` + rootProp + `,
     "path": {"type": "string", "title": "Path", "description": "File path, relative to root (an absolute path must still resolve within root)"},
-    "format": {"type": "string", "title": "Format", "enum": ["ndjson", "csv"], "default": "ndjson"}
+    "format": ` + fileformat.SchemaEnum() + `,
+    "record_element": ` + fileformat.RecordElementProp + `
   }}`
 
 	listConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"FS list",
@@ -93,10 +95,13 @@ var (
 
 // config is the shared source/sink configuration.
 type config struct {
-	Root      string `json:"root"`
-	Path      string `json:"path"`
-	Format    string `json:"format"`
-	Recursive bool   `json:"recursive"`
+	Root   string `json:"root"`
+	Path   string `json:"path"`
+	Format string `json:"format"`
+	// RecordElement names the XML element that delimits one record. Ignored by
+	// the other formats, which have no equivalent notion.
+	RecordElement string `json:"record_element,omitempty"`
+	Recursive     bool   `json:"recursive"`
 }
 
 // parseConfig unmarshals and validates the connection-level fields (root).
@@ -165,18 +170,13 @@ func (c *config) validateRoot() error {
 }
 
 // requireFileFormat validates the get/put config: a file path and a supported
-// record format (defaulting to ndjson).
+// record format (defaulting to ndjson). The format set itself lives in
+// fileformat, so this connector cannot drift from the others.
 func (c *config) requireFileFormat() error {
 	if c.Path == "" {
 		return errors.New("fs: path is required")
 	}
-	if c.Format == "" {
-		c.Format = "ndjson"
-	}
-	if c.Format != "ndjson" && c.Format != "csv" {
-		return fmt.Errorf("fs: unsupported format %q (want ndjson or csv)", c.Format)
-	}
-	return nil
+	return fileformat.Validate("fs", &c.Format)
 }
 
 // requireDir validates the list config: a directory path.
