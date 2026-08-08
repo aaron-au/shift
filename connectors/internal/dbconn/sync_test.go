@@ -8,6 +8,8 @@ import (
 	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
+
+	"github.com/aaron-au/shift/engine/record"
 )
 
 // syncOn builds a sync source over a mocked result set.
@@ -102,13 +104,14 @@ func TestAQueryMustSelectItsCursorColumn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = r.Close() }()
+
 	s := &syncSource{cfg: config{CursorColumn: "updated_at"}}
 	if err := s.start(r); err == nil {
 		t.Fatal("a query that does not select the cursor column was accepted")
 	} else if !strings.Contains(err.Error(), "updated_at") {
 		t.Errorf("the error does not name the missing column: %v", err)
 	}
-	_ = r.Close()
 }
 
 // Resume binds the previous watermark; a cursor for a different column or a
@@ -173,7 +176,7 @@ func TestSyncRefusesAQueryThatCannotCheckpointSafely(t *testing.T) {
 		"extra placeholder": {
 			query: "SELECT * FROM t WHERE updated_at >= $1 AND x = $2 ORDER BY updated_at", want: "exactly one"},
 		"extra params": {
-			query: "SELECT * FROM t WHERE updated_at >= $1 ORDER BY updated_at",
+			query:  "SELECT * FROM t WHERE updated_at >= $1 ORDER BY updated_at",
 			params: []any{1}, want: "cursor itself"},
 	}
 	for name, tc := range cases {
@@ -245,5 +248,76 @@ func TestAWatermarkMustBeAnOrderedScalar(t *testing.T) {
 
 	if _, err := s.Next(context.Background()); err == nil {
 		t.Fatal("a NULL watermark was accepted")
+	}
+}
+
+// Open must reject a bad config BEFORE it dials. Validating after connecting
+// would mean a misconfigured node opens a database session, and on a
+// scheduled flow that is a connection attempt per fire against a server that
+// can do nothing useful with it.
+func TestOpenValidatesBeforeItDials(t *testing.T) {
+	cases := map[string]string{
+		"not json":         `{`,
+		"no connection":    `{"query":"SELECT a FROM t WHERE a >= $1 ORDER BY a","cursor_column":"a"}`,
+		"no cursor column": `{"dsn":"postgres://u@h/db","query":"SELECT a FROM t WHERE a >= $1 ORDER BY a"}`,
+		"unsafe query":     `{"dsn":"postgres://u@h/db","query":"SELECT a FROM t","cursor_column":"a"}`,
+		"no initial cursor": `{"dsn":"postgres://u@h/db","cursor_column":"a",` +
+			`"query":"SELECT a FROM t WHERE a >= $1 ORDER BY a"}`,
+	}
+	for name, cfg := range cases {
+		t.Run(name, func(t *testing.T) {
+			s := &syncSource{}
+			if err := s.Open(t.Context(), []byte(cfg)); err == nil {
+				t.Fatal("opened with a config that cannot work")
+			}
+		})
+	}
+}
+
+// Close must be safe on a source that never opened — the runner closes
+// whatever it built, including a source whose Open failed.
+func TestClosingAnUnopenedSyncIsSafe(t *testing.T) {
+	if err := (&syncSource{}).Close(); err != nil {
+		t.Fatalf("closing an unopened source: %v", err)
+	}
+}
+
+// Every ordered scalar kind must render into the cursor. A float or string
+// watermark that silently failed would leave the cursor stuck at its initial
+// value and re-deliver the whole table on every run.
+func TestWatermarksOfEveryOrderedKind(t *testing.T) {
+	b := record.NewBatch()
+	bld := b.Builder()
+	bld.BeginMap()
+	bld.KeyLiteral("i")
+	bld.Int(7)
+	bld.KeyLiteral("f")
+	bld.Float(1.5)
+	bld.KeyLiteral("s")
+	bld.StringLiteral("2026-08-01T00:00:00Z")
+	bld.KeyLiteral("b")
+	bld.Bool(true)
+	bld.EndMap()
+	b.Append(bld.Finish())
+	rec := b.Record(0)
+
+	for _, tc := range []struct{ field, want string }{
+		{"i", "7"}, {"f", "1.5"}, {"s", `"2026-08-01T00:00:00Z"`},
+	} {
+		v, _ := rec.Field(tc.field)
+		got, err := watermarkJSON(v)
+		if err != nil {
+			t.Errorf("%s: %v", tc.field, err)
+			continue
+		}
+		if string(got) != tc.want {
+			t.Errorf("%s rendered as %s, want %s", tc.field, got, tc.want)
+		}
+	}
+
+	// A boolean cannot order rows.
+	v, _ := rec.Field("b")
+	if _, err := watermarkJSON(v); err == nil {
+		t.Error("a boolean was accepted as a watermark")
 	}
 }

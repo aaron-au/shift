@@ -3,6 +3,7 @@ package azureblobconn
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -528,5 +529,49 @@ func TestConnectorDescriptor(t *testing.T) {
 		if !strings.Contains(string(sc), "x-shift-secret") {
 			t.Fatalf("schema %q missing x-shift-secret tag", name)
 		}
+	}
+}
+
+// A connector's declared surface is what the hub signs and the studio renders
+// a form from. A schema that is not valid JSON, or an action with no schema,
+// produces a node an operator cannot configure — and the failure appears at
+// deploy time, far from the change that caused it.
+func TestTheDeclaredSurfaceIsUsable(t *testing.T) {
+	c := Connector()
+	if c.Name == "" || c.Version == "" {
+		t.Fatal("the connector declares no name or version")
+	}
+	if len(c.Sources)+len(c.Sinks) == 0 {
+		t.Fatal("the connector declares no actions")
+	}
+	for name := range c.Sources {
+		assertSchema(t, c.Schemas, name)
+	}
+	for name := range c.Sinks {
+		assertSchema(t, c.Schemas, name)
+	}
+	for name := range c.Schemas {
+		_, isSource := c.Sources[name]
+		_, isSink := c.Sinks[name]
+		if !isSource && !isSink {
+			t.Errorf("schema %q describes no action; the studio would render a form for a verb that cannot run", name)
+		}
+	}
+}
+
+func assertSchema(t *testing.T, schemas map[string][]byte, action string) {
+	t.Helper()
+	raw, ok := schemas[action]
+	if !ok {
+		t.Errorf("action %q has no config schema; its node cannot be configured", action)
+		return
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Errorf("action %q has a malformed config schema: %v", action, err)
+		return
+	}
+	if doc["properties"] == nil {
+		t.Errorf("action %q declares a schema with no properties", action)
 	}
 }

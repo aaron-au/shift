@@ -278,7 +278,7 @@ func (r *Reader) readSegment() ([]byte, error) {
 		if r.sep.release != 0 && b == r.sep.release {
 			nb, err := r.br.ReadByte()
 			if err != nil {
-				return nil, fmt.Errorf("edi: the interchange ends with a dangling release character")
+				return nil, errors.New("edi: the interchange ends with a dangling release character")
 			}
 			r.seg = append(r.seg, b, nb)
 			continue

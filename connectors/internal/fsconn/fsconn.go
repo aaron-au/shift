@@ -95,13 +95,13 @@ var (
 
 // config is the shared source/sink configuration.
 type config struct {
-	Root      string `json:"root"`
-	Path      string `json:"path"`
-	Format    string `json:"format"`
+	Root   string `json:"root"`
+	Path   string `json:"path"`
+	Format string `json:"format"`
 	// RecordElement names the XML element that delimits one record. Ignored by
 	// the other formats, which have no equivalent notion.
 	RecordElement string `json:"record_element,omitempty"`
-	Recursive bool   `json:"recursive"`
+	Recursive     bool   `json:"recursive"`
 }
 
 // parseConfig unmarshals and validates the connection-level fields (root).

@@ -57,7 +57,9 @@ engine/     Streaming data plane (M1, done — see docs/bench-M1.md for proven n
   record/     hierarchical typed Values in arena-backed Batches; 0-alloc steady state; compiled Paths
   stream/     pull pipelines: Project/Filter/Coerce/Flatten + spillable Aggregate; per-op metrics
   format/     ndjson (hand-rolled tokenizer, differential-tested vs encoding/json; + JSONReader:
-              streams a standard JSON array/object/value stream, reusing the ndjson value parser), csvf
+              streams a standard JSON array/object/value stream, reusing the ndjson value parser), csvf,
+              xmlf (streaming reader + inverse writer, so XML round-trips), edi (X12/EDIFACT, one record
+              per SEGMENT, delimiters discovered from the interchange; structure not semantics, read-only)
   spill/      single-file unlinked scratch store + compact binary Value codec
   mem/        watermark Governor (TryReserve fail == spill signal)
   cmd/shift-bench/  the proof harness; run with -max-rss to enforce exit criteria

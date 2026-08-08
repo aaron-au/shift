@@ -2,6 +2,8 @@ package xmlf
 
 import (
 	"bytes"
+	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -239,5 +241,201 @@ func TestNestingIsBounded(t *testing.T) {
 	w := NewWriter(&buf, WriterOptions{RecordElement: "row", MaxDepth: 4})
 	if err := w.Write(t.Context(), b); err == nil {
 		t.Fatal("a record nested past MaxDepth was written")
+	}
+}
+
+// XML carries no types, so every scalar has to render to text deliberately.
+// A wrong rendering here is silent: the document is well-formed and the value
+// is wrong.
+func TestEveryScalarKindRendersAsText(t *testing.T) {
+	b := record.NewBatch()
+	bld := b.Builder()
+	bld.BeginMap()
+	bld.KeyLiteral("i")
+	bld.Int(-42)
+	bld.KeyLiteral("f")
+	bld.Float(10.5)
+	bld.KeyLiteral("t")
+	bld.Bool(true)
+	bld.KeyLiteral("z")
+	bld.Null()
+	bld.EndMap()
+	b.Append(bld.Finish())
+
+	var buf bytes.Buffer
+	w := NewWriter(&buf, WriterOptions{RecordElement: "row"})
+	if err := w.Write(t.Context(), b); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	out := buf.String()
+	for _, want := range []string{"<i>-42</i>", "<f>10.5</f>", "<t>true</t>", "<z></z>"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %s in:\n%s", want, out)
+		}
+	}
+	// An empty element closes long-form, so a diff of input against output
+	// matches what the reader maps back to "".
+	if strings.Contains(out, "<z/>") {
+		t.Error("an empty value was written self-closing; the reader maps both to \"\" but the long form round-trips textually")
+	}
+}
+
+// Infinity and NaN have no XML notation. Writing "NaN" would read back as the
+// STRING "NaN", turning a broken number into plausible text.
+func TestNonFiniteNumbersAreRefused(t *testing.T) {
+	for name, f := range map[string]float64{
+		"infinity":     math.Inf(1),
+		"negative inf": math.Inf(-1),
+		"NaN":          math.NaN(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := record.NewBatch()
+			bld := b.Builder()
+			bld.BeginMap()
+			bld.KeyLiteral("v")
+			bld.Float(f)
+			bld.EndMap()
+			b.Append(bld.Finish())
+
+			w := NewWriter(&bytes.Buffer{}, WriterOptions{RecordElement: "row"})
+			if err := w.Write(t.Context(), b); err == nil {
+				t.Fatalf("%v was written as if it had an XML representation", f)
+			}
+		})
+	}
+}
+
+// A container where a scalar belongs — an attribute or #text holding a map —
+// cannot be rendered, and guessing would produce a document that parses and
+// means something else.
+func TestAContainerWhereAScalarBelongsIsRefused(t *testing.T) {
+	b := record.NewBatch()
+	bld := b.Builder()
+	bld.BeginMap()
+	bld.KeyLiteral("@attr")
+	bld.BeginList()
+	bld.StringLiteral("a")
+	bld.EndList()
+	bld.EndMap()
+	b.Append(bld.Finish())
+
+	w := NewWriter(&bytes.Buffer{}, WriterOptions{RecordElement: "row"})
+	if err := w.Write(t.Context(), b); err == nil {
+		t.Fatal("a list was written as an attribute value")
+	}
+}
+
+// Indentation is for humans; the reader ignores inter-element whitespace, so
+// the records must survive it unchanged.
+func TestIndentingDoesNotChangeTheRecords(t *testing.T) {
+	const doc = `<data><row id="1"><name>ada</name><tag>a</tag><tag>b</tag></row></data>`
+	r := NewReader(strings.NewReader(doc), ReaderOptions{RecordElement: "row"})
+	b, err := r.Next(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := dump(t, b.Record(0))
+
+	var plain, pretty bytes.Buffer
+	for _, tc := range []struct {
+		buf    *bytes.Buffer
+		indent string
+	}{{&plain, ""}, {&pretty, "\t"}} {
+		w := NewWriter(tc.buf, WriterOptions{RecordElement: "row", Indent: tc.indent})
+		if err := w.Write(t.Context(), b); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = r.Close()
+
+	if !strings.Contains(pretty.String(), "\n\t") {
+		t.Error("Indent produced no indentation")
+	}
+	for name, out := range map[string]string{"plain": plain.String(), "pretty": pretty.String()} {
+		got := readAll(t, out, "row")
+		if len(got) != 1 || got[0] != before {
+			t.Errorf("%s output did not round-trip: %v", name, got)
+		}
+	}
+}
+
+// A failing destination must surface, and must keep failing rather than
+// reporting success on Close once the document is already truncated.
+func TestAWriteFailureIsStickyNotSwallowed(t *testing.T) {
+	b := record.NewBatch()
+	bld := b.Builder()
+	bld.BeginMap()
+	bld.KeyLiteral("a")
+	bld.StringLiteral(strings.Repeat("x", 128<<10)) // past bufio's buffer, so it flushes
+	bld.EndMap()
+	b.Append(bld.Finish())
+
+	w := NewWriter(errWriter{}, WriterOptions{RecordElement: "row"})
+	if err := w.Write(t.Context(), b); err == nil {
+		t.Fatal("a failing destination reported success")
+	}
+	if err := w.Close(); err == nil {
+		t.Fatal("Close reported success after the document was already truncated")
+	}
+}
+
+type errWriter struct{}
+
+func (errWriter) Write([]byte) (int, error) { return 0, errors.New("device full") }
+
+// failAfter fails once n bytes have been accepted, so a failure can be placed
+// at any point in the document.
+type failAfter struct {
+	n int
+}
+
+func (f *failAfter) Write(p []byte) (int, error) {
+	if f.n <= 0 {
+		return 0, errors.New("device full")
+	}
+	if len(p) > f.n {
+		w := f.n
+		f.n = 0
+		return w, errors.New("device full")
+	}
+	f.n -= len(p)
+	return len(p), nil
+}
+
+// A destination that fails PART WAY through must surface the error wherever it
+// happens — prolog, attribute, text, or the closing root. The failure mode
+// this guards against is a writer that swallows an I/O error and reports a
+// clean Close, leaving a truncated file that every later reader treats as
+// authoritative.
+func TestAFailureAtAnyPointInTheDocumentSurfaces(t *testing.T) {
+	build := func() *record.Batch {
+		b := record.NewBatch()
+		bld := b.Builder()
+		bld.BeginMap()
+		bld.KeyLiteral("@id")
+		bld.StringLiteral("1")
+		bld.KeyLiteral("#text")
+		bld.StringLiteral("a & b")
+		bld.EndMap()
+		b.Append(bld.Finish())
+		return b
+	}
+
+	// Enough points to land inside the prolog, the open tag, the attribute,
+	// the escaped text and the trailer.
+	for _, n := range []int{0, 1, 8, 20, 40, 48, 56} {
+		w := NewWriter(&failAfter{n: n}, WriterOptions{RecordElement: "row", Indent: "  "})
+		werr := w.Write(t.Context(), build())
+		cerr := w.Close()
+		if werr == nil && cerr == nil {
+			t.Errorf("failing after %d bytes produced a clean write AND a clean close; the file is truncated and nothing says so", n)
+		}
 	}
 }
