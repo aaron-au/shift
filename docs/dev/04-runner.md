@@ -151,10 +151,22 @@ fan-out:  source → ops → (tee|router) → { ops → sink } × N
 fan-in:   { source → ops } × N → merge(concat|join) → ops → sink
 ```
 
-Graphs that nest or mix them — more than one fan-out, or a fan-out and a
-fan-in together — are valid at the hub and drawable on the canvas but **not
-yet executable**; they fail with an explicit error rather than mis-running
-(issue #59).
+Those two are the common shapes, not the limit. `dag.go` compiles **any**
+validated DAG: it walks the plan's adjacency into linear segments joined at
+tee/router/merge nodes (ADR-0029 §2), so nested fan-outs and mixed
+fan-out/fan-in graphs run too. `source → tee → enrich → merge` — the
+enrichment shape, and the most common real integration — is the case that
+motivated it.
+
+The join between stages is `stream.Pipe`: a bounded Sink↔Source pair. A
+fan-out branch that runs straight to a sink keeps its real sink and its
+zero-copy path; a branch that feeds a merge or another fan-out ends at a pipe
+instead, and the node downstream reads the other half. Each stage is a
+goroutine, because a merge cannot read until the branch upstream of it is
+running — sequencing them would deadlock on the first full queue. Queue depth
+is flow control inside one task, never a gate between tasks (ADR-0005), and
+closing a pipe's reader releases a blocked writer so a failing stage cannot
+wedge the one feeding it.
 
 **Per-branch idempotency keys (ADR-0029 §5).** A flow with more than one
 side-effecting sink has each sink's injected key derived as

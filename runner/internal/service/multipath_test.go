@@ -170,12 +170,16 @@ func TestFanInJoin(t *testing.T) {
 	}
 }
 
-// TestMultiPathUnsupportedTopology: a graph the runner cannot yet execute
-// (fan-out AND fan-in together) fails honestly, not silently.
-func TestMultiPathUnsupportedTopology(t *testing.T) {
+// A mixed graph — fan-out AND fan-in in the same flow — used to be rejected
+// at run time even though the hub validated it and the studio drew it. That
+// gap between what the canvas accepts and what runs was the defect (#59).
+//
+// source → tee → [a, b] → merge(concat) → sink. The tee duplicates every
+// record to both branches and the merge concatenates them, so two input
+// records become four.
+func TestAMixedFanOutAndFanInFlowRuns(t *testing.T) {
 	svc := newTestService(t, Options{})
 
-	// source → tee → [a→merge, b→merge] → merge → sink  (mixed fan-out+fan-in)
 	in := step("in", "source")
 	in.Connector, in.Action, in.OnSuccess = "@webhook", "ndjson", "t"
 	tee := step("t", "tee")
@@ -190,15 +194,93 @@ func TestMultiPathUnsupportedTopology(t *testing.T) {
 	out.Connector = "@discard"
 	doc := &flow.Document{Name: "mixed", Steps: []flow.Step{in, tee, a, b, m, out}}
 
-	id, err := svc.SubmitWith(doc, SubmitOpts{WebhookBody: []byte(`{"x":1}` + "\n")})
+	id, err := svc.SubmitWith(doc, SubmitOpts{WebhookBody: []byte(`{"x":1}` + "\n" + `{"x":2}` + "\n")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	tk := awaitTerminal(t, svc, id)
-	if tk.State != "failed" {
-		t.Fatalf("state = %s, want failed (unsupported topology)", tk.State)
+	if tk.State != "completed" {
+		t.Fatalf("state = %s: %s", tk.State, tk.Error)
 	}
-	if !strings.Contains(tk.Error, "not yet executable") {
-		t.Fatalf("error = %q, want 'not yet executable'", tk.Error)
+	if tk.SinkConfirmed != 4 {
+		t.Fatalf("sink confirmed %d, want 4 (2 records duplicated by the tee, concatenated by the merge)", tk.SinkConfirmed)
+	}
+}
+
+// The ENRICHMENT shape, which ADR-0029 names as the natural home for
+// request-reply enrichment: one source, teed so that one branch is enriched
+// and the other carries the original, joined back together. This is arguably
+// the most common real integration, and it was the headline casualty of the
+// topology restriction.
+func TestTheEnrichmentShapeRuns(t *testing.T) {
+	svc := newTestService(t, Options{})
+
+	in := step("in", "source")
+	in.Connector, in.Action, in.OnSuccess = "@webhook", "ndjson", "t"
+	tee := step("t", "tee")
+	tee.Branches = []string{"probe", "build"}
+	// The probe side passes through untouched.
+	probe := step("probe", "filter")
+	probe.Path, probe.Cmp, probe.OnComplete = "$.id", "exists", "j"
+	// The build side is the "enrichment": same records, joined back by id.
+	build := step("build", "filter")
+	build.Path, build.Cmp, build.OnComplete = "$.id", "exists", "j"
+	j := step("j", "merge")
+	j.Inputs, j.Mode, j.Build, j.OnSuccess = []string{"probe", "build"}, "join", "build", "out"
+	j.On = &flow.JoinOn{Left: "$.id", Right: "$.id"}
+	j.As, j.JoinType = "match", "inner"
+	out := step("out", "sink")
+	out.Connector, out.Action = "@response", ""
+	doc := &flow.Document{Name: "enrich", Steps: []flow.Step{in, tee, probe, build, j, out}}
+
+	var resp bytes.Buffer
+	id, err := svc.SubmitWith(doc, SubmitOpts{
+		WebhookBody: []byte(`{"id":"A","v":1}` + "\n"),
+		Response:    &resp,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk := awaitTerminal(t, svc, id)
+	if tk.State != "completed" {
+		t.Fatalf("state = %s: %s", tk.State, tk.Error)
+	}
+	if !strings.Contains(resp.String(), `"match":{"id":"A","v":1}`) {
+		t.Fatalf("the teed branch was not joined back:\n%s", resp.String())
+	}
+}
+
+// Two fan-outs in one graph: a tee whose branch tees again. Nesting was the
+// other half of #59, and it is what proves the compiler recurses rather than
+// handling one extra level.
+func TestANestedFanOutRuns(t *testing.T) {
+	svc := newTestService(t, Options{})
+
+	in := step("in", "source")
+	in.Connector, in.Action, in.OnSuccess = "@webhook", "ndjson", "t1"
+	t1 := step("t1", "tee")
+	t1.Branches = []string{"s1", "t2"}
+	s1 := step("s1", "sink")
+	s1.Connector = "@discard"
+	t2 := step("t2", "tee")
+	t2.Branches = []string{"s2", "s3"}
+	s2 := step("s2", "sink")
+	s2.Connector = "@discard"
+	s3 := step("s3", "sink")
+	s3.Connector = "@discard"
+	doc := &flow.Document{Name: "nested", Steps: []flow.Step{in, t1, s1, t2, s2, s3}}
+
+	id, err := svc.SubmitWith(doc, SubmitOpts{WebhookBody: []byte(`{"n":1}` + "\n" + `{"n":2}` + "\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk := awaitTerminal(t, svc, id)
+	if tk.State != "completed" {
+		t.Fatalf("state = %s: %s", tk.State, tk.Error)
+	}
+	// 2 records reach 3 sinks: the outer tee sends to s1 and the inner tee,
+	// which sends to s2 and s3.
+	if tk.SinkConfirmed != 6 {
+		t.Fatalf("sink confirmed %d, want 6 (2 records × 3 terminal sinks)", tk.SinkConfirmed)
 	}
 }
