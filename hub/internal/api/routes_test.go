@@ -312,3 +312,81 @@ func TestARunnerCannotAdministerRoutes(t *testing.T) {
 		t.Fatal("a runner created a route")
 	}
 }
+
+// A runner JOINING the fleet is a roster change, and the gateways have to be
+// told. Without this the new runner polls, proves its identity over mutual
+// TLS, and is refused as "not in roster" until some unrelated edit happens to
+// raise the generation — so a runner joining a quiet fleet never comes into
+// service at all, and the only symptom is a 403 that looks like a
+// misconfiguration.
+func TestRegisteringARunnerRaisesTheGeneration(t *testing.T) {
+	srv := newServer(t)
+
+	var gw map[string]any
+	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways", adminToken,
+		`{"name":"dmz","url":"https://gw.example"}`, &gw); got != http.StatusCreated {
+		t.Fatalf("create gateway = %d", got)
+	}
+	gwID, _ := gw["id"].(string)
+
+	version := func() float64 {
+		t.Helper()
+		var got map[string]any
+		if code := call(t, http.MethodGet, srv.URL+"/api/v1/gateways/"+gwID, adminToken, "", &got); code != http.StatusOK {
+			t.Fatalf("get = %d", code)
+		}
+		v, _ := got["config_version"].(float64)
+		return v
+	}
+
+	start := version()
+	registerRunner(t, srv.URL, "rnr-joining")
+	if version() <= start {
+		t.Fatal("registering a runner did not raise the generation, so no gateway would ever admit it")
+	}
+}
+
+// Decommissioning has to REACH the gateways for the same reason, with the
+// consequence reversed: a revoked runner that stays in every gateway's roster
+// keeps being handed inbound payload to answer.
+func TestDecommissioningARunnerRaisesTheGeneration(t *testing.T) {
+	srv := newServer(t)
+
+	var gw map[string]any
+	if got := call(t, http.MethodPost, srv.URL+"/api/v1/gateways", adminToken,
+		`{"name":"dmz","url":"https://gw.example"}`, &gw); got != http.StatusCreated {
+		t.Fatalf("create gateway = %d", got)
+	}
+	gwID, _ := gw["id"].(string)
+
+	version := func() float64 {
+		t.Helper()
+		var got map[string]any
+		if code := call(t, http.MethodGet, srv.URL+"/api/v1/gateways/"+gwID, adminToken, "", &got); code != http.StatusOK {
+			t.Fatalf("get = %d", code)
+		}
+		v, _ := got["config_version"].(float64)
+		return v
+	}
+
+	registerRunner(t, srv.URL, "rnr-leaving")
+	var list struct {
+		Runners []struct {
+			ID string `json:"id"`
+		} `json:"runners"`
+	}
+	if got := call(t, http.MethodGet, srv.URL+"/api/v1/runners", adminToken, "", &list); got != http.StatusOK {
+		t.Fatalf("list runners = %d", got)
+	}
+	if len(list.Runners) == 0 {
+		t.Fatal("the runner that just registered is not listed")
+	}
+
+	afterJoin := version()
+	if got := call(t, http.MethodDelete, srv.URL+"/api/v1/runners/"+list.Runners[0].ID, adminToken, "", nil); got != http.StatusNoContent {
+		t.Fatalf("delete runner = %d", got)
+	}
+	if version() <= afterJoin {
+		t.Fatal("decommissioning a runner did not raise the generation, so gateways would keep serving it")
+	}
+}

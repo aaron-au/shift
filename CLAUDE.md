@@ -90,10 +90,17 @@ gateway/    gatewayd (ADR-0038, in progress — see docs/dev/09-gateway.md): the
                                       Proven end to end: deploy/k8s runs the gateway under a deny-ALL
                                       -egress NetworkPolicy and it still serves. Benchmarked
                                       (docs/bench-gateway.md): 0.26ms p50 overhead, 26.8k req/s on one
-                                      gateway, 0 errors. Control listener carries a shared secret and
-                                      FAILS CLOSED if bound non-loopback without one (runner
-                                      impersonation = payload interception). Not yet: mTLS control
-                                      listener + identity bundle, hub push side, proxy routes
+                                      gateway, 0 errors. Control listener is mTLS and FAILS CLOSED
+                                      off-loopback without an identity — a shared secret is no longer
+                                      accepted there (runner impersonation = payload interception).
+                                      Hub adoption + config push are BUILT and proven in deploy/k8s
+                                      (hub/internal/{gwsync,gwpush} → gateway /pair,/adopt,/config):
+                                      the gateway holds no routes, roster or certificate of its own.
+                                      A runner pins each gateway's hub-assigned id — hub-issued
+                                      gateway certs carry no SAN, and chain-only would trust every
+                                      runner in the fleet. Not yet: hub-generated install material
+                                      (gateway records + install tokens are still hand-copied),
+                                      retiring the deprecated -identity/-config paths, proxy routes
                                       (ADR-0040 draft).
 runner/     runnerd (M3a+M3b+M4b, done — see docs/dev/04-runner.md): flow docs → engine pipelines,
   internal/{flow,connpool,task,service,api}   resource-governed admission (ADR-0005), connector pool,

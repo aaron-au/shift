@@ -303,6 +303,11 @@ being applied.
 
 ## Not built yet
 
+- **Hub-generated install material.** Registering each gateway and delivering
+  its one-time install token is still done by hand (`deploy/k8s/README.md`
+  stage 2). The hub holds every fact needed to emit that step — the gateway
+  record, the token, the manifest around it — so this is a gap rather than a
+  design; see the install-generator issue.
 - **Retire the superseded paths.** `-state` (ADR-0049) now adopts, and the
   control listener switches posture with adoption: unadopted it serves the
   anchor certificate and asks for no client certificate; adopted it serves the
@@ -317,10 +322,23 @@ being applied.
   proofs are HMACs bound to the fingerprint on the wire, so a TLS-terminating
   interceptor fails both checks. The token is burned at both ends on success.
 
-  The hand-placed `-identity` bundle and `SHIFT_GATEWAY_CONTROL_TOKEN` still
-  work and are marked deprecated. They go once the hub push side has been
-  proven end to end in a deployment; removing them before that would strand
-  `deploy/k8s`.
+  The hand-placed `-identity` bundle is deprecated and now unused:
+  `deploy/k8s` runs the adoption path end to end, so nothing depends on it any
+  more and it can go. `SHIFT_GATEWAY_CONTROL_TOKEN` is no longer accepted on a
+  non-loopback control listener at all — a shared secret authenticates the
+  caller to the gateway and tells a polling runner nothing about the gateway,
+  which is the half of the problem that does not matter.
+
+  What a runner verifies is the gateway's **hub-assigned id**, pinned per
+  address from the same discovery answer that gave it the address. A hub-issued
+  gateway certificate carries no subject alternative name — a DMZ box has no
+  stable hostname at issue time — so hostname verification cannot apply, and
+  chain validity alone would accept any holder of a control-plane certificate,
+  which includes every other runner in the fleet.
+
+  A gateway refuses a configuration **older** than the one it holds. The
+  version is a monotonic generation; applying a push that lost a race would
+  roll it back onto a stale roster, serving a runner the hub has since revoked.
 - **Caller identity inside the flow.** The gateway stamps the principal and the
   runner receives it, but nothing yet binds it into the flow document — that
   needs the flow-variable model ADR-0031 leaves open. Until then the principal
