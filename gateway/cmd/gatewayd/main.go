@@ -144,18 +144,40 @@ func run() error {
 		bundle = b
 	}
 
-	// FAIL CLOSED. An unauthenticated /poll reachable off-host lets anyone park
-	// a fake runner: they receive real inbound payloads and can deliver forged
-	// responses to real callers. That is interception plus response forgery
-	// from one open port, so the combination is refused outright rather than
-	// warned about — a warning is something a deployment scrolls past.
+	// FAIL CLOSED, and mTLS is the only thing that satisfies it off-host.
 	//
-	// mTLS satisfies this outright: it authenticates every runner individually
-	// AND lets the runner verify the gateway, which a shared secret cannot.
-	if st == nil && bundle == nil && controlToken == "" && !loopbackOnly(*controlAddr) {
-		return fmt.Errorf("control listener %q is not loopback and has no identity: "+
-			"set -state (ADR-0049, recommended), or -identity (ADR-0041), "+
-			"or export SHIFT_GATEWAY_CONTROL_TOKEN, or bind -control to 127.0.0.1", *controlAddr)
+	// An unauthenticated /poll reachable off-host lets anyone park a fake
+	// runner: they receive real inbound payloads and can deliver forged
+	// responses to real callers. That is interception plus response forgery
+	// from one open port, so it is refused outright rather than warned about —
+	// a warning is something a deployment scrolls past.
+	//
+	// A shared secret USED to satisfy this. It no longer does, and that is the
+	// point of this gate rather than an oversight. A secret proves only that
+	// the caller knows a string: it cannot say WHICH runner is calling, so
+	// nothing can be attributed or revoked per runner, and — the half that
+	// actually matters here — it gives the RUNNER no way to tell a real
+	// gateway from anything that answered on that address. Payload flows
+	// toward whoever wins that race.
+	//
+	// The failure mode this closes is not "somebody configured it wrong". It
+	// is a deployment that stands up on the token, works, and is never
+	// adopted — so the mTLS path exists in the binary, is never exercised,
+	// and everyone believes it is on. An available-but-unused security
+	// control is the one that rots, so the configuration is removed rather
+	// than deprecated.
+	//
+	// Loopback stays exempt: nothing off-host can reach it, and that is the
+	// dev and single-box path.
+	if st == nil && bundle == nil && !loopbackOnly(*controlAddr) {
+		hint := "set -state (ADR-0049 adoption, recommended) or -identity (ADR-0041), " +
+			"or bind -control to 127.0.0.1"
+		if controlToken != "" {
+			hint = "SHIFT_GATEWAY_CONTROL_TOKEN is set, and a shared secret is NO LONGER accepted " +
+				"off-host: it cannot tell the runner that this gateway is real, so payload can be " +
+				"intercepted by anything that answers on this address. " + hint
+		}
+		return fmt.Errorf("control listener %q is not loopback and has no mTLS identity: %s", *controlAddr, hint)
 	}
 
 	// Logging setup is duplicated from pkg/shiftlog on purpose (ADR-0046 §2):
