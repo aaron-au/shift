@@ -32,6 +32,18 @@ metadata key `shift-token`; the server compares constant-time and returns
 the connector picks or rejects with `FailedPrecondition`. Bump
 `sdk.ProtocolVersion` only with an ADR.
 
+Current version: **2** (ADR-0051 added the exact decimal and temporal kinds to
+the frame codec). Hosts offer `sdk.SupportedProtocolVersions()` = `{1, 2}`, so a
+connector artifact built against an older SDK still attaches and reports 1 —
+version 1 stays offered because a signed connector version stays runnable for as
+long as a flow pins it (ADR-0047), and dropping it would retire every older
+build at once. A sink whose connector negotiated 1 encodes with
+`spill.NewEncoderProtocol1`, which refuses a decimal or timestamp with a message
+naming the rebuild, rather than letting the connector's decoder fail on an
+unknown tag. **A connector that handles the new kinds must therefore be rebuilt
+against the current SDK** — negotiating 1 is not a soft degradation, it is a
+refusal for those fields.
+
 ## How data crosses: frames
 
 Batches are encoded with the engine binary codec (`engine/spill`) into one

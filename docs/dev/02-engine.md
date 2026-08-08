@@ -11,10 +11,28 @@ A `record.Value` is one node of a hierarchical, typed tree:
 
 - Scalars: null, bool, int64, float64, string, bytes. Stored inline in an
   88-byte struct; string/bytes payloads are **views into a batch arena**.
+- Exact scalars (ADR-0051): decimal, timestamp, date, time. Also inline, and
+  they cost **no extra memory**: `kind` is a `uint8` followed by alignment
+  padding, so a second `int8` (`aux`) fits for free — it carries a decimal's
+  scale and a timestamp's zone offset. `TestValueStaysEightyEightBytes`
+  asserts the struct has not grown.
 - Containers: list and map. Children live in contiguous slices handed out
   by the batch's slab allocators; maps keep parallel key slices and
   **preserve field order**. Field lookup is a linear scan (records are
   narrow; it benchmarks faster than map overhead at typical widths).
+
+A decimal is exactly `coefficient × 10^-scale`, which is why a `NUMERIC(12,2)`
+or a CSV money column survives a round trip that `float64` would round.
+`record.Compare` orders `int` and `decimal` **without float64 in the path** (128
+bits where a rescale would overflow), so no comparison result depends on binary
+rounding; a comparison involving `float` is documented as inexact. Two numeric
+towers therefore coexist — exact (`int`, `decimal`) and inexact (`float`) —
+and mixing them is legal and lossy.
+
+JSON keeps its existing behaviour: a bare `10.10` in NDJSON stays a float. Only
+a **declared** type produces a decimal (a CSV/fixed-width column type, a
+database `NUMERIC`, or an explicit `coerce`), because silently promoting every
+fractional JSON number would change the output of every existing flow.
 
 There is deliberately **no `map[string]interface{}` anywhere** — that
 pattern is what makes the incumbents (and our own v0 prototype) slow.
@@ -81,6 +99,16 @@ death), append-only segments, `io.SectionReader` reads. Never a directory
 of small files. `spill.Encoder/Decoder` is the compact binary codec for
 values — also reused as the connector wire framing (ADR-0007).
 
+That reuse has a consequence worth stating where the codec is described: the
+spill file never outlives its process, but a **frame does cross to another
+process**, and a signed connector version stays runnable for as long as a flow
+pins it (ADR-0047). So codec tags are **append-only** — existing numbers and
+payloads are never changed — and new kinds are gated by the negotiated
+`sdk.ProtocolVersion` (2 since ADR-0051). Pushing to a connector that
+negotiated 1 uses `spill.NewEncoderProtocol1`, which refuses the exact kinds
+with an actionable message instead of letting the subprocess fail on an unknown
+tag.
+
 ### The spillable aggregate, concretely
 
 1. Group keys are encoded to bytes (the binary codec) and hash-partitioned
@@ -91,10 +119,28 @@ values — also reused as the connector wire framing (ADR-0007).
 3. At emit time, partitions merge one at a time (in-memory state + their
    segments), bounding merge memory to the largest partition, and emit as
    normal batches.
-4. Spilled vs unspilled results are byte-identical (tested).
+4. Spilled vs unspilled results are byte-identical (tested), including the
+   scale of a decimal and the zone offset of a timestamp — asserted on the
+   canonical text, because a dropped scale still compares numerically equal.
 
-Accumulators today: count (int64), sum/min/max (float64). Known limits are
-tracked as GitHub issues (#3 merge accounting, #4 float sum precision).
+Accumulators: count (`int64`), sum, and one running extreme for MIN/MAX.
+
+`SUM` accumulates **exactly** in 128 bits for `int` and `decimal` inputs
+(ADR-0051 §3, closing issue #4 — the old `float64` accumulator could not
+represent `2^53+1`), and in `float64` only from the moment a `float` appears in
+the column. So an int column sums to an `int`, a decimal column to a `decimal`
+at the finest scale any input used, and a mixed column to a `float`. A total
+that cannot be represented is an **error**, not a wrap and not a saturated
+value: both of those are indistinguishable from a correct total downstream. The
+exact accumulator is only consulted for an `AggSum`, so `MIN` over values too
+large to add still works.
+
+MIN/MAX keep a `record.Value`, so an extreme comes out with the kind and scale
+of the input it came from rather than widened to a float. Retaining a Value
+across batches is safe **only** because a numeric scalar lives inline; `observe`
+rejects every non-numeric kind before it can reach there, and the spill reader
+re-checks, so a corrupt segment cannot leave an extreme pointing into a
+recycled arena.
 
 ## Multi-path execution — fan-out and fan-in (ADR-0029)
 
@@ -206,5 +252,6 @@ deliberately: it quantifies what the engine saves (80×/2× at 256 MiB).
 
 ## Known follow-ups
 
-Tracked as GitHub issues #1–#4: tokenizer is 63% of transform cost, float
-parse allocates, aggregate merge accounting, float sum precision.
+Tracked as GitHub issues #1–#3: tokenizer is 63% of transform cost, float
+parse allocates, aggregate merge accounting. Issue #4 (float sum precision) is
+closed by the exact accumulator above.
