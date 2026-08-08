@@ -599,9 +599,21 @@ promoted to typed columns here rather than re-derived from `result`.
   Surfaced as the studio **Usage** window.
 - **Export pull:** `GET /api/v1/usage/events?since_id=&limit=` (admin) —
   cursor-based incremental pull the external billing platform ingests; `next` is
-  the cursor for the following page (0 = caught up). `?format=csv` streams.
+  the cursor for the following page (0 = caught up).
   A global/cross-tenant pull is future work (needs a system-scoped credential;
   the hub is not the account master).
+- **CSV export:** `?format=csv` streams the same rows. Because a CSV header is
+  optional in RFC 4180 and signalled in the *media type*, the response says
+  which one it sent: `text/csv; charset=utf-8; header=present|absent`.
+  `?header=absent` drops the names so a consumer paging the cursor can
+  concatenate pages without a header row landing mid-file; the columns and
+  their order are identical either way. The cursor also travels as
+  `X-Shift-Next-Cursor`, so a headless consumer never parses the body to page.
+  **The column list is a contract** with a billing consumer we cannot see, and
+  is pinned by `TestUsageEventsExport`. New columns go on the END — a new name
+  is ignored by name-based readers and leaves existing indices intact for
+  positional ones. Inserting mid-list is the change that breaks a reader
+  silently, with values of the right type in the wrong fields.
 - **Deferred:** quota/plan enforcement (external platform) and engine
   **bytes-processed** (the engine measures `ArenaBytes` but never reports it;
   adding it needs byte accounting in `stream.OpStats` threaded runner→hub — a
