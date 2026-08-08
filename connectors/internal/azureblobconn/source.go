@@ -4,16 +4,9 @@ import (
 	"context"
 	"io"
 
-	"github.com/aaron-au/shift/engine/format/csvf"
-	"github.com/aaron-au/shift/engine/format/ndjson"
+	"github.com/aaron-au/shift/connectors/internal/fileformat"
 	"github.com/aaron-au/shift/engine/record"
 )
-
-// recordReader is satisfied by both the ndjson and csvf readers: emit batches
-// until io.EOF. The batch is valid only until the next Next (reused).
-type recordReader interface {
-	Next(ctx context.Context) (*record.Batch, error)
-}
 
 // getSource downloads a blob and parses it into record batches via the
 // configured format. The blob body is a live stream — the format reader wraps
@@ -22,7 +15,7 @@ type getSource struct {
 	cfg    config
 	open   storeOpener // nil in production; a fake in tests
 	body   io.ReadCloser
-	reader recordReader
+	reader fileformat.Reader
 }
 
 func (s *getSource) Open(ctx context.Context, cfg []byte) error {
@@ -41,12 +34,11 @@ func (s *getSource) Open(ctx context.Context, cfg []byte) error {
 		return err
 	}
 	s.body = body
-	switch s.cfg.Format {
-	case "csv":
-		s.reader = csvf.NewReader(body, csvf.ReaderOptions{})
-	default:
-		s.reader = ndjson.NewReader(body, ndjson.ReaderOptions{})
+	rd, err := fileformat.NewReader(s.cfg.Format, body, fileformat.Options{RecordElement: s.cfg.RecordElement})
+	if err != nil {
+		return err
 	}
+	s.reader = rd
 	return nil
 }
 

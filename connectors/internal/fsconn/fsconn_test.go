@@ -391,3 +391,76 @@ func TestConnectorDefinition(t *testing.T) {
 		}
 	}
 }
+
+// XML has to survive the CONNECTOR, not just the format package: a reader and
+// writer that round-trip in isolation are useless if no node can select them.
+// This is the test that would have failed for as long as xmlf existed and was
+// wired to nothing.
+func TestPutGetRoundTripXML(t *testing.T) {
+	root := testRoot(t)
+	ctx := context.Background()
+
+	sink := &putSink{}
+	if err := sink.Open(ctx, cfgJSON(t, map[string]any{
+		"root": root, "path": "out.xml", "format": "xml", "record_element": "order",
+	})); err != nil {
+		t.Fatalf("put open: %v", err)
+	}
+	batch := record.NewBatch()
+	bld := batch.Builder()
+	for i := range 3 {
+		bld.BeginMap()
+		bld.KeyLiteral("@id")
+		bld.Int(int64(i))
+		bld.KeyLiteral("sku")
+		bld.StringLiteral("ABC")
+		bld.EndMap()
+		batch.Append(bld.Finish())
+	}
+	if err := sink.Write(ctx, batch); err != nil {
+		t.Fatalf("put write: %v", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("put close: %v", err)
+	}
+
+	src := &getSource{}
+	if err := src.Open(ctx, cfgJSON(t, map[string]any{
+		"root": root, "path": "out.xml", "format": "xml", "record_element": "order",
+	})); err != nil {
+		t.Fatalf("get open: %v", err)
+	}
+	defer func() { _ = src.Close() }()
+
+	got, err := src.Next(ctx)
+	if err != nil {
+		t.Fatalf("get next: %v", err)
+	}
+	if got.Len() != 3 {
+		t.Fatalf("read %d records, wrote 3", got.Len())
+	}
+	// Attributes come back as attributes, not as child elements.
+	rec := got.Record(0)
+	if v, ok := rec.Field("@id"); !ok || v.String() != "0" {
+		t.Errorf("@id = %q (ok=%v), want 0", v.String(), ok)
+	}
+	if v, ok := rec.Field("sku"); !ok || v.String() != "ABC" {
+		t.Errorf("sku = %q (ok=%v), want ABC", v.String(), ok)
+	}
+}
+
+// An unknown format must be REFUSED, not quietly parsed as NDJSON. A silent
+// fall-through turns a config typo into what looks like corrupt data.
+func TestAnUnknownFormatIsRefused(t *testing.T) {
+	root := testRoot(t)
+	src := &getSource{}
+	err := src.Open(context.Background(), cfgJSON(t, map[string]any{
+		"root": root, "path": "x.dat", "format": "parquet",
+	}))
+	if err == nil {
+		t.Fatal("an unsupported format was accepted")
+	}
+	if !strings.Contains(err.Error(), "parquet") {
+		t.Errorf("the error does not name the offending format: %v", err)
+	}
+}

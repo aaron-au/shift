@@ -5,16 +5,9 @@ import (
 	"errors"
 	"io"
 
-	"github.com/aaron-au/shift/engine/format/csvf"
-	"github.com/aaron-au/shift/engine/format/ndjson"
+	"github.com/aaron-au/shift/connectors/internal/fileformat"
 	"github.com/aaron-au/shift/engine/record"
 )
-
-// recordWriter is satisfied by both the ndjson and csvf writers.
-type recordWriter interface {
-	Write(ctx context.Context, b *record.Batch) error
-	Close() error
-}
 
 // putSink streams records up to a block blob. UploadStream needs a single
 // io.Reader for the whole object, but the sink is fed batch-by-batch — so an
@@ -28,7 +21,7 @@ type putSink struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	pw     *io.PipeWriter
-	w      recordWriter
+	w      fileformat.Writer
 	done   chan error
 }
 
@@ -48,12 +41,11 @@ func (s *putSink) Open(ctx context.Context, cfg []byte) error {
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	pr, pw := io.Pipe()
 	s.pw = pw
-	switch s.cfg.Format {
-	case "csv":
-		s.w = csvf.NewWriter(pw, csvf.WriterOptions{})
-	default:
-		s.w = ndjson.NewWriter(pw)
+	wr, err := fileformat.NewWriter(s.cfg.Format, pw, fileformat.Options{RecordElement: s.cfg.RecordElement})
+	if err != nil {
+		return err
 	}
+	s.w = wr
 	s.done = make(chan error, 1)
 	go func() {
 		err := store.Upload(s.ctx, s.cfg.Blob, pr)

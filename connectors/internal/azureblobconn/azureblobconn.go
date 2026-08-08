@@ -26,6 +26,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 
+	"github.com/aaron-au/shift/connectors/internal/fileformat"
 	"github.com/aaron-au/shift/sdk"
 )
 
@@ -35,7 +36,7 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "azureblob",
-		Version: "0.1.0",
+		Version: "0.2.0",
 		Meta: &sdk.ConnectorMeta{
 			Description: "Azure Blob Storage: pick a verb (get/put/list/delete). Static-credential auth (account key, connection string, or container SAS). Network-guarded.",
 			Category:    "cloud-storage",
@@ -76,7 +77,8 @@ var (
 	blobConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"Azure blob",
   "required":["blob"],"properties":{` + connProps + `,
     "blob": {"type": "string", "title": "Blob", "description": "Blob name/key within the container"},
-    "format": {"type": "string", "title": "Format", "enum": ["ndjson", "csv"], "default": "ndjson"}
+    "format": ` + fileformat.SchemaEnum() + `,
+    "record_element": ` + fileformat.RecordElementProp + `
   }}`
 
 	listConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"Azure blob list",
@@ -101,7 +103,10 @@ type config struct {
 	Blob             string `json:"blob"`
 	Prefix           string `json:"prefix"`
 	Format           string `json:"format"`
-	AllowLocal       bool   `json:"allow_local"`
+	// RecordElement names the XML element that delimits one record.
+	// Ignored by the other formats, which have no equivalent notion.
+	RecordElement string `json:"record_element,omitempty"`
+	AllowLocal    bool   `json:"allow_local"`
 }
 
 // parseConfig unmarshals and validates the auth/connection fields shared by
@@ -145,13 +150,7 @@ func (c *config) requireBlobFormat() error {
 	if err := c.requireBlob(); err != nil {
 		return err
 	}
-	if c.Format == "" {
-		c.Format = "ndjson"
-	}
-	if c.Format != "ndjson" && c.Format != "csv" {
-		return fmt.Errorf("azureblob: unsupported format %q (want ndjson or csv)", c.Format)
-	}
-	return nil
+	return fileformat.Validate("azureblob", &c.Format)
 }
 
 func (c *config) requireBlob() error {

@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aaron-au/shift/connectors/internal/fileformat"
 	"github.com/aaron-au/shift/sdk"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -25,7 +26,7 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "sftp",
-		Version: "0.2.0",
+		Version: "0.3.0",
 		Meta: &sdk.ConnectorMeta{
 			Description: "SFTP file operations: pick a verb (get/put/list/delete/mkdir/rmdir/rename) and a path. Host-key verified.",
 			Category:    "file-transfer",
@@ -77,7 +78,8 @@ var (
 	fileConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"SFTP file",
   "required":["host","user","path"],"properties":{` + connProps + `,
     "path": {"type": "string", "title": "Remote path", "description": "Path to the remote file"},
-    "format": {"type": "string", "title": "Format", "enum": ["ndjson", "csv"], "default": "ndjson"}
+    "format": ` + fileformat.SchemaEnum() + `,
+    "record_element": ` + fileformat.RecordElementProp + `
   }}`
 
 	listConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"SFTP list",
@@ -105,16 +107,19 @@ var (
 
 // config is the shared source/sink configuration.
 type config struct {
-	Host           string `json:"host"`
-	Port           int    `json:"port"`
-	User           string `json:"user"`
-	Password       string `json:"password"`
-	PrivateKey     string `json:"private_key"`
-	HostKey        string `json:"host_key"`
-	Path           string `json:"path"`
-	From           string `json:"from"` // rename: source path
-	To             string `json:"to"`   // rename: destination path
-	Format         string `json:"format"`
+	Host       string `json:"host"`
+	Port       int    `json:"port"`
+	User       string `json:"user"`
+	Password   string `json:"password"`
+	PrivateKey string `json:"private_key"`
+	HostKey    string `json:"host_key"`
+	Path       string `json:"path"`
+	From       string `json:"from"` // rename: source path
+	To         string `json:"to"`   // rename: destination path
+	Format     string `json:"format"`
+	// RecordElement names the XML element that delimits one record.
+	// Ignored by the other formats, which have no equivalent notion.
+	RecordElement  string `json:"record_element,omitempty"`
 	Recursive      bool   `json:"recursive"` // rmdir: remove non-empty trees
 	AllowLocal     bool   `json:"allow_local"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
@@ -152,13 +157,7 @@ func (c *config) requireFileFormat() error {
 	if c.Path == "" {
 		return errors.New("sftp: path is required")
 	}
-	if c.Format == "" {
-		c.Format = "ndjson"
-	}
-	if c.Format != "ndjson" && c.Format != "csv" {
-		return fmt.Errorf("sftp: unsupported format %q (want ndjson or csv)", c.Format)
-	}
-	return nil
+	return fileformat.Validate("sftp", &c.Format)
 }
 
 // requireDir validates the list config: a remote directory path.

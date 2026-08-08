@@ -394,7 +394,7 @@ func TestRequireBlobFormat(t *testing.T) {
 		}
 	})
 	t.Run("bad format", func(t *testing.T) {
-		c := config{Blob: "b", Format: "xml"}
+		c := config{Blob: "b", Format: "parquet"}
 		if err := c.requireBlobFormat(); err == nil {
 			t.Fatal("expected unsupported-format error")
 		}

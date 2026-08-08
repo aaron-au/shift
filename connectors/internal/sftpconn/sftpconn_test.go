@@ -199,7 +199,7 @@ func TestSFTPConfigValidation(t *testing.T) {
 	}
 	// File-format validation (get/put, via requireFileFormat).
 	t.Run("bad format", func(t *testing.T) {
-		c := config{Path: "/f", Format: "xml"}
+		c := config{Path: "/f", Format: "parquet"}
 		if err := c.requireFileFormat(); err == nil {
 			t.Fatal("expected unsupported-format error")
 		}
