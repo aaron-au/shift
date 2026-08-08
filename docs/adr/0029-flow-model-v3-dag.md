@@ -4,15 +4,11 @@ Date: 2026-07-28
 Status: **Accepted; implemented** — model (`pkg/flowdoc/dag.go`, #32), engine
 primitives (`engine/stream/fanout.go` + `merge.go`, #34), keyed join (#36) with
 grace-hash spill (#41), runner execution (`service_multipath.go`), studio
-nodes (`ui.html`). Three gaps remain open, each with an issue:
-
-- **Nested / mixed topologies are not executable.** `executeMulti` runs one
-  fan-out **or** one fan-in; a graph combining them (`source → tee → enrich →
-  merge`, the enrichment shape) validates at the hub and draws on the canvas
-  but fails at run time with a clear error. Issue #59.
-- **Test-mode capture (ADR-0014) is dropped on DAG flows.** `executeMulti`
-  discards the `*captureSampler`, so `?capture=1` silently yields nothing for
-  exactly the multi-path flows where per-branch inspection matters. Issue #60.
+nodes (`ui.html`). The three gaps this ADR shipped with are now closed:
+capture on DAG flows (#60), per-branch idempotency keys (#61), and nested or
+mixed topologies (#59) — `runner/internal/service/dag.go` compiles any
+validated DAG into segments joined at tee/router/merge nodes, with
+`stream.Pipe` carrying a branch's output into a downstream merge or fan-out.
 
 Fan-out spill (§2) is deliberately absent: the bounded branch queues block
 instead, which is memory-bounded and matches this ADR's own "the tee runs at

@@ -8,7 +8,6 @@ import (
 	"log/slog"
 
 	"github.com/aaron-au/shift/engine/format/ndjson"
-	"github.com/aaron-au/shift/engine/mem"
 	"github.com/aaron-au/shift/engine/record"
 	"github.com/aaron-au/shift/engine/stream"
 	"github.com/aaron-au/shift/pkg/flowdoc"
@@ -16,16 +15,10 @@ import (
 	"github.com/aaron-au/shift/sdk/host"
 )
 
-// This file compiles a v3 multi-path Plan (ADR-0029) onto the engine's
-// fan-out / fan-in executors. It supports the two high-value topology
-// families end-to-end:
-//
-//   - fan-out to sinks:  source → ops → (tee|router) → { ops → sink } × N
-//   - fan-in from sources: { source → ops } × N → merge(concat|join) → ops → sink
-//
-// Nested or mixed graphs (a tee branch feeding a merge, fan-out after fan-in)
-// are validated by the hub but not yet executable here; they fail with a clear
-// error rather than silently mis-running. Linear/v2 flows never reach here.
+// This file holds the connector binding and shared helpers for v3 multi-path
+// execution (ADR-0029). The topology compiler itself lives in dag.go, which
+// compiles ANY validated DAG — including nested and mixed graphs — into linear
+// segments joined at tee/router/merge nodes. Linear/v2 flows never reach here.
 
 // bindSource binds a source step to a stream.Source: the built-in @webhook
 // body, or a pooled connector subprocess. The returned cleanup releases the
@@ -111,220 +104,11 @@ func (s *Service) bindSink(step *flow.Step, o SubmitOpts) (stream.Sink, func() i
 	}
 }
 
-// executeMulti dispatches a v3 DAG plan to the fan-out or fan-in executor.
+// executeMulti dispatches a v3 DAG plan. Every validated topology compiles
+// through the general segment compiler in dag.go (ADR-0029 §2, issue #59);
+// this indirection is kept so the call site reads the same as the linear one.
 func (s *Service) executeMulti(ctx context.Context, doc *flow.Document, plan *flowdoc.Plan, redact func(string) string, sampler *captureSampler, o SubmitOpts) (execResult, error) {
-	var fanouts, merges []*flowdoc.Step
-	for id, n := range plan.Nodes {
-		if len(plan.Data[id]) > 1 {
-			fanouts = append(fanouts, n)
-		}
-		if n.Type == "merge" {
-			merges = append(merges, n)
-		}
-	}
-	switch {
-	case len(fanouts) == 1 && len(merges) == 0:
-		return s.executeFanOut(ctx, doc, plan, fanouts[0], redact, sampler, o)
-	case len(merges) == 1 && len(fanouts) == 0:
-		return s.executeFanIn(ctx, doc, plan, merges[0], redact, sampler, o)
-	default:
-		return execResult{}, fmt.Errorf("service: flow topology not yet executable on this runner (%d fan-out, %d fan-in node(s)); nested or mixed graphs are a later change", len(fanouts), len(merges))
-	}
-}
-
-// executeFanOut runs source → ops → (tee|router) → { ops → sink } × N.
-func (s *Service) executeFanOut(ctx context.Context, doc *flow.Document, plan *flowdoc.Plan, fo *flowdoc.Step, redact func(string) string, sampler *captureSampler, o SubmitOpts) (execResult, error) {
-	if len(plan.Sources) != 1 {
-		return execResult{}, fmt.Errorf("service: fan-out needs a single source (found %d)", len(plan.Sources))
-	}
-	opts := flow.CompileOptions{Gov: mem.New(s.opts.TaskWatermark), SpillDir: s.opts.SpillDir, Test: o.Test}
-
-	// Upstream: the single source through its ops, up to the fan-out node.
-	srcStep := plan.Nodes[plan.Sources[0]]
-	upOps, endID, err := linearOps(plan, srcStep.ID)
-	if err != nil {
-		return execResult{}, err
-	}
-	if endID != fo.ID {
-		return execResult{}, fmt.Errorf("service: source %q does not lead directly to the fan-out", srcStep.ID)
-	}
-	src, srcCleanup, err := s.bindSource(srcStep, o)
-	if err != nil {
-		return execResult{}, err
-	}
-	defer srcCleanup()
-	upPipe, err := flow.ApplyOps(upOps, sampled(stream.New(src, srcStep.ID), sampler), opts)
-	if err != nil {
-		return execResult{}, err
-	}
-	upstream, err := upPipe.AsSource()
-	if err != nil {
-		return execResult{}, err
-	}
-
-	// Branches: each fan-out successor through its ops to a sink.
-	succ := plan.Data[fo.ID]
-	isRouter := fo.Type == "router"
-	branches := make([]stream.Branch, 0, len(succ))
-	confirmers := make([]func() int64, 0, len(succ))
-	for _, bid := range succ {
-		bOps, sinkID, err := branchOps(plan, bid)
-		if err != nil {
-			return execResult{}, err
-		}
-		sink, confirmed, cleanup, err := s.bindSink(plan.Nodes[sinkID], o)
-		if err != nil {
-			return execResult{}, err
-		}
-		defer cleanup()
-		confirmers = append(confirmers, confirmed)
-		ops := bOps
-		// Shared (no copy) is safe for a router branch (it owns its partition
-		// batch) and for an op-less tee branch (read-only straight to a sink);
-		// a tee branch with ops must copy-on-write (Shared=false).
-		branches = append(branches, stream.Branch{
-			Name:   sinkID,
-			Sink:   sink,
-			Shared: isRouter || len(ops) == 0,
-			Build: func(bs stream.Source) *stream.Pipeline {
-				// Each branch samples too. On a fan-out this is the whole
-				// point of capture: "which branch did this record take" is
-				// unanswerable from the upstream sample alone.
-				return flow.ApplyOpsFold(ops, sampled(stream.New(bs, sinkID), sampler), opts)
-			},
-		})
-	}
-
-	var frep stream.FanoutReport
-	var runErr error
-	if isRouter {
-		match, err := compileRouter(fo, succ)
-		if err != nil {
-			return execResult{}, err
-		}
-		frep, runErr = stream.RunRouter(ctx, upstream, branches, match, stream.FanoutOptions{})
-	} else {
-		frep, runErr = stream.RunTee(ctx, upstream, branches, stream.FanoutOptions{})
-	}
-
-	res := aggregateFanout(frep, confirmers)
-	if sampler != nil {
-		res.captured = sampler.result()
-	}
-	return s.routeMultiError(ctx, plan, doc, redact, res, runErr)
-}
-
-// executeFanIn runs { source → ops } × N → merge(concat|join) → ops → sink.
-func (s *Service) executeFanIn(ctx context.Context, doc *flow.Document, plan *flowdoc.Plan, mg *flowdoc.Step, redact func(string) string, sampler *captureSampler, o SubmitOpts) (execResult, error) {
-	gov := mem.New(s.opts.TaskWatermark)
-	opts := flow.CompileOptions{Gov: gov, SpillDir: s.opts.SpillDir, Test: o.Test}
-
-	type input struct {
-		producerID string // the immediate predecessor of the merge (names the join build side)
-		src        stream.Source
-	}
-	var inputs []input
-	for _, srcID := range plan.Sources {
-		srcStep := plan.Nodes[srcID]
-		ops, endID, err := linearOps(plan, srcID)
-		if err != nil {
-			return execResult{}, err
-		}
-		if endID != mg.ID {
-			return execResult{}, fmt.Errorf("service: source %q does not lead directly to the merge", srcID)
-		}
-		src, cleanup, err := s.bindSource(srcStep, o)
-		if err != nil {
-			return execResult{}, err
-		}
-		defer cleanup()
-		pipe, err := flow.ApplyOps(ops, sampled(stream.New(src, srcID), sampler), opts)
-		if err != nil {
-			return execResult{}, err
-		}
-		isrc, err := pipe.AsSource()
-		if err != nil {
-			return execResult{}, err
-		}
-		producerID := srcID
-		if len(ops) > 0 {
-			producerID = ops[len(ops)-1].ID
-		}
-		inputs = append(inputs, input{producerID, isrc})
-	}
-	if len(inputs) < 2 {
-		return execResult{}, fmt.Errorf("service: merge needs at least 2 source inputs (found %d)", len(inputs))
-	}
-
-	var merged stream.Source
-	switch mg.Mode {
-	case flowdoc.MergeConcat:
-		srcs := make([]stream.Source, len(inputs))
-		for i := range inputs {
-			srcs[i] = inputs[i].src
-		}
-		merged = stream.Concat(srcs...)
-	case flowdoc.MergeJoin:
-		if len(inputs) != 2 {
-			return execResult{}, fmt.Errorf("service: join needs exactly 2 inputs (found %d)", len(inputs))
-		}
-		var build, probe stream.Source
-		for _, in := range inputs {
-			if in.producerID == mg.Build {
-				build = in.src
-			} else {
-				probe = in.src
-			}
-		}
-		if build == nil || probe == nil {
-			return execResult{}, fmt.Errorf("service: join build input %q not found among merge inputs", mg.Build)
-		}
-		merged = stream.Join(probe, build, stream.JoinSpec{
-			LeftKey:  record.MustParsePath(mg.On.Left),
-			RightKey: record.MustParsePath(mg.On.Right),
-			As:       mg.As,
-			Type:     joinType(mg.JoinType),
-			Gov:      gov,
-		})
-	default:
-		return execResult{}, fmt.Errorf("service: unknown merge mode %q", mg.Mode)
-	}
-
-	// Downstream: merge → ops → sink.
-	downOps, sinkID, err := branchOps(plan, plan.Data[mg.ID][0])
-	if err != nil {
-		return execResult{}, err
-	}
-	sink, confirmed, cleanup, err := s.bindSink(plan.Nodes[sinkID], o)
-	if err != nil {
-		return execResult{}, err
-	}
-	defer cleanup()
-
-	p, err := flow.ApplyOps(downOps, sampled(stream.New(merged, mg.ID), sampler), opts)
-	if err != nil {
-		return execResult{}, err
-	}
-	rep, runErr := p.Run(ctx, sink, sinkID)
-	res := execResult{rep: rep, confirmed: confirmed()}
-	if sampler != nil {
-		res.captured = sampler.result()
-	}
-	return s.routeMultiError(ctx, plan, doc, redact, res, runErr)
-}
-
-// aggregateFanout folds per-branch reports and confirmed counts into one
-// execResult.
-func aggregateFanout(frep stream.FanoutReport, confirmers []func() int64) execResult {
-	res := execResult{stopped: frep.Stopped, stopStep: frep.StopStep}
-	for _, br := range frep.Branches {
-		res.rep.Ops = append(res.rep.Ops, br.Ops...)
-		res.rep.RecordsOut += br.RecordsOut
-	}
-	for _, c := range confirmers {
-		res.confirmed += c()
-	}
-	return res
+	return s.executeDAG(ctx, doc, plan, redact, sampler, o)
 }
 
 // routeMultiError applies the shared onFailure routing (ADR-0013) to a
@@ -378,55 +162,6 @@ func compileRouter(fo *flowdoc.Step, succ []string) (func(record.Value) int, err
 		}
 		return defaultIdx
 	}, nil
-}
-
-// linearOps follows the single-successor chain from fromID, collecting the
-// transform steps it passes, and returns the first non-linear node reached (a
-// fan-out, a merge, or a sink) — the boundary of the linear segment.
-func linearOps(plan *flowdoc.Plan, fromID string) ([]*flowdoc.Step, string, error) {
-	var ops []*flowdoc.Step
-	cur := fromID
-	for {
-		succ := plan.Data[cur]
-		if len(succ) != 1 {
-			return ops, cur, nil // fan-out (>1) or terminal (0)
-		}
-		n := plan.Nodes[succ[0]]
-		if n == nil {
-			return nil, "", fmt.Errorf("service: unknown node %q", succ[0])
-		}
-		if !isTransformStep(n) {
-			return ops, n.ID, nil // reached a structural node or a sink
-		}
-		ops = append(ops, n)
-		cur = n.ID
-	}
-}
-
-// branchOps collects the transform steps from startID (inclusive) to the sink
-// that terminates the branch. A non-transform, non-sink node (a nested
-// fan-out/merge) is rejected — those topologies are not yet executable.
-func branchOps(plan *flowdoc.Plan, startID string) ([]*flowdoc.Step, string, error) {
-	var ops []*flowdoc.Step
-	cur := startID
-	for {
-		n := plan.Nodes[cur]
-		if n == nil {
-			return nil, "", fmt.Errorf("service: unknown node %q", cur)
-		}
-		if n.Type == "sink" {
-			return ops, cur, nil
-		}
-		if !isTransformStep(n) {
-			return nil, "", fmt.Errorf("service: node %q (%s) inside a branch is not yet executable (nested fan-out/fan-in)", cur, n.Type)
-		}
-		ops = append(ops, n)
-		succ := plan.Data[cur]
-		if len(succ) != 1 {
-			return nil, "", fmt.Errorf("service: unsupported branch shape at %q", cur)
-		}
-		cur = succ[0]
-	}
 }
 
 func isTransformStep(n *flowdoc.Step) bool {
