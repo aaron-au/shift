@@ -1,0 +1,183 @@
+{
+  "_note": "Recorded connector action surface — the LAST RELEASED shape. The compatibility gate (ADR-0047 §8) diffs the current build against this and refuses a declared compat class the diff cannot support. Regenerate deliberately with SHIFT_UPDATE_SURFACE=1 and review the diff; it is the only record of what was shipped.",
+  "name": "redis",
+  "version": "0.1.0",
+  "descriptor": {
+    "name": "redis",
+    "version": "0.1.0",
+    "actions": [
+      {
+        "action": "set",
+        "direction": "sink",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "Redis set",
+          "required": [
+            "addr"
+          ],
+          "properties": {
+            "addr": {
+              "type": "string",
+              "title": "Address",
+              "description": "Redis server host:port (e.g. redis:6379)"
+            },
+            "username": {
+              "type": "string",
+              "title": "Username",
+              "description": "ACL username (Redis 6+); leave blank for the default user"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "db": {
+              "type": "integer",
+              "title": "Database",
+              "default": 0
+            },
+            "tls": {
+              "type": "boolean",
+              "title": "Use TLS",
+              "default": false
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off)",
+              "default": false
+            },
+            "key": {
+              "type": "string",
+              "title": "Key",
+              "description": "Static key for every record; leave blank to read the key from each record's \"key\" field"
+            },
+            "value_field": {
+              "type": "string",
+              "title": "Value field",
+              "description": "Record field holding the value to store",
+              "default": "value"
+            },
+            "ttl_seconds": {
+              "type": "integer",
+              "title": "TTL (seconds)",
+              "description": "Optional expiry; 0 = no expiry",
+              "default": 0
+            }
+          }
+        }
+      },
+      {
+        "action": "delete",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "Redis delete",
+          "required": [
+            "addr",
+            "key"
+          ],
+          "properties": {
+            "addr": {
+              "type": "string",
+              "title": "Address",
+              "description": "Redis server host:port (e.g. redis:6379)"
+            },
+            "username": {
+              "type": "string",
+              "title": "Username",
+              "description": "ACL username (Redis 6+); leave blank for the default user"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "db": {
+              "type": "integer",
+              "title": "Database",
+              "default": 0
+            },
+            "tls": {
+              "type": "boolean",
+              "title": "Use TLS",
+              "default": false
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off)",
+              "default": false
+            },
+            "key": {
+              "type": "string",
+              "title": "Key",
+              "description": "Key to DEL (idempotent: missing key = 0 deleted, still ok)"
+            }
+          }
+        }
+      },
+      {
+        "action": "get",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "Redis get",
+          "required": [
+            "addr"
+          ],
+          "properties": {
+            "addr": {
+              "type": "string",
+              "title": "Address",
+              "description": "Redis server host:port (e.g. redis:6379)"
+            },
+            "username": {
+              "type": "string",
+              "title": "Username",
+              "description": "ACL username (Redis 6+); leave blank for the default user"
+            },
+            "password": {
+              "type": "string",
+              "title": "Password",
+              "x-shift-secret": true
+            },
+            "db": {
+              "type": "integer",
+              "title": "Database",
+              "default": 0
+            },
+            "tls": {
+              "type": "boolean",
+              "title": "Use TLS",
+              "default": false
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal targets (network guard off)",
+              "default": false
+            },
+            "pattern": {
+              "type": "string",
+              "title": "Key pattern",
+              "description": "SCAN MATCH glob (e.g. user:*); defaults to * (all keys)",
+              "default": "*"
+            }
+          }
+        }
+      }
+    ],
+    "meta": {
+      "description": "Redis key/value operations: get (SCAN a pattern, emit key/value/type), set (record -\u003e SET with optional TTL), delete (DEL a key). Network-guarded.",
+      "category": "database",
+      "icon": "🧠",
+      "tags": [
+        "cache",
+        "key-value",
+        "kv",
+        "redis"
+      ]
+    }
+  }
+}

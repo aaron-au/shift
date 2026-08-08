@@ -1,0 +1,58 @@
+{
+  "_note": "Recorded connector action surface — the LAST RELEASED shape. The compatibility gate (ADR-0047 §8) diffs the current build against this and refuses a declared compat class the diff cannot support. Regenerate deliberately with SHIFT_UPDATE_SURFACE=1 and review the diff; it is the only record of what was shipped.",
+  "name": "gen",
+  "version": "0.1.0",
+  "descriptor": {
+    "name": "gen",
+    "version": "0.1.0",
+    "actions": [
+      {
+        "action": "discard",
+        "direction": "sink"
+      },
+      {
+        "action": "gen",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "Synthetic source",
+          "required": [
+            "records"
+          ],
+          "properties": {
+            "records": {
+              "type": "integer",
+              "title": "Records to emit"
+            },
+            "groups": {
+              "type": "integer",
+              "title": "Distinct group cardinality",
+              "default": 1000
+            },
+            "batch_records": {
+              "type": "integer",
+              "title": "Records per batch",
+              "default": 1024
+            },
+            "delay_ms": {
+              "type": "integer",
+              "title": "Delay per batch (ms)",
+              "default": 0
+            }
+          }
+        }
+      }
+    ],
+    "meta": {
+      "description": "Generate synthetic records (source) and discard records (sink). For benchmarks and testing.",
+      "category": "testing",
+      "icon": "🧪",
+      "tags": [
+        "benchmark",
+        "synthetic",
+        "test"
+      ]
+    }
+  }
+}

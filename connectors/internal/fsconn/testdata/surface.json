@@ -1,0 +1,203 @@
+{
+  "_note": "Recorded connector action surface — the LAST RELEASED shape. The compatibility gate (ADR-0047 §8) diffs the current build against this and refuses a declared compat class the diff cannot support. Regenerate deliberately with SHIFT_UPDATE_SURFACE=1 and review the diff; it is the only record of what was shipped.",
+  "name": "fs",
+  "version": "0.1.0",
+  "descriptor": {
+    "name": "fs",
+    "version": "0.1.0",
+    "actions": [
+      {
+        "action": "put",
+        "direction": "sink",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "FS file",
+          "required": [
+            "root",
+            "path"
+          ],
+          "properties": {
+            "root": {
+              "type": "string",
+              "title": "Root directory",
+              "description": "Base directory; every path is resolved within it and rejected if it escapes (symlinks included). Must be one of the roots the runner permits via SHIFT_FS_ROOTS. Required (fail closed)."
+            },
+            "path": {
+              "type": "string",
+              "title": "Path",
+              "description": "File path, relative to root (an absolute path must still resolve within root)"
+            },
+            "format": {
+              "type": "string",
+              "title": "Format",
+              "enum": [
+                "ndjson",
+                "csv"
+              ],
+              "default": "ndjson"
+            }
+          }
+        }
+      },
+      {
+        "action": "delete",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "FS operation",
+          "required": [
+            "root",
+            "path"
+          ],
+          "properties": {
+            "root": {
+              "type": "string",
+              "title": "Root directory",
+              "description": "Base directory; every path is resolved within it and rejected if it escapes (symlinks included). Must be one of the roots the runner permits via SHIFT_FS_ROOTS. Required (fail closed)."
+            },
+            "path": {
+              "type": "string",
+              "title": "Path",
+              "description": "Target file/directory"
+            }
+          }
+        }
+      },
+      {
+        "action": "get",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "FS file",
+          "required": [
+            "root",
+            "path"
+          ],
+          "properties": {
+            "root": {
+              "type": "string",
+              "title": "Root directory",
+              "description": "Base directory; every path is resolved within it and rejected if it escapes (symlinks included). Must be one of the roots the runner permits via SHIFT_FS_ROOTS. Required (fail closed)."
+            },
+            "path": {
+              "type": "string",
+              "title": "Path",
+              "description": "File path, relative to root (an absolute path must still resolve within root)"
+            },
+            "format": {
+              "type": "string",
+              "title": "Format",
+              "enum": [
+                "ndjson",
+                "csv"
+              ],
+              "default": "ndjson"
+            }
+          }
+        }
+      },
+      {
+        "action": "list",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "FS list",
+          "required": [
+            "root",
+            "path"
+          ],
+          "properties": {
+            "root": {
+              "type": "string",
+              "title": "Root directory",
+              "description": "Base directory; every path is resolved within it and rejected if it escapes (symlinks included). Must be one of the roots the runner permits via SHIFT_FS_ROOTS. Required (fail closed)."
+            },
+            "path": {
+              "type": "string",
+              "title": "Directory",
+              "description": "Directory to list; emits one record per entry {name,path,size,mode,mod_time,is_dir}"
+            },
+            "recursive": {
+              "type": "boolean",
+              "title": "Recursive",
+              "description": "Descend into sub-directories",
+              "default": false
+            }
+          }
+        }
+      },
+      {
+        "action": "mkdir",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "FS operation",
+          "required": [
+            "root",
+            "path"
+          ],
+          "properties": {
+            "root": {
+              "type": "string",
+              "title": "Root directory",
+              "description": "Base directory; every path is resolved within it and rejected if it escapes (symlinks included). Must be one of the roots the runner permits via SHIFT_FS_ROOTS. Required (fail closed)."
+            },
+            "path": {
+              "type": "string",
+              "title": "Path",
+              "description": "Target file/directory"
+            }
+          }
+        }
+      },
+      {
+        "action": "rmdir",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "FS rmdir",
+          "required": [
+            "root",
+            "path"
+          ],
+          "properties": {
+            "root": {
+              "type": "string",
+              "title": "Root directory",
+              "description": "Base directory; every path is resolved within it and rejected if it escapes (symlinks included). Must be one of the roots the runner permits via SHIFT_FS_ROOTS. Required (fail closed)."
+            },
+            "path": {
+              "type": "string",
+              "title": "Directory"
+            },
+            "recursive": {
+              "type": "boolean",
+              "title": "Recursive",
+              "description": "Remove non-empty directories and their contents",
+              "default": false
+            }
+          }
+        }
+      }
+    ],
+    "meta": {
+      "description": "Local/mounted filesystem: pick a verb (get/put/list/delete/mkdir/rmdir) and a path. All paths are jailed within a configured root.",
+      "category": "file-transfer",
+      "icon": "🗂️",
+      "tags": [
+        "csv",
+        "file",
+        "filesystem",
+        "fs",
+        "local",
+        "ndjson"
+      ]
+    }
+  }
+}

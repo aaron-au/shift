@@ -1,0 +1,285 @@
+{
+  "_note": "Recorded connector action surface — the LAST RELEASED shape. The compatibility gate (ADR-0047 §8) diffs the current build against this and refuses a declared compat class the diff cannot support. Regenerate deliberately with SHIFT_UPDATE_SURFACE=1 and review the diff; it is the only record of what was shipped.",
+  "name": "s3",
+  "version": "0.1.0",
+  "descriptor": {
+    "name": "s3",
+    "version": "0.1.0",
+    "actions": [
+      {
+        "action": "put",
+        "direction": "sink",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "S3 object",
+          "required": [
+            "bucket",
+            "key"
+          ],
+          "properties": {
+            "region": {
+              "type": "string",
+              "title": "Region",
+              "description": "AWS region (e.g. us-east-1); defaults to us-east-1 for S3-compatible endpoints",
+              "default": "us-east-1"
+            },
+            "endpoint": {
+              "type": "string",
+              "title": "Endpoint",
+              "description": "Custom endpoint URL for S3-compatible storage (e.g. https://minio.internal:9000). Leave blank for AWS S3."
+            },
+            "access_key_id": {
+              "type": "string",
+              "title": "Access key ID",
+              "x-shift-secret": true
+            },
+            "secret_access_key": {
+              "type": "string",
+              "title": "Secret access key",
+              "x-shift-secret": true
+            },
+            "path_style": {
+              "type": "boolean",
+              "title": "Path-style addressing",
+              "description": "Use path-style bucket addressing (required by most MinIO setups)",
+              "default": false
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal endpoints (network guard off)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Request timeout (seconds)",
+              "default": 300
+            },
+            "bucket": {
+              "type": "string",
+              "title": "Bucket"
+            },
+            "key": {
+              "type": "string",
+              "title": "Object key",
+              "description": "Full object key/path within the bucket"
+            },
+            "format": {
+              "type": "string",
+              "title": "Format",
+              "enum": [
+                "ndjson",
+                "csv"
+              ],
+              "default": "ndjson"
+            }
+          }
+        }
+      },
+      {
+        "action": "delete",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "S3 delete",
+          "required": [
+            "bucket",
+            "key"
+          ],
+          "properties": {
+            "region": {
+              "type": "string",
+              "title": "Region",
+              "description": "AWS region (e.g. us-east-1); defaults to us-east-1 for S3-compatible endpoints",
+              "default": "us-east-1"
+            },
+            "endpoint": {
+              "type": "string",
+              "title": "Endpoint",
+              "description": "Custom endpoint URL for S3-compatible storage (e.g. https://minio.internal:9000). Leave blank for AWS S3."
+            },
+            "access_key_id": {
+              "type": "string",
+              "title": "Access key ID",
+              "x-shift-secret": true
+            },
+            "secret_access_key": {
+              "type": "string",
+              "title": "Secret access key",
+              "x-shift-secret": true
+            },
+            "path_style": {
+              "type": "boolean",
+              "title": "Path-style addressing",
+              "description": "Use path-style bucket addressing (required by most MinIO setups)",
+              "default": false
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal endpoints (network guard off)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Request timeout (seconds)",
+              "default": 300
+            },
+            "bucket": {
+              "type": "string",
+              "title": "Bucket"
+            },
+            "key": {
+              "type": "string",
+              "title": "Object key",
+              "description": "Object to delete"
+            }
+          }
+        }
+      },
+      {
+        "action": "get",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "S3 object",
+          "required": [
+            "bucket",
+            "key"
+          ],
+          "properties": {
+            "region": {
+              "type": "string",
+              "title": "Region",
+              "description": "AWS region (e.g. us-east-1); defaults to us-east-1 for S3-compatible endpoints",
+              "default": "us-east-1"
+            },
+            "endpoint": {
+              "type": "string",
+              "title": "Endpoint",
+              "description": "Custom endpoint URL for S3-compatible storage (e.g. https://minio.internal:9000). Leave blank for AWS S3."
+            },
+            "access_key_id": {
+              "type": "string",
+              "title": "Access key ID",
+              "x-shift-secret": true
+            },
+            "secret_access_key": {
+              "type": "string",
+              "title": "Secret access key",
+              "x-shift-secret": true
+            },
+            "path_style": {
+              "type": "boolean",
+              "title": "Path-style addressing",
+              "description": "Use path-style bucket addressing (required by most MinIO setups)",
+              "default": false
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal endpoints (network guard off)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Request timeout (seconds)",
+              "default": 300
+            },
+            "bucket": {
+              "type": "string",
+              "title": "Bucket"
+            },
+            "key": {
+              "type": "string",
+              "title": "Object key",
+              "description": "Full object key/path within the bucket"
+            },
+            "format": {
+              "type": "string",
+              "title": "Format",
+              "enum": [
+                "ndjson",
+                "csv"
+              ],
+              "default": "ndjson"
+            }
+          }
+        }
+      },
+      {
+        "action": "list",
+        "direction": "source",
+        "configSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "title": "S3 list",
+          "required": [
+            "bucket"
+          ],
+          "properties": {
+            "region": {
+              "type": "string",
+              "title": "Region",
+              "description": "AWS region (e.g. us-east-1); defaults to us-east-1 for S3-compatible endpoints",
+              "default": "us-east-1"
+            },
+            "endpoint": {
+              "type": "string",
+              "title": "Endpoint",
+              "description": "Custom endpoint URL for S3-compatible storage (e.g. https://minio.internal:9000). Leave blank for AWS S3."
+            },
+            "access_key_id": {
+              "type": "string",
+              "title": "Access key ID",
+              "x-shift-secret": true
+            },
+            "secret_access_key": {
+              "type": "string",
+              "title": "Secret access key",
+              "x-shift-secret": true
+            },
+            "path_style": {
+              "type": "boolean",
+              "title": "Path-style addressing",
+              "description": "Use path-style bucket addressing (required by most MinIO setups)",
+              "default": false
+            },
+            "allow_local": {
+              "type": "boolean",
+              "title": "Allow local/loopback and private/internal endpoints (network guard off)",
+              "default": false
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "title": "Request timeout (seconds)",
+              "default": 300
+            },
+            "bucket": {
+              "type": "string",
+              "title": "Bucket"
+            },
+            "prefix": {
+              "type": "string",
+              "title": "Prefix",
+              "description": "Only list objects whose key starts with this prefix; emits one record per object {key,size,etag,last_modified}"
+            }
+          }
+        }
+      }
+    ],
+    "meta": {
+      "description": "AWS S3 and S3-compatible (MinIO/Ceph/R2) object storage: pick a verb (get/put/list/delete). Static tenant credentials; SSRF-guarded.",
+      "category": "object-storage",
+      "icon": "🪣",
+      "tags": [
+        "aws",
+        "csv",
+        "minio",
+        "ndjson",
+        "object-storage",
+        "s3"
+      ]
+    }
+  }
+}
