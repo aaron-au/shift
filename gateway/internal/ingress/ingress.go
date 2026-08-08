@@ -16,6 +16,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -57,6 +58,23 @@ func New(reg *runners.Registry, log *slog.Logger) *Handler {
 func (h *Handler) SetConfig(c *config.Config) error {
 	if err := c.Validate(); err != nil {
 		return err
+	}
+	// Never go BACKWARDS. The version is a monotonic generation the hub raises
+	// on every change, so an older one arriving after a newer one is a push
+	// that lost a race — a retry overtaken by its own successor, or two hub
+	// instances pushing concurrently under HA.
+	//
+	// Applying it would roll the gateway back onto a stale ROSTER, which is
+	// the part that matters: a runner the hub has since revoked would be
+	// served again, and one it has since vouched for would be refused. The
+	// gateway would sit there serving the wrong fleet with no error anywhere,
+	// because both pushes succeeded.
+	//
+	// Equal versions are accepted: the hub re-derives configuration from state
+	// on every pass and re-pushes after a failure, so a repeat of the current
+	// generation is a normal retry, not a regression.
+	if cur := h.cfg.Load(); cur != nil && c.Version < cur.Version {
+		return fmt.Errorf("config: version %d is older than the active %d", c.Version, cur.Version)
 	}
 	h.cfg.Store(c)
 	return nil

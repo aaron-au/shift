@@ -464,7 +464,7 @@ func (c *Client) SyncWebhooks(ctx context.Context) ([]WebhookConfig, error) {
 // SyncGateways fetches the gateway control-listener URLs this runner should be
 // polling (ADR-0038 §4). The hub answers for the identity this client's
 // credential proves, so there is nothing to send.
-func (c *Client) SyncGateways(ctx context.Context) ([]string, error) {
+func (c *Client) SyncGateways(ctx context.Context) ([]Gateway, error) {
 	resp, err := c.do(ctx, http.MethodGet, "/api/v1/gateways/sync", "")
 	if err != nil {
 		return nil, err
@@ -474,20 +474,22 @@ func (c *Client) SyncGateways(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("hubclient: sync gateways: %s", readErr(resp))
 	}
 	var out struct {
-		Gateways []struct {
-			URL string `json:"url"`
-		} `json:"gateways"`
+		Gateways []Gateway `json:"gateways"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
 		return nil, fmt.Errorf("hubclient: sync gateways: %w", err)
 	}
-	addrs := make([]string, 0, len(out.Gateways))
+	gws := make([]Gateway, 0, len(out.Gateways))
 	for _, g := range out.Gateways {
-		if g.URL != "" {
-			addrs = append(addrs, g.URL)
+		// An entry the hub cannot fully identify is DROPPED, not polled
+		// unpinned: the id is what the runner verifies the gateway's
+		// certificate against, so an address without one could be answered by
+		// any holder of a control-plane certificate.
+		if g.URL != "" && g.ID != "" {
+			gws = append(gws, g)
 		}
 	}
-	return addrs, nil
+	return gws, nil
 }
 
 func (c *Client) do(ctx context.Context, method, path, body string) (*http.Response, error) {

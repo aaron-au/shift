@@ -456,6 +456,9 @@ func (a *api) deleteRunner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = a.st.Audit(r.Context(), actor(r), "runner.delete", id, nil)
+	// Decommissioning must REACH the gateways, or a revoked runner keeps being
+	// handed inbound work by every gateway still holding the old roster.
+	a.rosterChanged(r.Context())
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -750,6 +753,11 @@ func (a *api) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = a.st.Audit(r.Context(), "runner:"+id, "runner.register", req.Name, nil)
+	// A NEW runner changes every gateway's roster. Without this the runner
+	// would poll, prove its identity, and be refused as "not in roster" until
+	// some unrelated edit happened to bump the generation — a runner that
+	// joined a quiet fleet would simply never come into service.
+	a.rosterChanged(r.Context())
 	writeJSON(w, http.StatusCreated, map[string]string{"runner_id": id, "secret": secret})
 }
 

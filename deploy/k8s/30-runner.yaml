@@ -5,32 +5,15 @@
 # one. It is a CLIENT of the gateway (ADR-0038 §4), which is what makes the
 # deny-all-ingress-from-DMZ policy survivable.
 apiVersion: v1
-kind: ConfigMap
+kind: PersistentVolumeClaim
 metadata:
-  name: shift-runner-flows
+  name: shift-runner-state
   namespace: shift-internal
-data:
-  # The flow the gateway route names. Registered on the runner at start-up by
-  # the sidecar below; in a real deployment the hub syncs it.
-  echo.json: |
-    {
-      "document": {
-        "name": "echo",
-        "source": {"connector": "@webhook"},
-        "sink": {"connector": "@response"}
-      }
-    }
----
-# The runner's copy of the gateway control secret. A Secret cannot be mounted
-# across namespaces, so the value appears in both — which is honest about what
-# a shared secret costs, and part of why ADR-0038 §6a moves to mTLS.
-apiVersion: v1
-kind: Secret
-metadata:
-  name: shift-gateway-control
-  namespace: shift-internal
-stringData:
-  token: dev-control-secret-not-for-production
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 64Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -39,6 +22,8 @@ metadata:
   namespace: shift-internal
 spec:
   replicas: 1
+  strategy:
+    type: Recreate # one RWO credential volume; never two writers
   selector:
     matchLabels:
       app: shift-runner
@@ -59,29 +44,45 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - -listen=127.0.0.1:8340
-            # BOTH gateway replicas, addressed individually. Going through the
-            # headless service name would resolve to one arbitrary pod and
-            # strand the other (ADR-0038 §4a). The hub computes this list in a
-            # real deployment — it already holds the gateway records and the
-            # runner labels.
-            - -gateways=http://shift-gateway-0.shift-gateway-control.shift-dmz.svc.cluster.local:8444,http://shift-gateway-1.shift-gateway-control.shift-dmz.svc.cluster.local:8444
-            # What this runner IS. Gateway route selectors match against these.
-            # NOTE: this is args[2]; the README patches it by index to
-            # demonstrate placement, so inserting an argument above it will
-            # silently break that step.
-            - -labels=environment=production,workload=api
-            # Stands in for the hub's webhook sync, which is what supplies
-            # flows in a real deployment.
-            - -flows-dir=/etc/shift/flows
+            # NO -gateways. The hub computes the list and the runner
+            # DISCOVERS it (ADR-0038 §4) — it already holds the gateway records
+            # and this runner's labels, so a new DMZ host is not a fleet-wide
+            # redeploy.
+            #
+            # It is also the only list whose entries can be VERIFIED. A
+            # hub-issued gateway certificate carries no subject alternative
+            # name (a DMZ box has no stable hostname at issue time), so the
+            # runner pins the gateway's hub-assigned id from the same answer
+            # that gave it the address. A statically configured address has no
+            # id to pin and falls back to hostname verification, which such a
+            # certificate cannot satisfy.
+            # NOTE: placement labels are NOT set here. ADR-0041 made them
+            # hub-asserted — the runner proves WHO it is (mTLS identity), the
+            # hub says WHAT it is (labels) — precisely so a runner cannot
+            # place itself on a route by editing its own arguments. There is
+            # no hub in this bundle, so this runner carries no labels and the
+            # route below carries no selector.
           env:
-            # The same shared secret the gateway requires. Mirrored here rather
-            # than shared via a common Secret because the two live in different
-            # namespaces — and in a real deployment the hub distributes it.
-            - name: SHIFT_GATEWAY_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: shift-gateway-control
-                  key: token
+            # The hub. Registering with it is what gets this runner an mTLS
+            # IDENTITY (ADR-0044), and that identity is what lets it poll a
+            # gateway at all: off-loopback gateway traffic requires mTLS on
+            # both halves (ADR-0041), so a runner with no control plane now
+            # refuses to start rather than falling back to a shared secret it
+            # cannot verify the gateway with.
+            - name: SHIFT_HUB_URL
+              value: https://hubd.shift-internal.svc.cluster.local:8400
+            - name: SHIFT_HUB_CA_FILE
+              value: /bootstrap/ca.pem
+            # Registration tokens are single-use; the persisted identity is
+            # what keeps a restart working.
+            - name: SHIFT_HUB_REG_TOKEN_FILE
+              value: /bootstrap/runner-token
+            - name: SHIFT_HUB_CRED_FILE
+              value: /var/lib/shift/runner-cred.json
+            # The private key is the runner's ALONE — on its own volume, never
+            # the shared bootstrap one that several pods mount.
+            - name: SHIFT_RUNNER_IDENTITY_DIR
+              value: /var/lib/shift/identity
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -91,14 +92,32 @@ spec:
             requests: {cpu: 100m, memory: 128Mi}
             limits: {memory: 512Mi}
           volumeMounts:
-            - name: flows
-              mountPath: /etc/shift/flows
-              readOnly: true
             - name: scratch
               mountPath: /tmp
+            # The bootstrap volume carries the hub CA and the single-use
+            # registration token. Read-only: the runner consumes this material,
+            # it never writes to the shared bundle.
+            - name: bootstrap
+              mountPath: /bootstrap
+              readOnly: true
+            # The runner's OWN state: its mTLS private key and issued
+            # certificate. Deliberately not the shared volume — the key is the
+            # runner's alone, and a bundle several pods mount is the wrong
+            # place for it.
+            - name: state
+              mountPath: /var/lib/shift
       volumes:
-        - name: flows
-          configMap:
-            name: shift-runner-flows
+        - name: bootstrap
+          persistentVolumeClaim:
+            claimName: shift-bootstrap
+        # A PVC, not an emptyDir, and the reason is a bug this bundle used to
+        # have: the runner's hub CREDENTIAL lives here. The registration token
+        # that obtains it is SINGLE-USE by design, so a runner that lost its
+        # credential on every restart would try to register again with a token
+        # already burned — and stay 401 forever. Persisting the credential is
+        # what makes a restart a restart rather than a re-install.
+        - name: state
+          persistentVolumeClaim:
+            claimName: shift-runner-state
         - name: scratch
           emptyDir: {}

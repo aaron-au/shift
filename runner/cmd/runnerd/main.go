@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -15,7 +16,9 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -42,6 +45,22 @@ import (
 
 // version is stamped via -ldflags at release build time.
 var version = "dev"
+
+// loopbackGateway reports whether a gateway control-listener URL addresses
+// only this host. Anything else is reachable by something that is not the
+// gateway, which is what makes an unauthenticated poll an interception path.
+func loopbackGateway(addr string) bool {
+	u, err := url.Parse(addr)
+	if err != nil {
+		return false // unparseable is not a reason to relax a security gate
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 func main() {
 	var (
@@ -287,9 +306,37 @@ func main() {
 	// redeploying every runner, and a runner whose labels match no route
 	// polls nothing. Without a hub, the flag is the whole list.
 	addrs := splitList(*gatewayAddrs)
-	var discover func(context.Context) ([]string, error)
+	var discover func(context.Context) ([]gwclient.Gateway, error)
 	if client != nil {
 		discover = client.SyncGateways
+	}
+	// The runner's HUB identity is also its gateway identity (ADR-0041): one
+	// certificate, issued by the control plane, presented wherever the runner
+	// has to prove who it is. Reusing it rather than minting a second is what
+	// makes "revoke this runner" mean one thing.
+	//
+	// It carries the control-plane roots too, so the runner VERIFIES the
+	// gateway in the same handshake. That direction is the one that protects
+	// payload: a runner that cannot tell a real gateway from anything
+	// answering on that address will hand its response to whichever won.
+	var gwTLS *tls.Config
+	if renewIdentity != nil {
+		gwTLS = renewIdentity.TLSConfig()
+	}
+	// Refuse the combination that looks like it works and is not authenticated.
+	// A shared secret cannot tell this runner that the gateway is real, so an
+	// off-host address without an identity is an interception path, not a
+	// degraded mode (ADR-0041). Loopback is exempt: nothing else can reach it.
+	if gwTLS == nil {
+		for _, a := range addrs {
+			if !loopbackGateway(a) {
+				shiftlog.Fatalf("runnerd: gateway %q is not loopback and this runner has no mTLS "+
+					"identity: register with a hub (-hub) so the control plane issues one, or point "+
+					"-gateways at a loopback address. SHIFT_GATEWAY_TOKEN is not sufficient — a "+
+					"shared secret cannot tell this runner that the gateway is real, so payload can "+
+					"be delivered to anything that answers on that address", a)
+			}
+		}
 	}
 	if len(addrs) > 0 || discover != nil {
 		gw := gwclient.New(gwclient.Options{
@@ -312,6 +359,7 @@ func main() {
 			// status URL rather than one that would 404.
 			Status:          statusReader(client),
 			PollConcurrency: *gatewayPolls,
+			TLS:             gwTLS,
 			Token:           os.Getenv("SHIFT_GATEWAY_TOKEN"),
 			Log:             slog.Default(),
 			OnDone:          gatewayOnDone(report),
@@ -319,7 +367,7 @@ func main() {
 		go gw.Run(loopCtx)
 		slog.Info("gateway intake started (placement labels come from the hub, ADR-0041)",
 			shiftlog.KeyEvent, "runner.gateway.intake",
-			"gateways", len(addrs), "discovery", discover != nil)
+			"gateways", len(addrs), "discovery", discover != nil, "mtls", gwTLS != nil)
 	}
 
 	// Webhook ingress rate limit (M6c, ADR-0021), keyed {hook, source IP}.

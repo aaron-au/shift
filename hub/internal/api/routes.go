@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -231,6 +232,21 @@ func (a *api) setGatewayTrustedProxies(w http.ResponseWriter, r *http.Request) {
 // bump would leave gateways serving policy the hub no longer believes in, and
 // nothing would ever notice — the drift the reconcile loop watches for is
 // exactly the difference this raises.
+// rosterChanged raises the gateway configuration generation for a change to
+// the RUNNER fleet. Auditing is left to the caller, which already records the
+// change under the right actor — a runner registering is audited as itself,
+// an admin decommissioning one as the admin.
+//
+// A failure here must never fail the caller's operation: the runner holds a
+// valid credential either way, and the roster is re-derived from hub state on
+// the next pass.
+func (a *api) rosterChanged(ctx context.Context) {
+	if err := a.st.BumpGatewayConfig(ctx); err != nil {
+		slog.Error("raising the gateway configuration generation",
+			"event", "hub.gateway_config.bump_failed", "error", err.Error())
+	}
+}
+
 func (a *api) gatewayConfigChanged(r *http.Request, action, target string) {
 	_ = a.st.Audit(r.Context(), actor(r), action, target, nil)
 	if err := a.st.BumpGatewayConfig(r.Context()); err != nil {

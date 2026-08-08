@@ -98,7 +98,7 @@ type Options struct {
 	// A failure is NOT an empty list. The hub being unreachable says nothing
 	// about which gateways exist, so a failed pass keeps the current set and
 	// retries; only a successful answer may withdraw a gateway.
-	Discover func(ctx context.Context) ([]string, error)
+	Discover func(ctx context.Context) ([]Gateway, error)
 	// DiscoverEvery is how often to re-ask (default 60s).
 	DiscoverEvery time.Duration
 	// NB: there is deliberately NO Labels field. A runner used to state its own
@@ -164,6 +164,8 @@ type Loop struct {
 	cl   *http.Client
 	// schemas compiles each distinct input schema once (ADR-0042 §4c).
 	schemas schemaCache
+	// pins is the hub's answer to "which identity should this address prove".
+	pins *pins
 }
 
 // New builds an intake. It does not dial anything until Run.
@@ -184,6 +186,7 @@ func New(opts Options) *Loop {
 	if log == nil {
 		log = slog.Default()
 	}
+	pinned := newPins()
 	cl := opts.Client
 	if cl == nil {
 		// The connection pool MUST be sized to the poll concurrency.
@@ -215,6 +218,13 @@ func New(opts Options) *Loop {
 		// own socket, which is the pressure that caused the port exhaustion
 		// this pool is sized around (docs/bench-gateway.md).
 		tr.ForceAttemptHTTP2 = true
+		if opts.TLS != nil {
+			// Gateway identity is pinned per address (ADR-0041), which the
+			// standard verification hooks cannot express: they see one shared
+			// config, and an IP literal carries no SNI to tell connections
+			// apart. Dialling is where the address is known.
+			tr.DialTLSContext = dialPinned(opts.TLS, pinned)
+		}
 		cl = &http.Client{
 			// No client-side timeout: a poll legitimately blocks for the whole
 			// window and an execution may legitimately take longer still. The
@@ -224,7 +234,7 @@ func New(opts Options) *Loop {
 			Transport: tr,
 		}
 	}
-	return &Loop{opts: opts, log: log, cl: cl}
+	return &Loop{opts: opts, log: log, cl: cl, pins: pinned}
 }
 
 // Run polls every configured gateway until ctx ends.
@@ -272,7 +282,7 @@ func (l *Loop) Run(ctx context.Context) {
 		return
 	}
 	for ctx.Err() == nil {
-		addrs, err := l.opts.Discover(ctx)
+		gws, err := l.opts.Discover(ctx)
 		switch {
 		case err != nil:
 			// Keep serving what we already poll. The hub is the control
@@ -284,7 +294,7 @@ func (l *Loop) Run(ctx context.Context) {
 					"gateways", len(running), "error", err)
 			}
 		default:
-			l.reconcile(addrs, running, static, start)
+			l.reconcile(gws, running, static, start)
 		}
 		sleep(ctx, l.discoverEvery())
 	}
@@ -295,10 +305,13 @@ func (l *Loop) Run(ctx context.Context) {
 }
 
 // reconcile brings the set of polled gateways in line with the hub's answer.
-func (l *Loop) reconcile(addrs []string, running map[string]context.CancelFunc, static map[string]bool, start func(string)) {
-	want := make(map[string]bool, len(addrs))
-	for _, addr := range addrs {
-		want[strings.TrimSuffix(addr, "/")] = true
+func (l *Loop) reconcile(gws []Gateway, running map[string]context.CancelFunc, static map[string]bool, start func(string)) {
+	want := make(map[string]bool, len(gws))
+	for _, g := range gws {
+		// Record the identity BEFORE starting a poll loop for the address: a
+		// dial that beat the pin would be refused by its own TLS callback.
+		l.pins.set(g.URL, g.ID)
+		want[strings.TrimSuffix(g.URL, "/")] = true
 	}
 	for addr, cancel := range running {
 		if want[addr] || static[addr] {

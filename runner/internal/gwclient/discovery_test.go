@@ -3,6 +3,7 @@ package gwclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -91,12 +92,18 @@ func runLoop(t *testing.T, opts Options) {
 func TestDiscoveredGatewaysAreAddedAndWithdrawn(t *testing.T) {
 	a, b := newStubGateway(t), newStubGateway(t)
 
-	var list atomic.Pointer[[]string]
-	set := func(urls ...string) { list.Store(&urls) }
+	var list atomic.Pointer[[]Gateway]
+	set := func(urls ...string) {
+		gws := make([]Gateway, 0, len(urls))
+		for i, u := range urls {
+			gws = append(gws, Gateway{URL: u, ID: fmt.Sprintf("gw-%d", i)})
+		}
+		list.Store(&gws)
+	}
 	set(a.url)
 
 	runLoop(t, Options{
-		Discover: func(context.Context) ([]string, error) { return *list.Load(), nil },
+		Discover: func(context.Context) ([]Gateway, error) { return *list.Load(), nil },
 	})
 
 	a.polled(t)
@@ -115,11 +122,11 @@ func TestDiscoveryFailureKeepsTheCurrentGateways(t *testing.T) {
 
 	var fail atomic.Bool
 	runLoop(t, Options{
-		Discover: func(context.Context) ([]string, error) {
+		Discover: func(context.Context) ([]Gateway, error) {
 			if fail.Load() {
 				return nil, errors.New("hub unreachable")
 			}
-			return []string{a.url}, nil
+			return []Gateway{{URL: a.url, ID: "gw-a"}}, nil
 		},
 	})
 
@@ -144,7 +151,7 @@ func TestAStaticGatewayIsNeverWithdrawn(t *testing.T) {
 	runLoop(t, Options{
 		Addrs: []string{a.url + "/"}, // trailing slash: normalised, not a second gateway
 		// The hub knows nothing about it.
-		Discover: func(context.Context) ([]string, error) { return nil, nil },
+		Discover: func(context.Context) ([]Gateway, error) { return nil, nil },
 	})
 
 	a.polled(t)

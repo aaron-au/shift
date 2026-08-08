@@ -64,3 +64,32 @@ func TestStatusReaderIsNilWithoutAHub(t *testing.T) {
 		t.Fatal("statusReader(nil) returned a non-nil interface; using it would panic")
 	}
 }
+
+// A runner that cannot authenticate the gateway it polls will hand its
+// RESPONSE — real payload, for a real caller — to whatever answered on that
+// address. A shared secret does not help: it proves the caller knows a
+// string, not that the gateway is genuine. So an off-host gateway without an
+// mTLS identity is refused at startup rather than run in a degraded mode
+// (ADR-0041).
+//
+// Loopback is exempt because nothing else can reach it, and that is the dev
+// and single-box path.
+func TestLoopbackGateway(t *testing.T) {
+	for addr, want := range map[string]bool{
+		"http://127.0.0.1:8444":   true,
+		"https://127.0.0.1:8444":  true,
+		"http://localhost:8444":   true,
+		"http://[::1]:8444":       true,
+		"http://10.0.0.5:8444":    false,
+		"http://gw.internal:8444": false,
+		"http://shift-gateway-0.shift-gateway-control.shift-dmz.svc.cluster.local:8444": false,
+		// Unparseable is NOT a reason to relax a security gate: an address
+		// nobody can read is one nobody has verified is local.
+		"://nonsense": false,
+		"":            false,
+	} {
+		if got := loopbackGateway(addr); got != want {
+			t.Errorf("loopbackGateway(%q) = %v, want %v", addr, got, want)
+		}
+	}
+}
