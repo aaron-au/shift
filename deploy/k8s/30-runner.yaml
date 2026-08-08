@@ -20,6 +20,29 @@ data:
         "sink": {"connector": "@response"}
       }
     }
+  # A v3 DAG flow: fan-out AND fan-in in one graph (ADR-0029). The tee
+  # duplicates every record to both branches and the merge concatenates them,
+  # so one record in comes back as two — which is what makes the topology
+  # visible in the response rather than something you have to take on trust.
+  #
+  # Graphs like this were validated by the hub and drawable on the canvas but
+  # NOT executable until the general segment compiler landed (issue #59), so
+  # this doubles as the deployment-level check that they now run.
+  fanout.json: |
+    {
+      "document": {
+        "name": "fanout",
+        "start": "in",
+        "steps": [
+          {"id": "in", "type": "source", "connector": "@webhook", "action": "ndjson", "onSuccess": "t"},
+          {"id": "t", "type": "tee", "branches": ["a", "b"]},
+          {"id": "a", "type": "filter", "path": "$.id", "op": "exists", "onComplete": "m"},
+          {"id": "b", "type": "filter", "path": "$.id", "op": "exists", "onComplete": "m"},
+          {"id": "m", "type": "merge", "inputs": ["a", "b"], "mode": "concat", "onSuccess": "out"},
+          {"id": "out", "type": "sink", "connector": "@response"}
+        ]
+      }
+    }
 ---
 # The runner's copy of the gateway control secret. A Secret cannot be mounted
 # across namespaces, so the value appears in both — which is honest about what
@@ -65,11 +88,12 @@ spec:
             # real deployment — it already holds the gateway records and the
             # runner labels.
             - -gateways=http://shift-gateway-0.shift-gateway-control.shift-dmz.svc.cluster.local:8444,http://shift-gateway-1.shift-gateway-control.shift-dmz.svc.cluster.local:8444
-            # What this runner IS. Gateway route selectors match against these.
-            # NOTE: this is args[2]; the README patches it by index to
-            # demonstrate placement, so inserting an argument above it will
-            # silently break that step.
-            - -labels=environment=production,workload=api
+            # NOTE: placement labels are NOT set here. ADR-0041 made them
+            # hub-asserted — the runner proves WHO it is (mTLS identity), the
+            # hub says WHAT it is (labels) — precisely so a runner cannot
+            # place itself on a route by editing its own arguments. There is
+            # no hub in this bundle, so this runner carries no labels and the
+            # route below carries no selector.
             # Stands in for the hub's webhook sync, which is what supplies
             # flows in a real deployment.
             - -flows-dir=/etc/shift/flows

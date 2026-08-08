@@ -27,15 +27,30 @@ metadata:
   name: shift-gateway-config
   namespace: shift-dmz
 data:
+  # NOTE on "selector": it is deliberately EMPTY, and an empty selector
+  # matches any runner. Placement became hub-asserted in ADR-0041 — the
+  # runner proves WHO it is, the hub says WHAT it is — so a runner no longer
+  # labels itself. This bundle has no hub, so a selector here would match
+  # nothing and every request would 503. (JSON has no comments, hence this
+  # note living on the ConfigMap rather than beside the field.)
   gateway.json: |
     {
-      "version": 1,
+      "version": 2,
       "routes": [
         {
           "path": "/orders",
           "method": "POST",
           "flow": "echo",
-          "selector": {"environment": "production", "workload": "api"},
+          "selector": {},
+          "auth_token_sha256": "7c43ef5ae21d43ce2743f770c68e24def1a43ee2f416d2438410c8af7af2ff2c",
+          "auth_principal": "acme-erp",
+          "max_body_bytes": 1048576
+        },
+        {
+          "path": "/fanout",
+          "method": "POST",
+          "flow": "fanout",
+          "selector": {},
           "auth_token_sha256": "7c43ef5ae21d43ce2743f770c68e24def1a43ee2f416d2438410c8af7af2ff2c",
           "auth_principal": "acme-erp",
           "max_body_bytes": 1048576

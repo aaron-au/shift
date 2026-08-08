@@ -149,16 +149,22 @@ kubectl --context minikube -n shift-dmz delete pod dmz-probe
 
 ### 4. Placement is enforced, not advisory
 
-`args[2]` is the `-labels` flag (see `30-runner.yaml`); flip it to staging
-while the route still asks for production:
+Placement is **hub-asserted** (ADR-0041): the runner proves WHO it is, the hub
+says WHAT it is. A runner cannot label itself, which is the point — otherwise
+eligibility would be a claim made by the thing being placed. This bundle has
+no hub, so the runner carries no labels and the route's selector is empty.
+
+That makes the route the only lever here, and it demonstrates the same
+property from the other side. Ask for a runner that does not exist:
 
 ```sh
-kubectl --context minikube -n shift-internal patch deployment shift-runner --type=json \
-  -p='[{"op":"replace","path":"/spec/template/spec/containers/0/args/2","value":"-labels=environment=staging,workload=api"}]'
-kubectl --context minikube -n shift-internal rollout status deployment/shift-runner
+kubectl --context minikube -n shift-dmz patch configmap shift-gateway-config --type=json \
+  -p='[{"op":"replace","path":"/data/gateway.json","value":"{\"version\":2,\"routes\":[{\"path\":\"/orders\",\"method\":\"POST\",\"flow\":\"echo\",\"selector\":{\"environment\":\"production\"},\"auth_token_sha256\":\"7c43ef5ae21d43ce2743f770c68e24def1a43ee2f416d2438410c8af7af2ff2c\",\"auth_principal\":\"acme-erp\",\"max_body_bytes\":1048576}]}"}]'
+kubectl --context minikube -n shift-dmz rollout restart statefulset/shift-gateway
+kubectl --context minikube -n shift-dmz rollout status statefulset/shift-gateway
 
 curl -s http://127.0.0.1:18444/healthz
-# {"config_version":1,"configured":true,"runners_parked":1}   <- it IS parked
+# {"config_version":2,"configured":true,"runners_parked":1}   <- it IS parked
 
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:18443/orders \
   -H "Authorization: Bearer $TOKEN" -d '{}'
@@ -166,11 +172,12 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:18443/orders \
 ```
 
 Parked, healthy and willing — and not eligible, because the route asks for
-`environment=production`. **503 rather than a wrong runner.** That pair of
-outputs together is the whole point: availability and eligibility are separate
-questions, and the second one is not advisory.
+`environment=production` and nothing has asserted that about this runner.
+**503 rather than a wrong runner.** That pair of outputs together is the whole
+point: availability and eligibility are separate questions, and the second one
+is not advisory.
 
-Put it back with the same patch and `production`.
+Put the empty selector back the same way to restore service.
 
 ### 5. No runner ⇒ 503, never a queue
 
