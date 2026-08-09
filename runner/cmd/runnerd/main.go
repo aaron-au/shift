@@ -100,7 +100,7 @@ func main() {
 		requireSigned = flag.Bool("require-signed", os.Getenv("SHIFT_REQUIRE_SIGNED") == "1", "refuse local connector binaries; registry-verified artifacts only")
 		users         = flag.String("users", os.Getenv("SHIFT_RUNNER_USERS"), "control-surface users \"user:bcrypt-hash:role;...\" (role: admin|operator|viewer); empty = open (loopback only)")
 		webhookRPS    = flag.Float64("rl-webhook-rps", envFloat("SHIFT_RUNNER_RL_WEBHOOK_RPS", 0), "per-{hook,IP} webhook ingress request/sec limit (0=off; M6c)")
-		taskTimeout   = flag.Duration("task-timeout", envDuration("SHIFT_RUNNER_TASK_TIMEOUT", 0), "max execution time per task (0=off; streaming workloads are legitimately long)")
+		taskTimeout   = flag.Duration("task-timeout", envDuration("SHIFT_RUNNER_TASK_TIMEOUT", service.DefaultTaskTimeout), "max execution time per task; <=0 takes the default. There is no off — an unbounded task holds its admission reservation forever. Set a very long duration to opt out deliberately")
 	)
 	flag.Parse()
 

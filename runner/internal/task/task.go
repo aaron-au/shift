@@ -174,7 +174,28 @@ func (s *Store) Add(t *Task) {
 	if len(s.order) > s.limit {
 		evict := s.order[0]
 		s.order = s.order[1:]
+		// Waiting and Running are GAUGES — how many tasks are in flight right
+		// now — unlike Submitted/Completed/Failed, which are lifetime counters.
+		// Dropping a still-in-flight task without retiring its gauge leaks it
+		// permanently: the record is gone, so the Update that would have
+		// decremented finds nothing and returns. A long-lived runner would show
+		// a Waiting/Running count that only ever climbs.
+		if old, ok := s.byID[evict]; ok {
+			s.retireGauge(old.State)
+		}
 		delete(s.byID, evict)
+	}
+}
+
+// retireGauge decrements the in-flight gauge for a task leaving state st.
+// Terminal states hold no gauge, so they retire to nothing.
+func (s *Store) retireGauge(st State) {
+	switch st {
+	case StateWaiting:
+		s.totals.Waiting--
+	case StateRunning:
+		s.totals.Running--
+	default:
 	}
 }
 
@@ -192,13 +213,22 @@ func (s *Store) Update(id string, fn func(*Task)) {
 	if before == t.State {
 		return
 	}
-	switch before {
-	case StateWaiting:
-		s.totals.Waiting--
-	case StateRunning:
-		s.totals.Running--
-	default:
+	// Terminal is terminal: an outcome, once recorded, stands. Without this a
+	// completed task later marked failed would count in BOTH lifetime totals,
+	// and since they are monotonic nothing ever takes the first one back.
+	// service.run's panic guard already refuses to re-terminate a finished
+	// task; this makes that guard a second line of defence rather than the only
+	// one.
+	//
+	// Only the STATE is restored — whatever else the callback recorded (an
+	// error string, a late capture) is kept. A caller with something to add
+	// about a finished task is not the problem; a caller silently changing what
+	// the outcome was is.
+	if before == StateCompleted || before == StateFailed {
+		t.State = before
+		return
 	}
+	s.retireGauge(before)
 	switch t.State {
 	case StateRunning:
 		s.totals.Running++
