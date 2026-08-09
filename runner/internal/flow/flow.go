@@ -14,6 +14,7 @@ import (
 	"github.com/aaron-au/shift/engine/record"
 	"github.com/aaron-au/shift/engine/stream"
 	"github.com/aaron-au/shift/pkg/flowdoc"
+	"github.com/aaron-au/shift/runner/internal/starlarkop"
 )
 
 // Aliases so runner code has one import for the document model.
@@ -83,7 +84,7 @@ func Apply(d *Document, p *stream.Pipeline, opts CompileOptions) (*stream.Pipeli
 // multi-path compiler can build the linear segments of a v3 DAG (ADR-0029).
 func ApplyOps(steps []*flowdoc.Step, p *stream.Pipeline, opts CompileOptions) (*stream.Pipeline, error) {
 	for _, s := range steps {
-		np, err := applyOp(&s.Op, p, opts)
+		np, err := applyOp(&s.Op, s.ID, p, opts)
 		if err != nil {
 			return nil, fmt.Errorf("flow: step %q: %w", s.ID, err)
 		}
@@ -122,7 +123,7 @@ func applyTransforms(main []*flowdoc.Step, p *stream.Pipeline, opts CompileOptio
 		if s.Type == flowdoc.ProbeType && !opts.Test {
 			continue
 		}
-		np, err := applyOp(&s.Op, p, opts)
+		np, err := applyOp(&s.Op, s.ID, p, opts)
 		if err != nil {
 			return nil, fmt.Errorf("flow: step %q: %w", s.ID, err)
 		}
@@ -131,7 +132,10 @@ func applyTransforms(main []*flowdoc.Step, p *stream.Pipeline, opts CompileOptio
 	return p, nil
 }
 
-func applyOp(o *Op, p *stream.Pipeline, opts CompileOptions) (*stream.Pipeline, error) {
+// applyOp lowers one transform step. id is the step's own identifier: most
+// operators are named by RenameLastOp after the fact, but a starlark step needs
+// it at COMPILE time so its errors and its fuel message can say which step.
+func applyOp(o *Op, id string, p *stream.Pipeline, opts CompileOptions) (*stream.Pipeline, error) {
 	switch o.Type {
 	case "filter":
 		pred, err := compileFilter(o)
@@ -193,6 +197,19 @@ func applyOp(o *Op, p *stream.Pipeline, opts CompileOptions) (*stream.Pipeline, 
 			return nil, err
 		}
 		return p.Map(fields), nil
+	case "starlark":
+		// Compiled once per plan build, then reused for every record. The
+		// operator attaches through the engine's public Apply hook, which is
+		// what keeps Starlark out of `engine` entirely (ADR-0052 §2).
+		prog, err := starlarkop.Compile(starlarkop.Options{
+			Script: o.Script,
+			StepID: id,
+			Fuel:   o.Fuel,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return starlarkop.Apply(p, prog, "starlark"), nil
 	default:
 		return nil, fmt.Errorf("unknown op type %q", o.Type)
 	}

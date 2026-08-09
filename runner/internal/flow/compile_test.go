@@ -1,6 +1,8 @@
 package flow
 
 import (
+	"bytes"
+	"context"
 	"math"
 	"strings"
 	"testing"
@@ -9,6 +11,7 @@ import (
 	"github.com/aaron-au/shift/engine/record"
 	"github.com/aaron-au/shift/engine/stream"
 	"github.com/aaron-au/shift/pkg/flowdoc"
+	"github.com/aaron-au/shift/runner/internal/starlarkop"
 )
 
 // These tests exercise the compile-only logic of the flow package directly:
@@ -84,14 +87,14 @@ func TestKindOf(t *testing.T) {
 }
 
 func TestApplyOpUnknownType(t *testing.T) {
-	if _, err := applyOp(&Op{Type: "nope"}, dummyPipe(t), CompileOptions{}); err == nil {
+	if _, err := applyOp(&Op{Type: "nope"}, "t1", dummyPipe(t), CompileOptions{}); err == nil {
 		t.Fatal("applyOp(unknown) = nil error, want failure")
 	}
 }
 
 func TestApplyOpCoerceUnknownKind(t *testing.T) {
 	o := &Op{Type: "coerce", Rules: []CoerceRule{{Field: "x", To: "bogus"}}}
-	if _, err := applyOp(o, dummyPipe(t), CompileOptions{}); err == nil {
+	if _, err := applyOp(o, "t1", dummyPipe(t), CompileOptions{}); err == nil {
 		t.Fatal("applyOp(coerce bad kind) = nil error, want failure")
 	}
 }
@@ -106,7 +109,7 @@ func TestApplyOpEachTypeCompiles(t *testing.T) {
 		{Type: "aggregate", Key: "$.k", Aggs: []Agg{{Op: "max", Path: "$.a", Out: "hi"}}},
 	}
 	for _, o := range ops {
-		if _, err := applyOp(o, dummyPipe(t), CompileOptions{}); err != nil {
+		if _, err := applyOp(o, "t1", dummyPipe(t), CompileOptions{}); err != nil {
 			t.Errorf("applyOp(%s) = %v", o.Type, err)
 		}
 	}
@@ -298,5 +301,63 @@ func TestAggregateMinMax(t *testing.T) {
 	}
 	if !strings.Contains(got, `"g":"b","lo":5,"hi":5`) {
 		t.Errorf("group b min/max wrong: %s", got)
+	}
+}
+
+// TestAStarlarkStepIsRefusedUnlessTheDeploymentOptsIn checks the gate through
+// the REAL compile path, not just the evaluator's own unit test: a document
+// containing a code step must fail to compile on a runner that has not opted
+// in (ADR-0052 §9). This is the check that matters, because it is the one an
+// operator's deployment actually exercises.
+func TestAStarlarkStepIsRefusedUnlessTheDeploymentOptsIn(t *testing.T) {
+	op := &Op{Type: "starlark", Script: "def transform(rec): return rec"}
+
+	t.Setenv(starlarkop.AllowEnv, "")
+	_, err := applyOp(op, "code1", dummyPipe(t), CompileOptions{})
+	if err == nil {
+		t.Fatal("a code step compiled on a runner that did not opt in")
+	}
+	if !strings.Contains(err.Error(), starlarkop.AllowEnv) {
+		t.Errorf("refusal %q does not name the setting an operator must set", err)
+	}
+
+	t.Setenv(starlarkop.AllowEnv, "1")
+	if _, err := applyOp(op, "code1", dummyPipe(t), CompileOptions{}); err != nil {
+		t.Fatalf("a code step failed to compile with the opt-in set: %v", err)
+	}
+}
+
+// TestAStarlarkStepRunsInAPipeline is the end-to-end path: document → plan →
+// engine pipeline → records out, with the exact kinds surviving.
+func TestAStarlarkStepRunsInAPipeline(t *testing.T) {
+	t.Setenv(starlarkop.AllowEnv, "1")
+
+	src := ndjson.NewReader(strings.NewReader(
+		`{"qty":3,"price":"10.10","skip":false}`+"\n"+
+			`{"qty":1,"price":"5.00","skip":true}`+"\n"), ndjson.ReaderOptions{})
+
+	p := stream.New(src, "read")
+	p, err := applyOp(&Op{Type: "coerce", Rules: []CoerceRule{{Field: "price", To: "decimal"}}},
+		"c1", p, CompileOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err = applyOp(&Op{Type: "starlark", Script: `
+def transform(rec):
+    if rec.skip:
+        return None
+    return {"total": rec.qty * rec.price}
+`}, "code1", p, CompileOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if _, err := p.Run(context.Background(), ndjson.NewWriter(&out), "write"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// One record survived (the other returned None), and 3 × 10.10 is exact.
+	if got := out.String(); got != "{\"total\":30.30}\n" {
+		t.Errorf("output = %q, want {\"total\":30.30}", got)
 	}
 }

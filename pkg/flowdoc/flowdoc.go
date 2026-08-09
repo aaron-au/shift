@@ -68,9 +68,10 @@ type Point struct {
 //
 // Type namespace:
 //   - connector: source | sink   (Connector/Action/Config apply)
-//   - transform: filter | project | coerce | flatten | aggregate (Op fields)
-//   - reserved:  starlark | python | subflow — parsed but rejected until
-//     built (custom code: ADR-0017; sub-flows: later).
+//   - transform: filter | project | coerce | flatten | aggregate | map |
+//     starlark (Op fields)
+//   - reserved:  python | subflow — parsed but rejected until built
+//     (custom code tier 2: ADR-0017; sub-flows: later).
 type Step struct {
 	ID string `json:"id"`
 	Op        // promotes Type + the transform option fields
@@ -248,7 +249,7 @@ func isConnectorType(t string) bool { return t == "source" || t == "sink" }
 
 func isTransformType(t string) bool {
 	switch t {
-	case "filter", "project", "coerce", "flatten", "aggregate", "map":
+	case "filter", "project", "coerce", "flatten", "aggregate", "map", "starlark":
 		return true
 	}
 	// A probe occupies a transform position — it sits between steps and passes
@@ -276,7 +277,7 @@ func (s *Step) usesDAG() bool {
 
 func isReservedType(t string) bool {
 	switch t {
-	case "starlark", "python", "subflow":
+	case "python", "subflow":
 		return true
 	}
 	return false
@@ -334,6 +335,15 @@ type Op struct {
 
 	// map (declarative mapper, ADR-0027)
 	Maps []MapField `json:"maps,omitempty"`
+
+	// starlark (ADR-0052). The script defines transform(rec) and returns a
+	// record, or None to drop it. Fuel bounds execution steps per record; 0
+	// takes the runner's default.
+	//
+	// The hub STORES this and never executes it — a code step runs on a runner
+	// only, and a runner refuses it entirely unless the deployment opted in.
+	Script string `json:"script,omitempty"`
+	Fuel   uint64 `json:"fuel,omitempty"`
 }
 
 // MapField is one output assignment of a map (mapper) op: a value written at a
@@ -349,6 +359,30 @@ type MapField struct {
 	Concat  []string        `json:"concat,omitempty"`
 	Default json.RawMessage `json:"default,omitempty"`
 	To      string          `json:"to,omitempty"`
+}
+
+// MaxScriptBytes bounds a starlark step's source in a stored document.
+//
+// Validation here is deliberately SHALLOW — shape, not semantics. The hub
+// stores flow documents and must never execute one (ADR-0052), so it cannot
+// compile a script to check it; that happens on the runner, which is also the
+// only place that knows whether the deployment permits code steps at all.
+const MaxScriptBytes = 256 << 10
+
+// validateStarlark checks what the hub can honestly check about a code step.
+func (o *Op) validateStarlark() error {
+	if strings.TrimSpace(o.Script) == "" {
+		return errors.New("starlark needs a script")
+	}
+	if len(o.Script) > MaxScriptBytes {
+		return fmt.Errorf("starlark script is %d bytes, limit is %d", len(o.Script), MaxScriptBytes)
+	}
+	// A missing entry point is the one mistake worth catching before the flow
+	// reaches a runner, because it fails every record rather than some.
+	if !strings.Contains(o.Script, "def transform") {
+		return errors.New(`starlark script must define transform(rec)`)
+	}
+	return nil
 }
 
 // MapOutSegments splits a mapper output path ("customer.name", "$.a.b") into
@@ -561,6 +595,8 @@ func (o *Op) validate() error {
 				return fmt.Errorf("project field %s needs an out name", f.Path)
 			}
 		}
+	case "starlark":
+		return o.validateStarlark()
 	case "coerce":
 		if len(o.Rules) == 0 {
 			return errors.New("coerce needs rules")
