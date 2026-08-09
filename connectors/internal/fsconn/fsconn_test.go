@@ -464,3 +464,96 @@ func TestAnUnknownFormatIsRefused(t *testing.T) {
 		t.Errorf("the error does not name the offending format: %v", err)
 	}
 }
+
+// TestPutGetRoundTripFixedWidth is the wiring test for the fixed-width format:
+// the package can be complete and well-tested in isolation and still not exist
+// as far as a flow author is concerned, which is exactly what happened to xmlf.
+// It also carries an exact decimal all the way through a connector — the point
+// of ADR-0051 meeting the format that needs it most.
+func TestPutGetRoundTripFixedWidth(t *testing.T) {
+	root := testRoot(t)
+	ctx := context.Background()
+
+	columns := []any{
+		map[string]any{"name": "id", "width": 6, "type": "int", "pad": "0"},
+		map[string]any{"name": "sku", "width": 8, "type": "string"},
+		map[string]any{"width": 2}, // filler
+		map[string]any{"name": "amount", "width": 9, "type": "decimal", "scale": 2, "pad": "0"},
+	}
+	cfg := map[string]any{
+		"root": root, "path": "out.txt", "format": "fixedw", "columns": columns,
+	}
+
+	sink := &putSink{}
+	if err := sink.Open(ctx, cfgJSON(t, cfg)); err != nil {
+		t.Fatalf("put open: %v", err)
+	}
+	batch := record.NewBatch()
+	bld := batch.Builder()
+	bld.BeginMap()
+	bld.KeyLiteral("id")
+	bld.Int(42)
+	bld.KeyLiteral("sku")
+	bld.StringLiteral("ABC")
+	bld.KeyLiteral("amount")
+	bld.Decimal(1010, 2) // 10.10
+	bld.EndMap()
+	batch.Append(bld.Finish())
+	if err := sink.Write(ctx, batch); err != nil {
+		t.Fatalf("put write: %v", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("put close: %v", err)
+	}
+
+	// The bytes on disk are the layout, with the decimal point implied.
+	//nolint:gosec // the path is this test's own t.TempDir()
+	onDisk, err := os.ReadFile(filepath.Join(root, "out.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	//            id      sku (8)    filler  amount (9, implied point)
+	if want := "000042" + "ABC     " + "  " + "000001010" + "\n"; string(onDisk) != want {
+		t.Errorf("file = %q, want %q", onDisk, want)
+	}
+
+	src := &getSource{}
+	if err := src.Open(ctx, cfgJSON(t, cfg)); err != nil {
+		t.Fatalf("get open: %v", err)
+	}
+	defer func() { _ = src.Close() }()
+
+	got, err := src.Next(ctx)
+	if err != nil {
+		t.Fatalf("get next: %v", err)
+	}
+	if got.Len() != 1 {
+		t.Fatalf("read %d records, wrote 1", got.Len())
+	}
+	rec := got.Record(0)
+	if v, _ := rec.Field("id"); v.Int() != 42 {
+		t.Errorf("id = %d", v.Int())
+	}
+	if v, _ := rec.Field("sku"); v.String() != "ABC" {
+		t.Errorf("sku = %q", v.String())
+	}
+	// The amount survives as an exact decimal, not as a float.
+	if v, _ := rec.Field("amount"); v.Kind() != record.KindDecimal || v.Text() != "10.10" {
+		t.Errorf("amount = %v %q, want decimal 10.10", v.Kind(), v.Text())
+	}
+}
+
+// TestFixedWidthWithoutColumnsIsRefused: the one format that cannot fall back
+// on a default, refused at config time rather than on the first row.
+func TestFixedWidthWithoutColumnsIsRefused(t *testing.T) {
+	root := testRoot(t)
+	err := (&getSource{}).Open(context.Background(), cfgJSON(t, map[string]any{
+		"root": root, "path": "f.txt", "format": "fixedw",
+	}))
+	if err == nil {
+		t.Fatal("fixedw was accepted with no column layout")
+	}
+	if !strings.Contains(err.Error(), "column layout") {
+		t.Errorf("the refusal does not explain itself: %v", err)
+	}
+}

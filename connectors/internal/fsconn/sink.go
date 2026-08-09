@@ -46,7 +46,7 @@ func (s *putSink) Open(_ context.Context, config []byte) error {
 	}
 	s.f = f
 	s.tmpPath = f.Name()
-	wr, err := fileformat.NewWriter(s.cfg.Format, f, fileformat.Options{RecordElement: s.cfg.RecordElement})
+	wr, err := fileformat.NewWriter(s.cfg.Format, f, fileformat.Options{RecordElement: s.cfg.RecordElement, Columns: s.cfg.Columns})
 	if err != nil {
 		return err
 	}

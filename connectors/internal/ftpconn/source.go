@@ -36,7 +36,7 @@ func (s *getSource) Open(ctx context.Context, config []byte) error {
 		return err
 	}
 	s.closer, s.rc = closer, rc
-	rd, err := fileformat.NewReader(s.cfg.Format, rc, fileformat.Options{RecordElement: s.cfg.RecordElement})
+	rd, err := fileformat.NewReader(s.cfg.Format, rc, fileformat.Options{RecordElement: s.cfg.RecordElement, Columns: s.cfg.Columns})
 	if err != nil {
 		return err
 	}

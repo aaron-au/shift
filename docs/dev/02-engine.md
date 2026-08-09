@@ -237,6 +237,26 @@ for which topologies it currently supports (issue #59).
   to the repeated element that produced it, so a document round-trips.
   Namespace prefixes deliberately do NOT survive: the reader strips them, so
   inventing one on the way out would be a guess.
+- `fixedw`: column-positional fixed width — the last of ADR-0004's
+  first-class workloads, and the only format here that is **not
+  self-describing**, so the layout is configuration rather than a default (a
+  `fixedw` node with no `columns` is refused, not defaulted). Columns are
+  contiguous and a gap is an unnamed **filler**, exactly as the copybooks that
+  produce these files express it — there are deliberately no start offsets to
+  drift out of sync after an edit. This is where ADR-0051 pays: `zoned`
+  overpunch decimals (`0001010{` is +10100, `0001010}` is negative — the sign
+  lives in the last byte) and implied decimal places (`Scale`) are the format's
+  native vocabulary, and reading them as `float64` would reintroduce rounding
+  at the very first step.
+
+  Everything positional fails silently when it is wrong, so this package
+  **refuses rather than guesses**: a short record is an error, unexpected
+  trailing content is an error, and a value too wide for its column is an error
+  rather than a trim — a silently truncated account number is indistinguishable
+  from a real one downstream. The same principle covers precision: writing
+  10.105 into a 2-decimal column is refused, while 10.1000 (trailing zeros
+  only) rescales silently. The default trim is chosen by pad character, because
+  stripping a zero pad from both ends would read "000100" as 1.
 - `edi`: X12 and EDIFACT, one record per **segment**
   (`{tag, elements:[[components]]}`). Structure, not semantics — no envelope
   grouping, no transaction-set validation. Delimiters are discovered from the

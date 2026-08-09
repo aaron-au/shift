@@ -26,7 +26,11 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "sftp",
-		Version: "0.4.0",
+		Version: "0.5.0",
+		// Adds the fixedw format and its `columns` layout field: a widened
+		// enum and a new optional property, so every stored config still
+		// loads and every existing flow still runs (ADR-0047 §6).
+		Compat: "compatible",
 		Meta: &sdk.ConnectorMeta{
 			Description: "SFTP file operations: pick a verb (get/put/list/delete/mkdir/rmdir/rename) and a path. Host-key verified.",
 			Category:    "file-transfer",
@@ -79,7 +83,8 @@ var (
   "required":["host","user","path"],"properties":{` + connProps + `,
     "path": {"type": "string", "title": "Remote path", "description": "Path to the remote file"},
     "format": ` + fileformat.SchemaEnum() + `,
-    "record_element": ` + fileformat.RecordElementProp + `
+    "record_element": ` + fileformat.RecordElementProp + `,
+    "columns": ` + fileformat.ColumnsProp() + `
   }}`
 
 	listConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"SFTP list",
@@ -119,10 +124,14 @@ type config struct {
 	Format     string `json:"format"`
 	// RecordElement names the XML element that delimits one record.
 	// Ignored by the other formats, which have no equivalent notion.
-	RecordElement  string `json:"record_element,omitempty"`
-	Recursive      bool   `json:"recursive"` // rmdir: remove non-empty trees
-	AllowLocal     bool   `json:"allow_local"`
-	TimeoutSeconds int    `json:"timeout_seconds"`
+	RecordElement string `json:"record_element,omitempty"`
+	// Columns is the fixed-width layout. Required when Format is "fixedw",
+	// ignored otherwise: a fixed-width file has no delimiters, so nothing
+	// can be read out of it without being told where the fields are.
+	Columns        []fileformat.Column `json:"columns,omitempty"`
+	Recursive      bool                `json:"recursive"` // rmdir: remove non-empty trees
+	AllowLocal     bool                `json:"allow_local"`
+	TimeoutSeconds int                 `json:"timeout_seconds"`
 }
 
 // parseConfig unmarshals and validates the connection fields (shared by every
@@ -157,7 +166,7 @@ func (c *config) requireFileFormat() error {
 	if c.Path == "" {
 		return errors.New("sftp: path is required")
 	}
-	return fileformat.Validate("sftp", &c.Format)
+	return fileformat.Validate("sftp", &c.Format, c.Columns)
 }
 
 // requireDir validates the list config: a remote directory path.

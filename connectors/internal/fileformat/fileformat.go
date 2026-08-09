@@ -24,6 +24,7 @@ import (
 
 	"github.com/aaron-au/shift/engine/format/csvf"
 	"github.com/aaron-au/shift/engine/format/edi"
+	"github.com/aaron-au/shift/engine/format/fixedw"
 	"github.com/aaron-au/shift/engine/format/ndjson"
 	"github.com/aaron-au/shift/engine/format/xmlf"
 	"github.com/aaron-au/shift/engine/record"
@@ -37,6 +38,10 @@ const (
 	// EDI covers both wire syntaxes; which one a file uses is detected from
 	// its own interchange header, never configured.
 	EDI = "edi"
+	// FIXEDW is column-positional fixed width. Unlike every other format here
+	// it is not self-describing: the layout has to be configured, because the
+	// file itself says nothing about where a field starts.
+	FIXEDW = "fixedw"
 
 	// Default is what an unset format means. NDJSON, because it is the only
 	// one of the three that is lossless for the hierarchical record model:
@@ -45,7 +50,7 @@ const (
 )
 
 // Supported lists every format, in the order a config form should offer them.
-var Supported = []string{NDJSON, CSV, XML, EDI}
+var Supported = []string{NDJSON, CSV, XML, EDI, FIXEDW}
 
 // SchemaEnum renders the format field for a connector's JSON config schema, so
 // the studio's dropdown and this package's validation cannot disagree.
@@ -77,16 +82,26 @@ type Writer interface {
 // It takes a pointer because normalising in place is the point: every caller
 // would otherwise have to remember to write the default back, and one that
 // forgot would pass "" to Open and silently get NDJSON.
-func Validate(connector string, format *string) error {
+func Validate(connector string, format *string, cols []Column) error {
 	if *format == "" {
 		*format = Default
-		return nil
 	}
 	if !slices.Contains(Supported, *format) {
 		return fmt.Errorf("%s: unsupported format %q (want %s)",
 			connector, *format, strings.Join(Supported, ", "))
 	}
-	return nil
+	if *format != FIXEDW {
+		return nil
+	}
+	// Fixed width is the one format that cannot be used without configuration:
+	// there are no delimiters to fall back on, so an absent layout is a config
+	// error rather than a default.
+	if len(cols) == 0 {
+		return fmt.Errorf("%s: format %q needs a column layout; a fixed-width file has no "+
+			"delimiters, so the columns must be declared", connector, FIXEDW)
+	}
+	_, err := toEngine(connector, cols)
+	return err
 }
 
 // Options carry the per-format settings a connector exposes. Zero values take
@@ -102,6 +117,9 @@ type Options struct {
 	// NoHeader suppresses the CSV header row on write and treats the first
 	// row as data on read.
 	NoHeader bool
+	// Columns is the fixed-width layout. Required for FIXEDW, ignored
+	// otherwise.
+	Columns []Column
 }
 
 // NewReader builds the reader for a validated format.
@@ -120,6 +138,12 @@ func NewReader(format string, r io.Reader, opts Options) (Reader, error) {
 		return xmlf.NewReader(r, xmlf.ReaderOptions{RecordElement: opts.RecordElement}), nil
 	case EDI:
 		return edi.NewReader(r, edi.ReaderOptions{}), nil
+	case FIXEDW:
+		cols, err := toEngine("fixedw", opts.Columns)
+		if err != nil {
+			return nil, err
+		}
+		return fixedw.NewReader(r, fixedw.ReaderOptions{Columns: cols}), nil
 	default:
 		return nil, fmt.Errorf("fileformat: no reader for format %q", format)
 	}
@@ -144,6 +168,12 @@ func NewWriter(format string, w io.Writer, opts Options) (Writer, error) {
 		// write something a trading partner will reject.
 		return nil, errors.New("fileformat: EDI is read-only; writing an interchange needs envelope " +
 			"construction (control numbers, segment counts) that this connector does not do")
+	case FIXEDW:
+		cols, err := toEngine("fixedw", opts.Columns)
+		if err != nil {
+			return nil, err
+		}
+		return fixedw.NewWriter(w, fixedw.WriterOptions{Columns: cols}), nil
 	default:
 		return nil, fmt.Errorf("fileformat: no writer for format %q", format)
 	}
