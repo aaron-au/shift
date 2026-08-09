@@ -258,6 +258,11 @@ func (w *Writer) scalar(v record.Value) (string, error) {
 			return "", fmt.Errorf("value %v has no XML representation", f)
 		}
 		return strconv.FormatFloat(f, 'g', -1, 64), nil
+	case record.KindDecimal, record.KindTimestamp, record.KindDate, record.KindTime:
+		// XML Schema's own lexical forms for xs:decimal, xs:dateTime, xs:date
+		// and xs:time are exactly the canonical renderings, so no format-
+		// specific spelling is needed here.
+		return v.Text(), nil
 	case record.KindString, record.KindBytes:
 		return v.String(), nil
 	default:

@@ -37,7 +37,17 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "db",
-		Version: "0.2.0",
+		Version: "0.3.0",
+		// behaviour-change, not compatible: the config surface is untouched, so
+		// the compat gate cannot see this — but the OUTPUT moved. A NUMERIC
+		// column used to arrive as a string and now arrives as an exact
+		// decimal, which in NDJSON turns "10.10" into 10.10 (a quoted string
+		// becomes a bare number), and a timestamp column is now a native
+		// instant rather than an RFC 3339 string. Same rendered text for the
+		// timestamp, same value for the numeric, different JSON type for a
+		// downstream consumer that cares. ADR-0047 §6 exists for exactly what
+		// the gate cannot see.
+		Compat: "behaviour-change",
 		Meta: &sdk.ConnectorMeta{
 			Description: "PostgreSQL: query rows (SELECT → records), upsert records (INSERT … ON CONFLICT DO UPDATE), or exec a non-returning statement. Parameterized SQL only; network-guarded.",
 			Category:    "database",

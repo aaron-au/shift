@@ -219,7 +219,8 @@ func (s *syncSource) Checkpoint() []byte {
 // advances or advances wrongly.
 func watermarkJSON(v record.Value) (json.RawMessage, error) {
 	switch v.Kind() {
-	case record.KindInt, record.KindFloat, record.KindString, record.KindBytes:
+	case record.KindInt, record.KindFloat, record.KindString, record.KindBytes,
+		record.KindDecimal, record.KindTimestamp, record.KindDate, record.KindTime:
 		return json.Marshal(scalarOf(v))
 	case record.KindNull:
 		return nil, errors.New("value is NULL; a NULL watermark cannot order rows")
@@ -234,6 +235,15 @@ func scalarOf(v record.Value) any {
 		return v.Int()
 	case record.KindFloat:
 		return v.Float()
+	case record.KindDecimal:
+		// json.Marshal of a float64 would round the cursor, and a rounded
+		// cursor either re-reads rows or skips them. json.Number carries the
+		// exact digits through Marshal as a bare number.
+		return json.Number(v.DecimalText())
+	case record.KindTimestamp, record.KindDate, record.KindTime:
+		// RFC 3339 text, which is what cursorArg parses back — the same
+		// spelling the row mapper used to emit directly.
+		return v.Text()
 	default:
 		return v.String()
 	}
@@ -241,10 +251,16 @@ func scalarOf(v record.Value) any {
 
 // cursorArg converts the stored JSON watermark into a query argument.
 //
-// A timestamp arrives as an RFC 3339 string (that is how the row mapper
-// renders it), and is passed back as time.Time so the driver binds it as a
-// timestamp rather than as text — comparing a timestamp column against a
-// string is a type error in PostgreSQL, not a silent coercion.
+// A timestamp arrives as an RFC 3339 string and is passed back as time.Time so
+// the driver binds it as a timestamp rather than as text — comparing a
+// timestamp column against a string is a type error in PostgreSQL, not a silent
+// coercion.
+//
+// Native timestamps (ADR-0051) do not remove this step, which is worth stating
+// because it looks like they should: the cursor is PERSISTED as JSON between
+// runs, and JSON has no temporal type, so the value arrives here as a string
+// however the row mapper produced it. What changed is only that the string is
+// now written from a real instant rather than from a stringified one.
 func cursorArg(raw json.RawMessage) (any, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("db: no cursor value; set cursor_initial for the first run")

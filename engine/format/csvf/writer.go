@@ -100,6 +100,12 @@ func (w *Writer) cell(v record.Value) (string, error) {
 		}
 		w.scratch = strconv.AppendFloat(w.scratch[:0], f, 'g', -1, 64)
 		return string(w.scratch), nil
+	case record.KindDecimal, record.KindTimestamp, record.KindDate, record.KindTime:
+		// The canonical rendering, shared with every other writer: a decimal
+		// keeps every digit its scale claims, which is the whole point of the
+		// kind in a format whose columns are usually money.
+		w.scratch = v.AppendText(w.scratch[:0])
+		return string(w.scratch), nil
 	case record.KindString, record.KindBytes:
 		return v.String(), nil
 	default:

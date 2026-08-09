@@ -25,7 +25,7 @@ type querySource struct {
 	rows    *sql.Rows
 	cols    []string
 	colKeys [][]byte // stable per-connector key bytes (KeyNoCopy)
-	isJSON  []bool
+	colHint []colHint
 	scan    []any // per-row scan destinations (reused)
 	holders []any // pointers into scan (reused)
 	batch   *record.Batch
@@ -60,8 +60,8 @@ func (s *querySource) Open(ctx context.Context, cfgBytes []byte) error {
 	return nil
 }
 
-// start wires the source to an open cursor: column names, per-column JSON
-// detection, and reusable scan buffers. Split out from Open so the row→record
+// start wires the source to an open cursor: column names, per-column type
+// hints, and reusable scan buffers. Split out from Open so the row→record
 // mapping is testable against any *sql.Rows (e.g. go-sqlmock) without a live
 // database.
 func (s *querySource) start(rows *sql.Rows) error {
@@ -76,14 +76,14 @@ func (s *querySource) start(rows *sql.Rows) error {
 	s.rows = rows
 	s.cols = cols
 	s.colKeys = make([][]byte, len(cols))
-	s.isJSON = make([]bool, len(cols))
+	s.colHint = make([]colHint, len(cols))
 	s.scan = make([]any, len(cols))
 	s.holders = make([]any, len(cols))
 	for i, c := range cols {
 		s.colKeys[i] = []byte(c)
 		s.holders[i] = &s.scan[i]
 		if i < len(colTypes) {
-			s.isJSON[i] = strings.Contains(strings.ToUpper(colTypes[i].DatabaseTypeName()), "JSON")
+			s.colHint[i] = hintFor(colTypes[i].DatabaseTypeName())
 		}
 	}
 	s.batch = record.NewBatch()
@@ -125,7 +125,7 @@ func (s *querySource) mapRow(ctx context.Context) {
 	bld.BeginMap()
 	for i := range s.cols {
 		bld.KeyNoCopy(s.colKeys[i])
-		appendValue(ctx, s.batch, bld, s.scan[i], s.isJSON[i])
+		appendValue(ctx, s.batch, bld, s.scan[i], s.colHint[i])
 	}
 	bld.EndMap()
 	s.batch.Append(bld.Finish())

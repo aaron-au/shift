@@ -71,8 +71,12 @@ func TestQueryRowMapping(t *testing.T) {
 	if v, _ := rec.Field("active"); v.Kind() != record.KindBool || !v.Bool() {
 		t.Fatalf("active = %v", v)
 	}
-	if v, _ := rec.Field("created"); !strings.HasPrefix(v.String(), "2026-07-25T10:30:00") {
-		t.Fatalf("created = %q", v.String())
+	// A timestamp column is a native instant now (ADR-0051), not the RFC 3339
+	// string it used to be stringified into. The rendered text is unchanged —
+	// still UTC — so no flow's output moves; only the kind does.
+	if v, _ := rec.Field("created"); v.Kind() != record.KindTimestamp ||
+		!strings.HasPrefix(v.Text(), "2026-07-25T10:30:00") {
+		t.Fatalf("created = %v %q", v.Kind(), v.Text())
 	}
 	if v, _ := rec.Field("note"); v.Kind() != record.KindNull {
 		t.Fatalf("note = %v, want null", v)

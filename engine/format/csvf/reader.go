@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 
 	"github.com/aaron-au/shift/engine/record"
 )
@@ -19,11 +20,20 @@ import (
 type ColumnType uint8
 
 // Column types. Untyped columns pass through as strings.
+//
+// TypeDecimal and the temporal types are the declared opt-in from ADR-0051 §5:
+// a CSV cell is text, so nothing about "10.10" says whether it is a float or an
+// exact decimal, and only the column type can. Declaring TypeDecimal on a money
+// column is what stops it round-tripping as 10.099999999999999645.
 const (
 	TypeString ColumnType = iota
 	TypeInt
 	TypeFloat
 	TypeBool
+	TypeDecimal
+	TypeTimestamp
+	TypeDate
+	TypeTime
 )
 
 // Batch sizing defaults (same rationale as ndjson).
@@ -160,6 +170,26 @@ func (r *Reader) Next(ctx context.Context) (*record.Batch, error) {
 	return r.batch, nil
 }
 
+// parseTyped parses the exact kinds. The cell is trimmed first: a fixed-width
+// export padded into CSV is common, and " 10.10 " is the same amount as
+// "10.10" — whereas a trailing space would make the parse fail for a reason
+// the author cannot see in their spreadsheet.
+func parseTyped(t ColumnType, cell string) (record.Value, error) {
+	s := []byte(strings.TrimSpace(cell))
+	switch t {
+	case TypeDecimal:
+		return record.ParseDecimal(s)
+	case TypeTimestamp:
+		return record.ParseTimestamp(s)
+	case TypeDate:
+		return record.ParseDate(s)
+	case TypeTime:
+		return record.ParseTimeOfDay(s)
+	default:
+		return record.Value{}, fmt.Errorf("unknown column type %d", t)
+	}
+}
+
 func (r *Reader) cell(bld *record.Builder, t ColumnType, cell string) error {
 	switch t {
 	case TypeString:
@@ -186,6 +216,17 @@ func (r *Reader) cell(bld *record.Builder, t ColumnType, cell string) error {
 			return fmt.Errorf("not a float: %q", cell)
 		}
 		bld.Float(f)
+		return nil
+	case TypeDecimal, TypeTimestamp, TypeDate, TypeTime:
+		if cell == "" {
+			bld.Null()
+			return nil
+		}
+		v, err := parseTyped(t, cell)
+		if err != nil {
+			return err
+		}
+		bld.Value(v)
 		return nil
 	case TypeBool:
 		switch cell {

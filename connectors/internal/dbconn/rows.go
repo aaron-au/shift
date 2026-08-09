@@ -15,13 +15,39 @@ import (
 	"github.com/aaron-au/shift/engine/record"
 )
 
+// colHint is what the column's declared database type tells us about a cell
+// that its Go type does not. Both cases exist because the driver hands back a
+// string or []byte either way: JSON needs parsing into a nested record, and
+// NUMERIC needs parsing into an exact decimal rather than being left as text or
+// widened to a float (ADR-0051 §5 — a declared type is the opt-in).
+type colHint uint8
+
+const (
+	hintNone colHint = iota
+	hintJSON
+	hintDecimal
+)
+
+// hintFor classifies a column from its database type name. Matching is by
+// substring on the upper-cased name so that dialect spellings and sized
+// declarations ("NUMERIC(12,2)", "DECIMAL") all land correctly.
+func hintFor(dbType string) colHint {
+	u := strings.ToUpper(dbType)
+	switch {
+	case strings.Contains(u, "JSON"):
+		return hintJSON
+	case strings.Contains(u, "NUMERIC"), strings.Contains(u, "DECIMAL"), strings.Contains(u, "MONEY"):
+		return hintDecimal
+	default:
+		return hintNone
+	}
+}
+
 // appendValue maps one scanned SQL value onto the record builder, into batch.
 // The set of Go types is what database/sql yields when scanning into
 // *interface{} (the pgx stdlib driver included): nil, bool, int64, float64,
-// []byte, string, time.Time. json/jsonb columns arrive as []byte/string and are
-// parsed into a nested record (see appendJSON) so downstream steps can navigate
-// them.
-func appendValue(ctx context.Context, batch *record.Batch, bld *record.Builder, v any, isJSON bool) {
+// []byte, string, time.Time.
+func appendValue(ctx context.Context, batch *record.Batch, bld *record.Builder, v any, hint colHint) {
 	switch t := v.(type) {
 	case nil:
 		bld.Null()
@@ -34,28 +60,68 @@ func appendValue(ctx context.Context, batch *record.Batch, bld *record.Builder, 
 	case int:
 		bld.Int(int64(t))
 	case float64:
+		if hint == hintDecimal {
+			appendDecimalText(bld, strconv.FormatFloat(t, 'f', -1, 64))
+			return
+		}
 		bld.Float(t)
 	case float32:
 		bld.Float(float64(t))
 	case time.Time:
-		bld.StringLiteral(t.UTC().Format(time.RFC3339Nano))
+		// A native instant rather than the RFC 3339 string this used to emit,
+		// so comparisons downstream are chronological instead of lexical.
+		//
+		// Normalised to UTC deliberately: the previous rendering was always
+		// UTC, and keeping the driver's session zone here would silently change
+		// the text of every timestamp field in every existing db flow (same
+		// instant, different spelling) — the kind of surprise ADR-0051 §5 exists
+		// to avoid.
+		bld.TimestampAt(t.UTC())
 	case []byte:
-		if isJSON {
+		switch hint {
+		case hintJSON:
 			appendJSON(ctx, batch, bld, t)
-			return
+		case hintDecimal:
+			appendDecimalText(bld, string(t))
+		default:
+			bld.String(t)
 		}
-		bld.String(t)
 	case string:
-		if isJSON {
+		switch hint {
+		case hintJSON:
 			appendJSON(ctx, batch, bld, []byte(t))
+		case hintDecimal:
+			appendDecimalText(bld, t)
+		default:
+			bld.StringLiteral(t)
+		}
+	default:
+		// uuid and other driver types surface as their Go String() form; keep
+		// the value rather than dropping it. A driver-specific numeric type
+		// lands here too, and its String() is the exact digits, so the decimal
+		// hint still applies.
+		str := fmt.Sprint(t)
+		if hint == hintDecimal {
+			appendDecimalText(bld, str)
 			return
 		}
-		bld.StringLiteral(t)
-	default:
-		// numeric/decimal, uuid, and other driver types surface as their Go
-		// String() form; keep the value rather than dropping it.
-		bld.StringLiteral(fmt.Sprint(t))
+		bld.StringLiteral(str)
 	}
+}
+
+// appendDecimalText emits text from a NUMERIC column as an exact decimal,
+// falling back to the text itself when it is not a number.
+//
+// The fallback matters: NUMERIC in PostgreSQL also admits 'NaN' (and, from
+// PG 14, '-Infinity'/'Infinity'), which have no decimal representation.
+// Dropping the row or erroring would be worse than handing on what the database
+// actually holds.
+func appendDecimalText(bld *record.Builder, s string) {
+	if d, err := record.ParseDecimal([]byte(strings.TrimSpace(s))); err == nil {
+		bld.Value(d)
+		return
+	}
+	bld.StringLiteral(s)
 }
 
 // appendJSON parses a json/jsonb cell into a nested record value. jsonb scans
@@ -105,6 +171,20 @@ func valueToArg(v record.Value) any {
 		return v.String()
 	case record.KindBytes:
 		return v.Bytes()
+	case record.KindDecimal:
+		// Bound as exact text, not as a float64: the driver sends it as a
+		// parameter and PostgreSQL coerces it to NUMERIC losslessly, whereas a
+		// float64 would round on the way in and defeat the point of the kind.
+		return v.DecimalText()
+	case record.KindTimestamp, record.KindDate:
+		// time.Time so the driver binds a timestamp/date rather than text —
+		// comparing a timestamp column against a string is a type error in
+		// PostgreSQL, not a silent coercion.
+		return v.AsTime()
+	case record.KindTime:
+		// No date to attach, so bind the clock text and let the column type
+		// decide; a TIME column takes it, anything else says so.
+		return v.Text()
 	case record.KindList, record.KindMap:
 		var buf bytes.Buffer
 		encodeJSON(&buf, v)
@@ -130,6 +210,10 @@ func encodeJSON(buf *bytes.Buffer, v record.Value) {
 		buf.WriteString(strconv.FormatInt(v.Int(), 10))
 	case record.KindFloat:
 		buf.WriteString(strconv.FormatFloat(v.Float(), 'g', -1, 64))
+	case record.KindDecimal:
+		buf.WriteString(v.DecimalText()) // a bare JSON number, exact digits
+	case record.KindTimestamp, record.KindDate, record.KindTime:
+		writeJSONString(buf, []byte(v.Text())) // JSON has no temporal type
 	case record.KindString, record.KindBytes:
 		writeJSONString(buf, v.Bytes())
 	case record.KindList:
