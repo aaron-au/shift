@@ -1,12 +1,14 @@
 package flow
 
 import (
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/aaron-au/shift/engine/format/ndjson"
 	"github.com/aaron-au/shift/engine/record"
 	"github.com/aaron-au/shift/engine/stream"
+	"github.com/aaron-au/shift/pkg/flowdoc"
 )
 
 // These tests exercise the compile-only logic of the flow package directly:
@@ -184,7 +186,9 @@ func TestCompileFilterMissingPath(t *testing.T) {
 }
 
 func TestCompileFilterFloatValue(t *testing.T) {
-	// A fractional JSON number stays a float scalar and compares numerically.
+	// A fractional JSON literal is now parsed as an exact decimal (ADR-0051),
+	// but comparing it against a float field still goes through float64, so
+	// the result is unchanged from when the literal was itself a float.
 	pred, err := compileFilter(&Op{Path: "$.a", Cmp: "gt", Value: []byte(`1.5`)})
 	if err != nil {
 		t.Fatal(err)
@@ -197,12 +201,59 @@ func TestCompileFilterFloatValue(t *testing.T) {
 	}
 }
 
-func TestIsNumeric(t *testing.T) {
-	if !isNumeric(record.Int(1)) || !isNumeric(record.Float(1)) {
-		t.Error("int/float should be numeric")
+// TestEveryCoerceKindFlowdocAcceptsIsExecutable closes the gap between the two
+// halves of the coerce contract: flowdoc.CoerceKinds decides what a stored
+// document may say, kindOf decides what the runner can execute, and a name
+// legal in one but not the other is a flow that validates at publish and fails
+// at run time — the worst place to find out.
+func TestEveryCoerceKindFlowdocAcceptsIsExecutable(t *testing.T) {
+	for name := range flowdoc.CoerceKinds {
+		if _, err := kindOf(name); err != nil {
+			t.Errorf("flowdoc accepts coerce kind %q but the runner cannot execute it: %v", name, err)
+		}
 	}
-	if isNumeric(record.UnsafeString([]byte("x"))) || isNumeric(record.Bool(true)) || isNumeric(record.Null()) {
-		t.Error("string/bool/null should not be numeric")
+	if _, err := kindOf("datetime"); err == nil {
+		t.Error("kindOf accepted a kind flowdoc rejects")
+	}
+}
+
+// TestOrderedComparisonsAreExactForDecimals: the filter used to compare through
+// float64, so a money threshold was only as precise as the float was.
+func TestOrderedComparisonsAreExactForDecimals(t *testing.T) {
+	// 0.1 + 0.2 as decimals is exactly 0.3, so "gt 0.3" must be false for it.
+	pred, err := compileFilter(&Op{Path: "$.a", Cmp: "gt", Value: []byte("0.3")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pred(mapRec(t, "a", record.Decimal(3, 1))) {
+		t.Error("0.3 > 0.3 must be false")
+	}
+	if !pred(mapRec(t, "a", record.Decimal(31, 2))) {
+		t.Error("0.31 > 0.3 must be true")
+	}
+	// A very large int is compared exactly rather than through a float64 that
+	// cannot represent it.
+	big, err := compileFilter(&Op{Path: "$.a", Cmp: "gt", Value: []byte("9007199254740992")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !big(mapRec(t, "a", record.Int(9007199254740993))) {
+		t.Error("2^53+1 > 2^53 must be true")
+	}
+}
+
+func TestUnorderableOperandsDoNotMatch(t *testing.T) {
+	pred, err := compileFilter(&Op{Path: "$.a", Cmp: "gt", Value: []byte("1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []record.Value{
+		record.UnsafeString([]byte("x")), record.Null(), record.Bool(true),
+		record.Float(math.NaN()),
+	} {
+		if pred(mapRec(t, "a", v)) {
+			t.Errorf("%v must not satisfy an ordered comparison against a number", v.Kind())
+		}
 	}
 }
 

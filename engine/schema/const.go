@@ -63,7 +63,10 @@ func (c *constVal) equal(v record.Value) bool {
 		switch v.Kind() {
 		case record.KindInt:
 			return float64(v.Int()) == c.f
-		case record.KindFloat:
+		case record.KindFloat, record.KindDecimal:
+			// The schema's own constant came from JSON and is a float64, so
+			// this comparison is as exact as that float is — widening the
+			// decimal is not what loses precision here, the schema literal is.
 			return v.Float() == c.f
 		default:
 			return false

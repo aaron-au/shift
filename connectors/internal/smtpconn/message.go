@@ -43,6 +43,8 @@ func valueString(v record.Value) string {
 		return strconv.FormatInt(v.Int(), 10)
 	case record.KindFloat:
 		return strconv.FormatFloat(v.Float(), 'g', -1, 64)
+	case record.KindDecimal, record.KindTimestamp, record.KindDate, record.KindTime:
+		return v.Text()
 	case record.KindBool:
 		return strconv.FormatBool(v.Bool())
 	case record.KindNull:

@@ -7,6 +7,7 @@
 package flowdoc
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -367,7 +368,8 @@ type ProjectField struct {
 	Path string `json:"path"`
 }
 
-// CoerceRule converts a top-level field to a kind (int|float|bool|string).
+// CoerceRule converts a top-level field to a kind
+// (int|float|bool|string|decimal|timestamp|date|time).
 type CoerceRule struct {
 	Field string `json:"field"`
 	To    string `json:"to"`
@@ -381,7 +383,17 @@ type Agg struct {
 }
 
 // CoerceKinds are the legal CoerceRule.To names.
-var CoerceKinds = map[string]bool{"int": true, "float": true, "bool": true, "string": true}
+//
+// decimal/timestamp/date/time are the exact kinds from ADR-0051. Declaring one
+// is how a flow opts a field out of float64: a JSON payload's 10.10 stays a
+// float unless something says otherwise, and a coerce step is that something.
+//
+// The set only ever grows. Widening it is safe for stored documents; removing a
+// name would invalidate every document already using it.
+var CoerceKinds = map[string]bool{
+	"int": true, "float": true, "bool": true, "string": true,
+	"decimal": true, "timestamp": true, "date": true, "time": true,
+}
 
 // Parse decodes and validates a flow document.
 func Parse(data []byte) (*Document, error) {
@@ -699,6 +711,16 @@ func ScalarValue(raw json.RawMessage) (record.Value, error) {
 	case float64:
 		if x == float64(int64(x)) {
 			return record.Int(int64(x)), nil
+		}
+		// A fractional literal becomes a DECIMAL, parsed from the raw JSON
+		// text rather than from the float64 above, so the comparison a flow
+		// author wrote is the comparison that runs: `amount gt 100.50` against
+		// a decimal column is then exact on both sides. Against a float column
+		// nothing changes — a comparison involving a float still goes through
+		// float64 (ADR-0051 §4) — so this widens exactness without altering
+		// any existing float-to-float result.
+		if d, err := record.ParseDecimal(bytes.TrimSpace(raw)); err == nil {
+			return d, nil
 		}
 		return record.Float(x), nil
 	case string:

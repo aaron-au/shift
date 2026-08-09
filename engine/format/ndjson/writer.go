@@ -61,6 +61,22 @@ func (w *Writer) value(v record.Value) error {
 		return err
 	case record.KindFloat:
 		return w.float(v.Float())
+	case record.KindDecimal:
+		// A bare JSON number, with every digit the scale claims. Quoting it
+		// would be safer against consumers that parse into a float64 and lose
+		// the precision again, but it would also change the JSON *type* of the
+		// field, which breaks schema-validating consumers. Writing the exact
+		// digits is the honest rendering; what the reader does with them is
+		// the reader's contract, not ours.
+		w.scratch = v.AppendDecimal(w.scratch[:0])
+		_, err := w.w.Write(w.scratch)
+		return err
+	case record.KindTimestamp, record.KindDate, record.KindTime:
+		// JSON has no temporal type, so these are strings — RFC 3339 for an
+		// instant, ISO 8601 for a bare date or time. They need no escaping,
+		// but they go through str anyway so there is one place that decides.
+		w.scratch = v.AppendText(w.scratch[:0])
+		return w.str(w.scratch)
 	case record.KindString:
 		return w.str(v.Bytes())
 	case record.KindBytes:

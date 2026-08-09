@@ -26,7 +26,9 @@ func TestMapValidation(t *testing.T) {
 		{"no out", `{"type":"map","maps":[{"from":"$.a"}]}`, "needs an out path"},
 		{"two sources", `{"type":"map","maps":[{"out":"a","from":"$.a","const":"x"}]}`, "exactly one of from/const/concat"},
 		{"no source", `{"type":"map","maps":[{"out":"a"}]}`, "exactly one of from/const/concat"},
-		{"bad coerce", `{"type":"map","maps":[{"out":"a","from":"$.a","to":"date"}]}`, "unknown coerce kind"},
+		// "date" became a legal kind in ADR-0051; this needs a name that is
+		// genuinely not one.
+		{"bad coerce", `{"type":"map","maps":[{"out":"a","from":"$.a","to":"datetime"}]}`, "unknown coerce kind"},
 		{"collision", `{"type":"map","maps":[{"out":"a","const":"x"},{"out":"a.b","const":"y"}]}`, "collides"},
 		{"bad path", `{"type":"map","maps":[{"out":"a","from":"$.["}]}`, ""},
 	}

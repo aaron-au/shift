@@ -192,6 +192,10 @@ func valueToString(v record.Value) (string, error) {
 		return strconv.FormatInt(v.Int(), 10), nil
 	case record.KindFloat:
 		return strconv.FormatFloat(v.Float(), 'g', -1, 64), nil
+	case record.KindDecimal, record.KindTimestamp, record.KindDate, record.KindTime:
+		// The canonical text, so a decimal stored in Redis keeps every digit
+		// its scale claims rather than arriving as a rounded float.
+		return v.Text(), nil
 	case record.KindBool:
 		return strconv.FormatBool(v.Bool()), nil
 	case record.KindNull:

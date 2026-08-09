@@ -202,10 +202,14 @@ func (e *evaluator) eval(n *node, v record.Value) {
 		e.evalArray(n, v)
 	case record.KindString:
 		e.evalString(n, v)
-	case record.KindInt, record.KindFloat:
+	case record.KindInt, record.KindFloat, record.KindDecimal:
 		e.evalNumber(n, v)
-	case record.KindNull, record.KindBool, record.KindBytes:
-		// No further assertions apply to these kinds.
+	case record.KindNull, record.KindBool, record.KindBytes,
+		record.KindTimestamp, record.KindDate, record.KindTime:
+		// No further assertions apply to these kinds. The temporal ones cannot
+		// occur in a document this package validates — input arrives as JSON or
+		// YAML and parses to strings — so asserting string keywords against
+		// them would invent a lexical form the schema never described.
 	}
 }
 
@@ -338,6 +342,8 @@ func describe(v record.Value) string {
 		return strconv.FormatInt(v.Int(), 10)
 	case record.KindFloat:
 		return num(v.Float())
+	case record.KindDecimal, record.KindTimestamp, record.KindDate, record.KindTime:
+		return v.Text()
 	case record.KindString:
 		s := v.String()
 		if len(s) > 40 {
@@ -432,9 +438,32 @@ func (t typeSet) matches(v record.Value) bool {
 		// 1.0 satisfies "integer". Rejecting it would fail every caller whose
 		// JSON encoder writes trailing zeros.
 		return t&typeInteger != 0 && v.Float() == math.Trunc(v.Float())
+	case record.KindDecimal:
+		if t&typeNumber != 0 {
+			return true
+		}
+		// Same rule as the float case, decided exactly: 10.00 is an integer,
+		// and asking float64 would be a needlessly lossy way to find out.
+		return t&typeInteger != 0 && decimalIsIntegral(v)
 	default:
 		return false
 	}
+}
+
+// decimalIsIntegral reports whether a decimal has no fractional part, without
+// going through float64.
+func decimalIsIntegral(v record.Value) bool {
+	coef, scale := v.Decimal()
+	if scale <= 0 {
+		return true // a non-positive scale only ever multiplies
+	}
+	for ; scale > 0; scale-- {
+		if coef%10 != 0 {
+			return false
+		}
+		coef /= 10
+	}
+	return true
 }
 
 func (t typeSet) String() string {

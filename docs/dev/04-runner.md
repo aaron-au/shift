@@ -93,7 +93,7 @@ Declarative JSON — deliberately plain data (AI/developer-friendly, no DSL):
              "config": {"url": "https://api.example.com/orders"}},
   "ops": [
     {"type": "filter",  "path": "$.active", "op": "eq", "value": true},
-    {"type": "coerce",  "rules": [{"field": "amount", "to": "float"}]},
+    {"type": "coerce",  "rules": [{"field": "amount", "to": "decimal"}]},
     {"type": "flatten", "sep": "_"},
     {"type": "project", "fields": [{"path": "$.id"}, {"out": "city", "path": "$.address_city"}]},
     {"type": "aggregate", "key": "$.region",
@@ -107,8 +107,22 @@ Declarative JSON — deliberately plain data (AI/developer-friendly, no DSL):
 Validation is **eager** (submit time): paths compile, op shapes check,
 filter values must be scalars. Compilation (`flow.Apply`) maps ops 1:1
 onto engine operators; filter comparisons are `eq/ne` on scalars
-(`EqualScalar`) and `gt/gte/lt/lte` numeric-only; a path miss fails the
-predicate (missing ≠ null).
+(`EqualScalar`) and `gt/gte/lt/lte` via `record.Compare`; a path miss fails the
+predicate (missing ≠ null), and so does an unorderable pair (a number against a
+string, or a NaN) rather than an invented ordering.
+
+Coerce targets are `flowdoc.CoerceKinds`:
+`int|float|bool|string|decimal|timestamp|date|time`. The exact kinds are
+ADR-0051's opt-in — the example above declares `amount` a **decimal**, so the
+`sum` below it is exact to the cent rather than accumulating float error. The
+name set and the runner's `kindOf` must agree, and a test asserts they do: a
+name legal in one but not the other is a flow that validates at publish and
+fails at run time.
+
+A fractional filter literal (`{"op":"gt","value":100.50}`) is itself parsed as
+an exact decimal, so a money threshold compares exactly against a decimal
+column. Against a float column the comparison still goes through `float64`, so
+no existing result changes.
 
 **Flow model v2 (M5a, ADR-0013).** A document is a **graph of steps**.
 The linear `source/ops/sink` above is kept as sugar; the graph form uses

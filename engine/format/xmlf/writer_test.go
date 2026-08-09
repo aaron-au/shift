@@ -2,10 +2,12 @@ package xmlf
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aaron-au/shift/engine/record"
 )
@@ -436,6 +438,46 @@ func TestAFailureAtAnyPointInTheDocumentSurfaces(t *testing.T) {
 		cerr := w.Close()
 		if werr == nil && cerr == nil {
 			t.Errorf("failing after %d bytes produced a clean write AND a clean close; the file is truncated and nothing says so", n)
+		}
+	}
+}
+
+// TestExactKindsUseTheirXMLSchemaLexicalForms: xs:decimal, xs:dateTime,
+// xs:date and xs:time all spell values the way record.Text does, so a decimal
+// written to XML keeps every digit its scale claims instead of arriving as a
+// float rendering.
+func TestExactKindsUseTheirXMLSchemaLexicalForms(t *testing.T) {
+	b := record.NewBatch()
+	bld := b.Builder()
+	bld.BeginMap()
+	bld.KeyLiteral("amount")
+	bld.Decimal(1010, 2)
+	bld.KeyLiteral("at")
+	bld.TimestampAt(time.Date(2026, 8, 8, 9, 30, 0, 0, time.UTC))
+	bld.KeyLiteral("on")
+	bld.Date(20673)
+	bld.KeyLiteral("tod")
+	bld.TimeOfDay(int64(14*time.Hour + 30*time.Minute))
+	bld.EndMap()
+	b.Append(bld.Finish())
+
+	var buf bytes.Buffer
+	w := NewWriter(&buf, WriterOptions{RecordElement: "row"})
+	if err := w.Write(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	for _, want := range []string{
+		"<amount>10.10</amount>",
+		"<at>2026-08-08T09:30:00Z</at>",
+		"<on>2026-08-08</on>",
+		"<tod>14:30:00</tod>",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %s:\n%s", want, got)
 		}
 	}
 }

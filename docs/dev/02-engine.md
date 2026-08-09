@@ -135,12 +135,15 @@ value: both of those are indistinguishable from a correct total downstream. The
 exact accumulator is only consulted for an `AggSum`, so `MIN` over values too
 large to add still works.
 
-MIN/MAX keep a `record.Value`, so an extreme comes out with the kind and scale
-of the input it came from rather than widened to a float. Retaining a Value
-across batches is safe **only** because a numeric scalar lives inline; `observe`
-rejects every non-numeric kind before it can reach there, and the spill reader
-re-checks, so a corrupt segment cannot leave an extreme pointing into a
-recycled arena.
+MIN/MAX keep the extreme as `record.ScalarBits` — a scalar's inline payload, 16
+bytes rather than a `Value`'s 88 — so an extreme comes out with the kind and
+scale of the input it came from rather than widened to a float. The compact form
+is not a micro-optimisation: one `Value` per group per agg measured 317.9 MiB at
+a million groups against 202.0 MiB for the bits (docs/bench-M1.md). Holding it
+across batches is safe **only** because a numeric scalar has no arena or slab
+pointers; `observe` rejects every non-numeric kind before it can reach there,
+and the spill reader re-checks, so a corrupt segment cannot leave an extreme
+pointing into a recycled arena.
 
 ## Multi-path execution — fan-out and fan-in (ADR-0029)
 
@@ -214,9 +217,20 @@ for which topologies it currently supports (issue #59).
   run the fuzzer when touching it (`go test -fuzz=FuzzDifferential`).
   Strictness notes: JSON number grammar enforced (stdlib's `ParseFloat`
   alone would accept `01`, `1.`); raw invalid UTF-8 passes through on read
-  and is sanitized on write (documented divergence).
+  and is sanitized on write (documented divergence). **Reading is unchanged by
+  ADR-0051** — a bare `10.10` is still a float — because promoting every
+  fractional JSON number would move the output of every existing flow. Writing
+  a decimal emits a bare JSON number with the exact digits (quoting it would
+  change the field's JSON *type* and break schema-validating consumers);
+  temporal values write as RFC 3339 / ISO 8601 strings, JSON having no
+  temporal type.
 - `csvf`: `encoding/csv` in `ReuseRecord` mode + per-column type hints
-  (int/float/bool; empty typed cells → null).
+  (int/float/bool/decimal/timestamp/date/time; empty typed cells → null; cells
+  are trimmed before typed parsing, since CSV exported from a fixed-width
+  system carries padding). `TypeDecimal` is what makes a money column
+  round-trip: read and written back, `10.10` is still `10.10`, where a float
+  column returns `10.1` (both directions are asserted in
+  `TestAMoneyColumnRoundTripsExactly`).
 - `xmlf`: streaming reader over `encoding/xml`'s token stream (at most one
   record's subtree resident), plus a writer that is its **exact inverse** —
   attributes back to attributes, `#text` back to character data, a list back

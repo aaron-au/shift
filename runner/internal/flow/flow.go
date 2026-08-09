@@ -279,30 +279,33 @@ func compileFilter(o *Op) (func(record.Value) bool, error) {
 			default: // endsWith
 				return strings.HasSuffix(gs, ws)
 			}
-		default: // ordered comparisons: numeric only
-			if !isNumeric(got) || !isNumeric(want) {
+		default: // ordered comparisons
+			// record.Compare keeps int and decimal exact (no float64 in the
+			// path) and reports incomparable operands rather than inventing an
+			// ordering — a NaN, or a number against a string. An unorderable
+			// pair does not match, which is what the float comparison did too.
+			c, ok := record.Compare(got, want)
+			if !ok {
 				return false
 			}
-			g, w := got.Float(), want.Float()
 			switch cmp {
 			case "gt":
-				return g > w
+				return c > 0
 			case "gte":
-				return g >= w
+				return c >= 0
 			case "lt":
-				return g < w
+				return c < 0
 			case "lte":
-				return g <= w
+				return c <= 0
 			}
 			return false
 		}
 	}, nil
 }
 
-func isNumeric(v record.Value) bool {
-	return v.Kind() == record.KindInt || v.Kind() == record.KindFloat
-}
-
+// kindOf maps a flowdoc coerce kind name to a record kind. The name set is
+// flowdoc.CoerceKinds; the two must agree, and a name legal there but missing
+// here would be a document that validates and then fails at execution.
 func kindOf(name string) (record.Kind, error) {
 	switch name {
 	case "int":
@@ -313,6 +316,14 @@ func kindOf(name string) (record.Kind, error) {
 		return record.KindBool, nil
 	case "string":
 		return record.KindString, nil
+	case "decimal":
+		return record.KindDecimal, nil
+	case "timestamp":
+		return record.KindTimestamp, nil
+	case "date":
+		return record.KindDate, nil
+	case "time":
+		return record.KindTime, nil
 	default:
 		return 0, fmt.Errorf("unknown coerce kind %q", name)
 	}
