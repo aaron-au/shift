@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/aaron-au/shift/engine/mem"
@@ -69,8 +70,11 @@ type dagRun struct {
 	// downstream readers is compiled once. Fan-out nodes are absent: they have
 	// N outputs, and each successor edge gets its own pipe in edgeIn.
 	arriving map[string]stream.Source
-	edgeIn   map[string]stream.Source // "from→to" → the pipe feeding that edge
-	builtFO  map[string]bool          // fan-out nodes whose driver is built
+	// edgeIn maps "from→to" to the pipe feeding that edge. Producer and
+	// consumer have to name the edge identically or the stream is simply lost;
+	// buildFanOut states the convention.
+	edgeIn  map[string]stream.Source
+	builtFO map[string]bool // fan-out nodes whose driver is built
 
 	stages     []func(context.Context) (stageResult, error)
 	confirmers []func() int64
@@ -117,11 +121,9 @@ func (r *dagRun) compile() error {
 	// Fan-out drivers first. Building them registers the pipes their branches
 	// feed, which the sink stages below then read — and it marks the sinks a
 	// branch drives directly, so those do not get a second stage.
-	for id, n := range r.plan.Nodes {
-		if isFanOut(r.plan, n, id) {
-			if err := r.buildFanOut(id); err != nil {
-				return err
-			}
+	for _, id := range r.fanOutOrder() {
+		if err := r.buildFanOut(id); err != nil {
+			return err
 		}
 	}
 	// Then every remaining sink.
@@ -137,6 +139,55 @@ func (r *dagRun) compile() error {
 		return errors.New("service: flow has no runnable terminal")
 	}
 	return nil
+}
+
+// fanOutOrder lists every fan-out node in DEPENDENCY order: a fan-out never
+// appears before one it is downstream of.
+//
+// Build order is load-bearing rather than cosmetic. Compiling a fan-out
+// registers the pipes its branches feed (see edgeIn's key convention on
+// buildFanOut); a fan-out further down the graph resolves its own input by
+// looking those pipes up. Compile the downstream one first and the pipe it
+// needs does not exist yet, so the lookup misses and the compiler falls back to
+// rebuilding the upstream segment from scratch — which fails, because that
+// segment starts at a fan-out branch that is already spoken for. plan.Nodes is
+// a Go map, so iterating it directly made that a coin flip on one document:
+// the same flow ran or failed depending on nothing at all.
+//
+// Sorting ids alphabetically would make it deterministic without making it
+// correct — the constraint is the edge direction, not the name.
+func (r *dagRun) fanOutOrder() []string {
+	roots := make([]string, 0, len(r.plan.Nodes))
+	for id, n := range r.plan.Nodes {
+		if isFanOut(r.plan, n, id) {
+			roots = append(roots, id)
+		}
+	}
+	// Sorted only so the walk starts from a stable place; the order it emits is
+	// the ancestors-first one below.
+	slices.Sort(roots)
+
+	seen := make(map[string]bool, len(r.plan.Nodes))
+	out := make([]string, 0, len(roots))
+	var visit func(string)
+	visit = func(id string) {
+		if seen[id] {
+			return
+		}
+		seen[id] = true // marked before recursing, so a malformed cycle terminates
+		preds := append([]string(nil), r.preds[id]...)
+		slices.Sort(preds)
+		for _, p := range preds {
+			visit(p)
+		}
+		if n := r.plan.Nodes[id]; n != nil && isFanOut(r.plan, n, id) {
+			out = append(out, id)
+		}
+	}
+	for _, id := range roots {
+		visit(id)
+	}
+	return out
 }
 
 // isDataNode reports whether a node is on the data path rather than an error
@@ -198,7 +249,18 @@ func (r *dagRun) buildFanOut(id string) error {
 			// and the node downstream reads the other half.
 			pipe := stream.NewPipe(0)
 			sink = pipe.Sink()
-			last := sid
+			// edgeIn is keyed by the PLAN EDGE the pipe crosses:
+			// (immediate predecessor of the consumer, the consumer). That is the
+			// only name the consumer has for its input — a merge names the step
+			// whose output feeds it, and segmentTo walks back one edge at a time
+			// — so both sides must agree on it. They must also agree that the
+			// pipe carries the branch's operators ALREADY APPLIED.
+			//
+			// With operators on the branch that predecessor is the last of them.
+			// With NONE the fan-out itself is the predecessor: segmentFrom
+			// returns endID == sid for an empty branch, so keying by sid would
+			// register endID→endID, which nothing ever looks up (TC-027).
+			last := id
 			if len(ops) > 0 {
 				last = ops[len(ops)-1].ID
 			}
@@ -410,22 +472,33 @@ func (r *dagRun) segmentTo(id string) (stream.Source, string, []*flowdoc.Step, e
 			return nil, "", nil, fmt.Errorf("service: node %q has %d inputs; only a merge may have more than one", cur, len(ps))
 		}
 		p := ps[0]
-		// A fan-out predecessor means this edge is fed by a pipe.
-		if pn := r.plan.Nodes[p]; pn != nil && isFanOut(r.plan, pn, p) {
-			if err := r.buildFanOut(p); err != nil {
-				return nil, "", nil, err
-			}
-			src, ok := r.edgeIn[edgeKey(cur, id)]
-			if !ok {
-				// The branch ran straight to a sink, so there is no pipe: the
-				// caller is asking for a stream that is already consumed.
-				return nil, "", nil, fmt.Errorf("service: node %q reads a fan-out branch that terminates elsewhere", id)
-			}
-			return src, cur, reverse(chain), nil
-		}
 		pn := r.plan.Nodes[p]
 		if pn == nil {
 			return nil, "", nil, fmt.Errorf("service: unknown node %q", p)
+		}
+		// A fan-out predecessor means this edge is fed by a pipe. compile()
+		// builds fan-outs upstream-first so the pipe already exists; building
+		// here as well is what makes segmentTo safe to call from inside that
+		// compilation, and buildFanOut is memoised so it costs nothing.
+		fanOut := isFanOut(r.plan, pn, p)
+		if fanOut {
+			if err := r.buildFanOut(p); err != nil {
+				return nil, "", nil, err
+			}
+		}
+		// Looked up under the same (predecessor, consumer) key buildFanOut
+		// registers, one edge at a time. Testing it at every hop rather than
+		// only at the fan-out is what keeps the two in step: the pipe ends at
+		// the branch's LAST operator, so a walk that first collected the whole
+		// chain back to the branch's first would be asking about a different
+		// edge — and would then re-apply operators the pipe already carries.
+		if src, ok := r.edgeIn[edgeKey(p, cur)]; ok {
+			return src, cur, reverse(chain), nil
+		}
+		if fanOut {
+			// The branch ran straight to a sink, so there is no pipe: the
+			// caller is asking for a stream that is already consumed.
+			return nil, "", nil, fmt.Errorf("service: node %q reads a fan-out branch that terminates elsewhere", id)
 		}
 		if isTransformStep(pn) {
 			chain = append(chain, pn)

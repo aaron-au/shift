@@ -124,16 +124,12 @@ type topoGen struct {
 	// that quietly degenerates to source→sink is caught by the corpus check
 	// rather than passing 32 vacuous cases.
 	feat map[string]int
-	// noFanOut suppresses fan-out generation for the subgraph being built. It
-	// is set downstream of a merge whose inputs come from a fan-out — a shape
-	// ADR-0029 permits and the DAG compiler resolves ORDER-DEPENDENTLY today:
-	// compiling the downstream fan-out first re-enters the merge before the
-	// upstream fan-out has registered its branch pipes, and the run fails with
-	// "reads a fan-out branch that terminates elsewhere". Which of the two
-	// happens is Go map iteration order over plan.Nodes, so the same document
-	// runs or fails at random. A real defect, reported separately; excluded
-	// here so this test fails on regressions rather than on a coin flip.
-	noFanOut bool
+	// belowFedMerge is set while generating the subgraph downstream of a merge
+	// whose inputs come from a fan-out. A fan-out there is the shape whose
+	// compilation used to depend on Go map iteration order (TC-028): the same
+	// document ran or failed at random. It is tallied, not suppressed — the
+	// corpus check below insists the corpus keeps containing it.
+	belowFedMerge bool
 }
 
 func newTopoGen(seed uint64) *topoGen {
@@ -189,12 +185,6 @@ func (g *topoGen) source() flow.Step {
 func (g *topoGen) chain(in mset, depth int, insideFanOut bool) string {
 	if depth <= 0 || g.budgeted() {
 		return g.sink(in)
-	}
-	if g.noFanOut {
-		if g.rnd.IntN(3) == 0 {
-			return g.sink(in)
-		}
-		return g.transform(in, depth, insideFanOut)
 	}
 	switch g.rnd.IntN(11) {
 	case 0, 1:
@@ -263,6 +253,9 @@ func (g *topoGen) tee(in mset, depth int, insideFanOut bool) string {
 	if insideFanOut {
 		g.feat["nested-fanout"]++
 	}
+	if g.belowFedMerge {
+		g.feat["fanout-below-merge"]++
+	}
 	g.feat["tee"]++
 	width := 2 + g.rnd.IntN(2)
 	for range width {
@@ -280,6 +273,9 @@ func (g *topoGen) router(in mset, depth int, insideFanOut bool) string {
 	r := step(g.id("rt"), "router")
 	if insideFanOut {
 		g.feat["nested-fanout"]++
+	}
+	if g.belowFedMerge {
+		g.feat["fanout-below-merge"]++
 	}
 	g.feat["router"]++
 
@@ -325,8 +321,8 @@ func (g *topoGen) router(in mset, depth int, insideFanOut bool) string {
 }
 
 // teeIntoMerge is the mixed shape: one stream teed in two, each leg carrying
-// its own operators, then joined back at a merge. ADR-0029 names the
-// enrichment version of this as the most common real integration.
+// its own operators — or none at all — then joined back at a merge. ADR-0029
+// names the enrichment version of this as the most common real integration.
 func (g *topoGen) teeIntoMerge(in mset, depth int, insideFanOut bool) string {
 	t := step(g.id("tee"), "tee")
 	if insideFanOut {
@@ -337,8 +333,15 @@ func (g *topoGen) teeIntoMerge(in mset, depth int, insideFanOut bool) string {
 
 	// The merge id is allocated first so both legs can point at it.
 	mergeID := g.id("mg")
-	entryA, lastA, outA := g.leg(in.clone(), mergeID)
-	entryB, lastB, outB := g.leg(in.clone(), mergeID)
+	entryA, lastA, outA := g.leg(in.clone(), t.ID, mergeID, 0)
+	// The two legs may not BOTH be empty: that would give the tee the same
+	// branch twice and the merge one producer named twice, which is a different
+	// (and invalid) document, not the shape under test.
+	minB := 0
+	if entryA == mergeID {
+		minB = 1
+	}
+	entryB, lastB, outB := g.leg(in.clone(), t.ID, mergeID, minB)
 	t.Branches = []string{entryA, entryB}
 	g.add(t)
 
@@ -346,17 +349,23 @@ func (g *topoGen) teeIntoMerge(in mset, depth int, insideFanOut bool) string {
 	return t.ID
 }
 
-// leg builds a tee branch as a short run of transforms ending at `to`. It
-// always emits at least one operator, and that is load-bearing rather than
-// cosmetic: a fan-out branch that reaches a merge with NO intervening step is
-// a topology pkg/flowdoc accepts and the DAG compiler then refuses at run time
-// ("fan-out %q has no branch feeding %q") — a real defect, reported separately
-// and deliberately not generated here so this test fails only on regressions.
-func (g *topoGen) leg(in mset, to string) (entry, last string, out mset) {
+// leg builds a tee branch as a short run of transforms ending at `to`, or —
+// when it draws zero operators and minOps allows it — as no steps at all, so
+// the tee feeds the merge directly.
+//
+// The empty leg is deliberate: it is a topology pkg/flowdoc accepts, and the
+// DAG compiler used to refuse it at run time because the branch pipe was keyed
+// under the merge's own id rather than the fan-out's (TC-027). Both the entry
+// the tee branches to and the producer the merge names are then the FAN-OUT.
+func (g *topoGen) leg(in mset, fanOutID, to string, minOps int) (entry, last string, out mset) {
 	// Kinds are drawn first so the multiset can be computed forwards while the
 	// steps are wired backwards (each needs its successor's id).
-	kinds := make([]int, 1+g.rnd.IntN(2))
+	kinds := make([]int, max(minOps, g.rnd.IntN(3)))
 	out = in.clone()
+	if len(kinds) == 0 {
+		g.feat["empty-merge-leg"]++
+		return to, fanOutID, out
+	}
 	for i := range kinds {
 		kinds[i] = g.rnd.IntN(3)
 		if kinds[i] == 2 {
@@ -406,7 +415,7 @@ func (g *topoGen) merge(fromA string, outA mset, fromB string, outB mset, depth 
 
 // buildMerge creates the merge node with the given id and continues downstream.
 // fedByFanOut says its inputs come from a tee/router rather than from roots;
-// see topoGen.noFanOut for why that constrains what may follow it.
+// see topoGen.belowFedMerge for why that matters to what follows it.
 func (g *topoGen) buildMerge(id, fromA string, outA mset, fromB string, outB mset, depth int, fedByFanOut bool) {
 	m := step(id, "merge")
 	m.Inputs = []string{fromA, fromB}
@@ -450,8 +459,8 @@ func (g *topoGen) buildMerge(id, fromA string, outA mset, fromB string, outB mse
 		}
 	}
 
-	defer func(prev bool) { g.noFanOut = prev }(g.noFanOut)
-	g.noFanOut = g.noFanOut || fedByFanOut
+	defer func(prev bool) { g.belowFedMerge = prev }(g.belowFedMerge)
+	g.belowFedMerge = g.belowFedMerge || fedByFanOut
 	m.OnSuccess = g.chain(merged, depth-1, false)
 	g.add(m)
 }
@@ -514,6 +523,11 @@ func TestAnyGeneratedValidTopologyExecutesAndConservesRecords(t *testing.T) {
 		"tee", "router", "router-default", "router-drops",
 		"merge-concat", "merge-join", "join-inner", "join-left",
 		"nested-fanout", "fanout-into-fanin", "two-sources",
+		// The two shapes this test was once blind to (TC-027, TC-028). They are
+		// listed here so the blindness cannot come back by accident: a generator
+		// change that stopped producing them fails the corpus check rather than
+		// quietly reporting 32 green cases again.
+		"empty-merge-leg", "fanout-below-merge",
 	} {
 		if corpus[want] == 0 {
 			t.Errorf("the generated corpus contains no %q shape; the generator has degenerated", want)
