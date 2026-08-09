@@ -174,7 +174,7 @@ func newToken() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-func (p *Process) connect(ctx context.Context, socket string, timeout time.Duration) error {
+func (p *Process) connect(ctx context.Context, socket string, timeout time.Duration) (err error) {
 	conn, err := grpc.NewClient("unix://"+socket,
 		grpc.WithTransportCredentials(insecure.NewCredentials()), // UDS in a 0700 dir + token auth (ADR-0007)
 		// gRPC's default reconnect BaseDelay is one second. On a local UDS
@@ -199,6 +199,20 @@ func (p *Process) connect(ctx context.Context, socket string, timeout time.Durat
 	}
 	p.conn = conn
 	p.client = connectorpb.NewConnectorClient(conn)
+
+	// A ClientConn owns background goroutines that outlive this call, and BOTH
+	// callers discard p when connect fails — Launch kills the child and deletes
+	// the socket dir, Attach returns nil — so nothing downstream can ever close
+	// it. Closing here, once, on every failure path: the handshake timeout used
+	// to be the only arm that did, which leaked a connection per failed launch.
+	// A runner is long-lived and the pool relaunches, so a connector that keeps
+	// dying leaked one of these per attempt, forever (ADR-0005).
+	defer func() {
+		if err != nil {
+			_ = conn.Close()
+			p.conn, p.client = nil, nil
+		}
+	}()
 
 	// Handshake doubles as the readiness probe: retry until the socket
 	// serves or the deadline passes.
@@ -244,7 +258,6 @@ func (p *Process) connect(ctx context.Context, socket string, timeout time.Durat
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	_ = conn.Close()
 	return fmt.Errorf("host: handshake timed out: %w", lastErr)
 }
 

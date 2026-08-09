@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aaron-au/shift/engine/leaktest"
 	"github.com/aaron-au/shift/engine/record"
 	"github.com/aaron-au/shift/sdk"
 )
@@ -32,8 +33,24 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	case "exit":
 		os.Exit(3) // crash before ever serving the socket
+	case "serve-legacy":
+		// TC-007: a connector built against an OLDER protocol, spawned as a
+		// real subprocess so the current host's Launch path is what drives it
+		// (see legacy_connector_test.go). It cannot go through sdk.Serve —
+		// that necessarily reports the current protocol version.
+		if err := serveLegacyOn(os.Getenv(sdk.EnvSocket),
+			newLegacyServer(legacyProtocol, os.Getenv(sdk.EnvToken))); err != nil {
+			fmt.Fprintln(os.Stderr, "legacy connector:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	// TC-001 (docs/assurance/test-conformance.md). The host owns a connector
+	// SUBPROCESS plus the goroutines pumping its streams; a Close that leaves
+	// either behind is the leak that matters here, and no existing assertion
+	// would see it. Reached only in the parent process — the re-exec modes
+	// above exit before this line.
+	leaktest.Main(m)
 }
 
 // ---- test connector -------------------------------------------------------
@@ -169,15 +186,43 @@ func attachConn(t *testing.T, c sdk.Connector) *Process {
 }
 
 // serveRaw starts a connector server in-process and returns its socket,
-// token, and the channel that receives ServeOn's result. Cleanup is
-// non-blocking: callers that never Close a Process leave the serve
-// goroutine to end when the test binary exits.
+// token, and the channel that receives ServeOn's result.
+//
+// Cleanup stops the server even when the test never attached a Process — a
+// test that only proves Attach REFUSES (wrong token, bad socket) still left a
+// live gRPC server and its goroutine behind, which TC-001's leak check now
+// catches. ServeOn has no in-process stop handle other than the Shutdown RPC,
+// so cleanup asks for it exactly the way a host would.
 func serveRaw(t *testing.T, c sdk.Connector) (socket, token string, errc chan error) {
 	t.Helper()
 	socket = filepath.Join(t.TempDir(), "conn.sock")
 	token = "tok-secret"
 	errc = make(chan error, 1)
-	go func() { errc <- sdk.ServeOn(socket, token, c) }()
+	stopped := make(chan struct{})
+	go func() {
+		errc <- sdk.ServeOn(socket, token, c) // buffered: never blocks
+		close(stopped)
+	}()
+	t.Cleanup(func() {
+		// Cleanups run LIFO, so any Process the test attached has already been
+		// closed — which stops the server. Nothing to do, and deliberately no
+		// read of errc, whose one value belongs to whoever is waiting on it.
+		select {
+		case <-stopped:
+			return
+		default:
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if p, err := Attach(ctx, socket, token, 2*time.Second); err == nil {
+			_ = p.Close()
+		}
+		select {
+		case <-stopped:
+		case <-time.After(5 * time.Second):
+			t.Error("serve goroutine did not stop after Shutdown")
+		}
+	})
 	return socket, token, errc
 }
 
@@ -339,6 +384,43 @@ func TestLaunchConnectorExitsBeforeHandshake(t *testing.T) {
 	if d := time.Since(start); d > 10*time.Second {
 		t.Fatalf("failure took %v; should fail fast on process exit", d)
 	}
+}
+
+// A failed connect must not strand its gRPC ClientConn. Only the handshake-
+// timeout arm used to close it; the connector-exited and context-cancelled arms
+// returned with the connection — and its background goroutines — still open.
+// Both callers discard the Process on error, so nothing downstream could ever
+// close it: a runner whose connector kept dying leaked one per relaunch
+// attempt, for the life of the process (ADR-0005).
+//
+// The assertion is a goroutine-identity diff rather than an inspection of
+// p.conn, because p is exactly what the failing caller throws away — the
+// stranded goroutines are the only observable the bug leaves behind.
+func TestAFailedConnectDoesNotStrandTheConnection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a subprocess")
+	}
+
+	t.Run("connector exits before handshake", func(t *testing.T) {
+		defer leaktest.Check(t)()
+		t.Setenv("SHIFT_HOST_TEST_MODE", "exit")
+		if _, err := Launch(context.Background(), os.Args[0], LaunchOptions{
+			HandshakeTimeout: 20 * time.Second,
+		}); err == nil {
+			t.Fatal("launch succeeded; want exit-before-handshake")
+		}
+	})
+
+	t.Run("context cancelled mid-connect", func(t *testing.T) {
+		defer leaktest.Check(t)()
+		// A socket path nobody serves: connect retries until the context ends.
+		socket := filepath.Join(t.TempDir(), "never-served.sock")
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		if _, err := Attach(ctx, socket, "tok", 30*time.Second); err == nil {
+			t.Fatal("attach succeeded against an unserved socket")
+		}
+	})
 }
 
 // ---- Describe / ExtractDescriptor -----------------------------------------
