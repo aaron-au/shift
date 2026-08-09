@@ -111,6 +111,35 @@ onto engine operators; filter comparisons are `eq/ne` on scalars
 predicate (missing ≠ null), and so does an unorderable pair (a number against a
 string, or a NaN) rather than an invented ordering.
 
+### The `starlark` step (ADR-0052)
+
+Where the declarative layer runs out — arithmetic, string functions, per-field
+conditionals, anything touching a list — a step runs a small script:
+
+```json
+{"type": "starlark", "id": "calc", "script": "def transform(rec):\n    return {\"total\": rec.qty * rec.price}\n"}
+```
+
+`transform(rec)` returns a record, or `None` to **drop** it, so a script is also
+a filter. The contract, and why each part is the way it is:
+
+| Property | Why |
+|---|---|
+| In-process `go.starlark.net`, not wasm | The runner is already the trust boundary; a wasm crossing per record is the cost that would make the step unusable. ADR-0017's "type names the language, not the sandbox" keeps the move reversible. |
+| Fuel, not wall-clock | Deterministic — a script always fits its budget or never does, so nothing depends on machine load. |
+| No I/O, no `load()` | Nothing to import means **no supply chain**: nothing to pin, vendor, audit or revoke. |
+| No clock, no randomness | Tasks are at-least-once (ADR-0002), so a transform that varies between attempts is a *correctness* bug, not an inconvenience. |
+| Globals frozen after load | State cannot cross records, so results do not depend on batch boundaries. |
+| Values adapted, not materialised | A script reading two fields of a fifty-field record pays for two. `map[string]interface{}` never appears — the reason JSONata was rejected as a runtime. |
+| Decimals are exact in-script | `qty * price` on money is exact; mixing a decimal with a float is **refused**, and division points at `.rescale(n)` rather than rounding silently. |
+| Errors carry no payload to the hub | The interpreter backtrace quotes values; that text would travel in an execution report. The hub gets step id and error class, detail goes to the sampler. |
+| Config and secrets are out of scope | Otherwise a flow author gains an exfiltration path for every secret the node uses. |
+| **Off unless `SHIFT_ALLOW_CODE_STEPS=1`** | The sandbox bounds blast radius, not *authority*. While the hub is open-access (RBAC = issue #16), anyone who can author a flow could otherwise run code on a runner. Fail closed; the refusal names the setting. |
+
+The evaluator lives in `runner/internal/starlarkop` and attaches through the
+engine's public `Pipeline.Apply`, so `engine` stays stdlib-only and never learns
+Starlark exists.
+
 Coerce targets are `flowdoc.CoerceKinds`:
 `int|float|bool|string|decimal|timestamp|date|time`. The exact kinds are
 ADR-0051's opt-in — the example above declares `amount` a **decimal**, so the
