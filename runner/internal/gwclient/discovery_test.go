@@ -65,7 +65,9 @@ func (g *stubGateway) quiet(t *testing.T) {
 
 func runLoop(t *testing.T, opts Options) {
 	t.Helper()
-	opts.Service = service.New(service.Options{})
+	svc := service.New(service.Options{})
+	t.Cleanup(func() { _ = svc.Close(5 * time.Second) }) // the service owns a connpool reaper goroutine
+	opts.Service = svc
 	opts.Lookup = func(string) (*flowdoc.Document, bool) { return nil, false }
 	opts.PollWait = 20 * time.Millisecond
 	opts.PollConcurrency = 1

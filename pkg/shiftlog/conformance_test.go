@@ -76,6 +76,29 @@ func TestNoBinaryLogsToStderr(t *testing.T) {
 // The gateway's zero-dependency go.mod is the reason its logging setup is
 // duplicated rather than shared. If that stops being true, the duplication has
 // no justification and should be deleted in favour of pkg/shiftlog.
+// The gateway keeps its own copy of the leak detector for the same reason it
+// keeps its own logging setup: engine/leaktest is in another module, and a
+// require line in gateway/go.mod is exactly what the test below forbids. A copy
+// that silently drifts is worse than no copy — the DMZ component would be
+// checked by a weaker detector than everything else — so the two are held
+// byte-identical from the package clause down.
+func TestTheGatewayLeaktestCopyHasNotDrifted(t *testing.T) {
+	body := func(rel string) string {
+		src := repoFile(t, rel)
+		_, after, ok := strings.Cut(src, "\npackage leaktest\n")
+		if !ok {
+			t.Fatalf("%s has no `package leaktest` clause", rel)
+		}
+		return after
+	}
+	original := body("engine/leaktest/leaktest.go")
+	copied := body("gateway/internal/leaktest/leaktest.go")
+	if original != copied {
+		t.Error("gateway/internal/leaktest has drifted from engine/leaktest.\n" +
+			"Re-copy everything from the package clause down; only the doc comment may differ.")
+	}
+}
+
 func TestGatewayModuleStaysDependencyFree(t *testing.T) {
 	mod := repoFile(t, "gateway/go.mod")
 	if strings.Contains(mod, "require") {
