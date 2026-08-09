@@ -235,3 +235,30 @@ func TestAFinalSegmentWithoutATerminatorIsKept(t *testing.T) {
 		t.Errorf("trailer = %q", got[1])
 	}
 }
+
+// Found by FuzzReader (TC-003, docs/assurance/test-conformance.md), in seconds.
+//
+// The release character escapes the next byte, so "?'" does not end a segment.
+// The escape branch appended both bytes and skipped the MaxSegmentBytes check
+// that every other byte passed through — so an interchange of "?a?a?a…" with no
+// terminator buffered the entire file, whatever the limit said. "?" is the
+// DEFAULT EDIFACT release character, so no unusual UNA header is needed: a
+// trading partner sending a 1 GB file of escape pairs put 1 GB in the runner.
+//
+// That is the exact failure MaxSegmentBytes is documented to prevent, and the
+// exact failure the streaming doctrine exists to prevent (CLAUDE.md: "no
+// whole-payload buffering"). It is reachable from untrusted partner input.
+func TestAnEndlessRunOfEscapesIsBoundedLikeAnyOtherSegment(t *testing.T) {
+	const limit = 512
+	in := "UNA:+.? '" + strings.Repeat("?a", 100_000) // no segment terminator, ever
+
+	r := NewReader(strings.NewReader(in), ReaderOptions{MaxSegmentBytes: limit})
+	_, err := r.Next(t.Context())
+	if err == nil {
+		t.Fatal("a 200 KB unterminated segment of escape pairs was accepted; " +
+			"MaxSegmentBytes is bypassed on the release path")
+	}
+	if !strings.Contains(err.Error(), "exceeded") {
+		t.Fatalf("err = %v, want the segment-size refusal", err)
+	}
+}

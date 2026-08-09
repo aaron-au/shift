@@ -273,20 +273,26 @@ func (r *Reader) readSegment() ([]byte, error) {
 			}
 			return nil, err
 		}
+		switch {
 		// An EDIFACT release character escapes the NEXT byte, including a
 		// terminator. Consuming both here is what stops "?'" ending a segment.
-		if r.sep.release != 0 && b == r.sep.release {
+		case r.sep.release != 0 && b == r.sep.release:
 			nb, err := r.br.ReadByte()
 			if err != nil {
 				return nil, errors.New("edi: the interchange ends with a dangling release character")
 			}
 			r.seg = append(r.seg, b, nb)
-			continue
-		}
-		if b == r.sep.segment {
+		case b == r.sep.segment:
 			return r.trim(r.seg), nil
+		default:
+			r.seg = append(r.seg, b)
 		}
-		r.seg = append(r.seg, b)
+		// ONE bound check, on every path that grew the buffer. The release
+		// branch used to `continue` past this, so a partner sending "?a?a?a…"
+		// with no terminator grew the segment to the size of the whole file —
+		// unbounded buffering from untrusted input, which is the single thing
+		// MaxSegmentBytes exists to prevent. Structured as a switch so a future
+		// branch cannot reintroduce the bypass by forgetting to fall through.
 		if len(r.seg) > r.opts.MaxSegmentBytes {
 			return nil, fmt.Errorf("edi: a segment exceeded %d bytes with no terminator; the file is corrupt or uses a different delimiter", r.opts.MaxSegmentBytes)
 		}

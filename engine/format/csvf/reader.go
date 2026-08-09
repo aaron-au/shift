@@ -1,7 +1,13 @@
 // Package csvf streams CSV (and fixed-width-adjacent delimited data) to and
 // from record batches. Parsing uses encoding/csv in ReuseRecord mode —
-// battle-tested quoting semantics with no per-record allocation — and cell
-// values land directly in batch arenas.
+// battle-tested quoting semantics — and cell values land directly in batch
+// arenas.
+//
+// Reading costs one allocation per row: encoding/csv hands back a []string, so
+// the row's text exists as Go strings before it reaches the arena. That is the
+// price of not re-implementing CSV quoting, and it is measured and pinned by
+// the alloc tests rather than claimed. (This doc previously said "no
+// per-record allocation", which was never true — TC-006 measured it.)
 package csvf
 
 import (
@@ -40,6 +46,10 @@ const (
 const (
 	DefaultBatchRecords = 1024
 	DefaultBatchBytes   = 1 << 20
+	// DefaultMaxRecordBytes bounds the source bytes one row may consume, so a
+	// single unterminated quoted field cannot buffer without limit. Matches
+	// ndjson's DefaultMaxLineBytes: one unit of input, one bound, everywhere.
+	DefaultMaxRecordBytes = 16 << 20
 )
 
 // ReaderOptions configure a Reader.
@@ -55,16 +65,26 @@ type ReaderOptions struct {
 	TrimLeadingSpace bool
 	BatchRecords     int
 	BatchBytes       int64
+	// MaxRecordBytes bounds the source bytes a single row may consume
+	// (DefaultMaxRecordBytes when zero). encoding/csv has no size limit of its
+	// own: an opening quote that is never closed makes it read to EOF, so an
+	// endless or very large source grows one field without bound. TC-019.
+	MaxRecordBytes int64
 }
 
 // Reader streams CSV rows as flat map records. It implements stream.Source;
 // the returned batch is valid until the next Next or Close.
 type Reader struct {
-	cr      *csv.Reader
-	opts    ReaderOptions
-	batch   *record.Batch
-	header  []string
-	types   []ColumnType
+	cr     *csv.Reader
+	budget *recordBudget
+	opts   ReaderOptions
+	batch  *record.Batch
+	header []string
+	types  []ColumnType
+	// scratch holds the trimmed bytes of one typed cell. Reader state so the
+	// exact kinds (ADR-0051 money columns above all) do not pay an allocation
+	// per row just to trim (TC-006).
+	scratch []byte
 	started bool
 	done    bool
 	row     int64
@@ -78,14 +98,18 @@ func NewReader(r io.Reader, opts ReaderOptions) *Reader {
 	if opts.BatchBytes <= 0 {
 		opts.BatchBytes = DefaultBatchBytes
 	}
-	cr := csv.NewReader(r)
+	if opts.MaxRecordBytes <= 0 {
+		opts.MaxRecordBytes = DefaultMaxRecordBytes
+	}
+	budget := &recordBudget{r: r, limit: opts.MaxRecordBytes}
+	cr := csv.NewReader(budget)
 	cr.ReuseRecord = true
 	if opts.Comma != 0 {
 		cr.Comma = opts.Comma
 	}
 	cr.LazyQuotes = opts.LazyQuotes
 	cr.TrimLeadingSpace = opts.TrimLeadingSpace
-	return &Reader{cr: cr, opts: opts, batch: record.NewBatch()}
+	return &Reader{cr: cr, budget: budget, opts: opts, batch: record.NewBatch()}
 }
 
 func (r *Reader) start() error {
@@ -101,6 +125,7 @@ func (r *Reader) start() error {
 		}
 		return fmt.Errorf("csvf: header: %w", err)
 	}
+	r.budget.reset() // the bound is per row, not for the whole stream
 	r.row++
 	r.header = make([]string, len(rec))
 	copy(r.header, rec) // rec is reused by encoding/csv; header must own its strings
@@ -147,6 +172,7 @@ func (r *Reader) Next(ctx context.Context) (*record.Batch, error) {
 			}
 			return nil, fmt.Errorf("csvf: %w", err)
 		}
+		r.budget.reset() // the bound is per row, not for the whole stream
 		r.row++
 		if r.header == nil {
 			r.synthesizeHeader(len(rec))
@@ -174,8 +200,9 @@ func (r *Reader) Next(ctx context.Context) (*record.Batch, error) {
 // export padded into CSV is common, and " 10.10 " is the same amount as
 // "10.10" — whereas a trailing space would make the parse fail for a reason
 // the author cannot see in their spreadsheet.
-func parseTyped(t ColumnType, cell string) (record.Value, error) {
-	s := []byte(strings.TrimSpace(cell))
+func parseTyped(scratch *[]byte, t ColumnType, cell string) (record.Value, error) {
+	*scratch = append((*scratch)[:0], strings.TrimSpace(cell)...)
+	s := *scratch
 	switch t {
 	case TypeDecimal:
 		return record.ParseDecimal(s)
@@ -222,7 +249,7 @@ func (r *Reader) cell(bld *record.Builder, t ColumnType, cell string) error {
 			bld.Null()
 			return nil
 		}
-		v, err := parseTyped(t, cell)
+		v, err := parseTyped(&r.scratch, t, cell)
 		if err != nil {
 			return err
 		}
