@@ -55,7 +55,7 @@ github.com/aaron-au/shift/engine/record 85
 # carries the conformance suite, so a drop here means the specification's own
 # cases stopped being exercised.
 github.com/aaron-au/shift/engine/schema 88
-github.com/aaron-au/shift/engine/spill 93
+github.com/aaron-au/shift/engine/spill 96
 github.com/aaron-au/shift/engine/stream 84
 # hub/internal/api 88 -> 87 (2026-08-06, ADR-0049 gateway pairing).
 #

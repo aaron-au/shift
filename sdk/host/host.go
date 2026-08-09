@@ -207,7 +207,7 @@ func (p *Process) connect(ctx context.Context, socket string, timeout time.Durat
 	for time.Now().Before(deadline) {
 		hctx, cancel := context.WithTimeout(p.withToken(ctx), time.Second)
 		resp, err := p.client.Handshake(hctx, &connectorpb.HandshakeRequest{
-			ProtocolVersions: []uint32{sdk.ProtocolVersion},
+			ProtocolVersions: sdk.SupportedProtocolVersions(),
 		})
 		cancel()
 		if err == nil {
