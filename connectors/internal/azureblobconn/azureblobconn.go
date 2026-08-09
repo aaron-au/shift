@@ -36,7 +36,11 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "azureblob",
-		Version: "0.3.0",
+		Version: "0.4.0",
+		// Adds the fixedw format and its `columns` layout field: a widened
+		// enum and a new optional property, so every stored config still
+		// loads and every existing flow still runs (ADR-0047 §6).
+		Compat: "compatible",
 		Meta: &sdk.ConnectorMeta{
 			Description: "Azure Blob Storage: pick a verb (get/put/list/delete). Static-credential auth (account key, connection string, or container SAS). Network-guarded.",
 			Category:    "cloud-storage",
@@ -78,7 +82,8 @@ var (
   "required":["blob"],"properties":{` + connProps + `,
     "blob": {"type": "string", "title": "Blob", "description": "Blob name/key within the container"},
     "format": ` + fileformat.SchemaEnum() + `,
-    "record_element": ` + fileformat.RecordElementProp + `
+    "record_element": ` + fileformat.RecordElementProp + `,
+    "columns": ` + fileformat.ColumnsProp() + `
   }}`
 
 	listConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"Azure blob list",
@@ -106,7 +111,11 @@ type config struct {
 	// RecordElement names the XML element that delimits one record.
 	// Ignored by the other formats, which have no equivalent notion.
 	RecordElement string `json:"record_element,omitempty"`
-	AllowLocal    bool   `json:"allow_local"`
+	// Columns is the fixed-width layout. Required when Format is "fixedw",
+	// ignored otherwise: a fixed-width file has no delimiters, so nothing
+	// can be read out of it without being told where the fields are.
+	Columns    []fileformat.Column `json:"columns,omitempty"`
+	AllowLocal bool                `json:"allow_local"`
 }
 
 // parseConfig unmarshals and validates the auth/connection fields shared by
@@ -150,7 +159,7 @@ func (c *config) requireBlobFormat() error {
 	if err := c.requireBlob(); err != nil {
 		return err
 	}
-	return fileformat.Validate("azureblob", &c.Format)
+	return fileformat.Validate("azureblob", &c.Format, c.Columns)
 }
 
 func (c *config) requireBlob() error {

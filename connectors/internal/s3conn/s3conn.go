@@ -36,7 +36,11 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "s3",
-		Version: "0.3.0",
+		Version: "0.4.0",
+		// Adds the fixedw format and its `columns` layout field: a widened
+		// enum and a new optional property, so every stored config still
+		// loads and every existing flow still runs (ADR-0047 §6).
+		Compat: "compatible",
 		Meta: &sdk.ConnectorMeta{
 			Description: "AWS S3 and S3-compatible (MinIO/Ceph/R2) object storage: pick a verb (get/put/list/delete). Static tenant credentials; SSRF-guarded.",
 			Category:    "object-storage",
@@ -81,7 +85,8 @@ var (
     "bucket": {"type": "string", "title": "Bucket"},
     "key": {"type": "string", "title": "Object key", "description": "Full object key/path within the bucket"},
     "format": ` + fileformat.SchemaEnum() + `,
-    "record_element": ` + fileformat.RecordElementProp + `
+    "record_element": ` + fileformat.RecordElementProp + `,
+    "columns": ` + fileformat.ColumnsProp() + `
   }}`
 
 	listConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"S3 list",
@@ -109,10 +114,14 @@ type config struct {
 	Format          string `json:"format"`
 	// RecordElement names the XML element that delimits one record.
 	// Ignored by the other formats, which have no equivalent notion.
-	RecordElement  string `json:"record_element,omitempty"`
-	PathStyle      bool   `json:"path_style"`
-	AllowLocal     bool   `json:"allow_local"`
-	TimeoutSeconds int    `json:"timeout_seconds"`
+	RecordElement string `json:"record_element,omitempty"`
+	// Columns is the fixed-width layout. Required when Format is "fixedw",
+	// ignored otherwise: a fixed-width file has no delimiters, so nothing
+	// can be read out of it without being told where the fields are.
+	Columns        []fileformat.Column `json:"columns,omitempty"`
+	PathStyle      bool                `json:"path_style"`
+	AllowLocal     bool                `json:"allow_local"`
+	TimeoutSeconds int                 `json:"timeout_seconds"`
 }
 
 // parseConfig unmarshals and validates the connection fields shared by every
@@ -149,7 +158,7 @@ func (c *config) requireKeyFormat() error {
 	if c.Key == "" {
 		return errors.New("s3: key is required")
 	}
-	return fileformat.Validate("s3", &c.Format)
+	return fileformat.Validate("s3", &c.Format, c.Columns)
 }
 
 // requireKey validates the delete config: an object key.

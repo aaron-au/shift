@@ -54,12 +54,16 @@ Hub-and-spoke Integration Platform as a Service. Goal: a provisionable, enterpri
 
 ```
 engine/     Streaming data plane (M1, done — see docs/bench-M1.md for proven numbers):
-  record/     hierarchical typed Values in arena-backed Batches; 0-alloc steady state; compiled Paths
+  record/     hierarchical typed Values in arena-backed Batches; 0-alloc steady state; compiled Paths;
+              ADR-0051 exact kinds (decimal/timestamp/date/time) in free alignment padding, exact
+              128-bit Compare + ExactSum, ScalarBits for per-group state
   stream/     pull pipelines: Project/Filter/Coerce/Flatten + spillable Aggregate; per-op metrics
   format/     ndjson (hand-rolled tokenizer, differential-tested vs encoding/json; + JSONReader:
               streams a standard JSON array/object/value stream, reusing the ndjson value parser), csvf,
               xmlf (streaming reader + inverse writer, so XML round-trips), edi (X12/EDIFACT, one record
-              per SEGMENT, delimiters discovered from the interchange; structure not semantics, read-only)
+              per SEGMENT, delimiters discovered from the interchange; structure not semantics, read-only),
+              fixedw (column-positional; layout is config, not self-describing; zoned/overpunch decimals
+              and implied scale; refuses short records and over-wide values rather than truncating)
   spill/      single-file unlinked scratch store + compact binary Value codec
   mem/        watermark Governor (TryReserve fail == spill signal)
   cmd/shift-bench/  the proof harness; run with -max-rss to enforce exit criteria

@@ -29,7 +29,11 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "fs",
-		Version: "0.3.0",
+		Version: "0.4.0",
+		// Adds the fixedw format and its `columns` layout field: a widened
+		// enum and a new optional property, so every stored config still
+		// loads and every existing flow still runs (ADR-0047 §6).
+		Compat: "compatible",
 		Meta: &sdk.ConnectorMeta{
 			Description: "Local/mounted filesystem: pick a verb (get/put/list/delete/mkdir/rmdir) and a path. All paths are jailed within a configured root.",
 			Category:    "file-transfer",
@@ -72,7 +76,8 @@ var (
   "required":["root","path"],"properties":{` + rootProp + `,
     "path": {"type": "string", "title": "Path", "description": "File path, relative to root (an absolute path must still resolve within root)"},
     "format": ` + fileformat.SchemaEnum() + `,
-    "record_element": ` + fileformat.RecordElementProp + `
+    "record_element": ` + fileformat.RecordElementProp + `,
+    "columns": ` + fileformat.ColumnsProp() + `
   }}`
 
 	listConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"FS list",
@@ -101,7 +106,11 @@ type config struct {
 	// RecordElement names the XML element that delimits one record. Ignored by
 	// the other formats, which have no equivalent notion.
 	RecordElement string `json:"record_element,omitempty"`
-	Recursive     bool   `json:"recursive"`
+	// Columns is the fixed-width layout. Required when Format is "fixedw",
+	// ignored otherwise: a fixed-width file has no delimiters, so nothing
+	// can be read out of it without being told where the fields are.
+	Columns   []fileformat.Column `json:"columns,omitempty"`
+	Recursive bool                `json:"recursive"`
 }
 
 // parseConfig unmarshals and validates the connection-level fields (root).
@@ -176,7 +185,7 @@ func (c *config) requireFileFormat() error {
 	if c.Path == "" {
 		return errors.New("fs: path is required")
 	}
-	return fileformat.Validate("fs", &c.Format)
+	return fileformat.Validate("fs", &c.Format, c.Columns)
 }
 
 // requireDir validates the list config: a directory path.

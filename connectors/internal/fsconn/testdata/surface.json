@@ -1,10 +1,11 @@
 {
   "_note": "Recorded connector action surface — the LAST RELEASED shape. The compatibility gate (ADR-0047 §8) diffs the current build against this and refuses a declared compat class the diff cannot support. Regenerate deliberately with SHIFT_UPDATE_SURFACE=1 and review the diff; it is the only record of what was shipped.",
   "name": "fs",
-  "version": "0.3.0",
+  "version": "0.4.0",
+  "compat": "compatible",
   "descriptor": {
     "name": "fs",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "actions": [
       {
         "action": "put",
@@ -35,7 +36,8 @@
                 "ndjson",
                 "csv",
                 "xml",
-                "edi"
+                "edi",
+                "fixedw"
               ],
               "default": "ndjson"
             },
@@ -43,6 +45,88 @@
               "type": "string",
               "title": "XML record element",
               "description": "Element delimiting one record (XML only); empty treats each child of the root as a record"
+            },
+            "columns": {
+              "type": "array",
+              "title": "Fixed-width columns",
+              "description": "Column layout, in order (fixedw only). Columns are contiguous; a column with no name is filler. Required when format is fixedw.",
+              "items": {
+                "type": "object",
+                "required": [
+                  "width"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "title": "Field name",
+                    "description": "Record field name; empty means filler (skipped on read, padded on write)"
+                  },
+                  "width": {
+                    "type": "integer",
+                    "title": "Width",
+                    "description": "Column size in bytes",
+                    "minimum": 1
+                  },
+                  "type": {
+                    "type": "string",
+                    "title": "Type",
+                    "enum": [
+                      "string",
+                      "int",
+                      "float",
+                      "bool",
+                      "decimal",
+                      "zoned",
+                      "timestamp",
+                      "date",
+                      "time"
+                    ],
+                    "default": "string"
+                  },
+                  "scale": {
+                    "type": "integer",
+                    "title": "Implied decimals",
+                    "description": "Decimal places implied by the layout when the digits carry no point (decimal/zoned)"
+                  },
+                  "align": {
+                    "type": "string",
+                    "title": "Alignment",
+                    "enum": [
+                      "left",
+                      "right"
+                    ],
+                    "description": "Defaults to right for numbers, left otherwise"
+                  },
+                  "pad": {
+                    "type": "string",
+                    "title": "Pad character",
+                    "description": "Single padding character (default space)",
+                    "maxLength": 1
+                  },
+                  "trim": {
+                    "type": "string",
+                    "title": "Trim",
+                    "enum": [
+                      "default",
+                      "both",
+                      "left",
+                      "right",
+                      "none"
+                    ],
+                    "description": "Padding stripped on read; default picks by pad character so a zero-padded number keeps its trailing zeros"
+                  },
+                  "layout": {
+                    "type": "string",
+                    "title": "Time layout",
+                    "description": "Go time layout for temporal columns (default 20060102 / 150405 / 20060102150405)"
+                  },
+                  "location": {
+                    "type": "string",
+                    "title": "Time zone",
+                    "description": "IANA zone the column is written in; empty is UTC"
+                  }
+                }
+              }
             }
           }
         }
@@ -101,7 +185,8 @@
                 "ndjson",
                 "csv",
                 "xml",
-                "edi"
+                "edi",
+                "fixedw"
               ],
               "default": "ndjson"
             },
@@ -109,6 +194,88 @@
               "type": "string",
               "title": "XML record element",
               "description": "Element delimiting one record (XML only); empty treats each child of the root as a record"
+            },
+            "columns": {
+              "type": "array",
+              "title": "Fixed-width columns",
+              "description": "Column layout, in order (fixedw only). Columns are contiguous; a column with no name is filler. Required when format is fixedw.",
+              "items": {
+                "type": "object",
+                "required": [
+                  "width"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "title": "Field name",
+                    "description": "Record field name; empty means filler (skipped on read, padded on write)"
+                  },
+                  "width": {
+                    "type": "integer",
+                    "title": "Width",
+                    "description": "Column size in bytes",
+                    "minimum": 1
+                  },
+                  "type": {
+                    "type": "string",
+                    "title": "Type",
+                    "enum": [
+                      "string",
+                      "int",
+                      "float",
+                      "bool",
+                      "decimal",
+                      "zoned",
+                      "timestamp",
+                      "date",
+                      "time"
+                    ],
+                    "default": "string"
+                  },
+                  "scale": {
+                    "type": "integer",
+                    "title": "Implied decimals",
+                    "description": "Decimal places implied by the layout when the digits carry no point (decimal/zoned)"
+                  },
+                  "align": {
+                    "type": "string",
+                    "title": "Alignment",
+                    "enum": [
+                      "left",
+                      "right"
+                    ],
+                    "description": "Defaults to right for numbers, left otherwise"
+                  },
+                  "pad": {
+                    "type": "string",
+                    "title": "Pad character",
+                    "description": "Single padding character (default space)",
+                    "maxLength": 1
+                  },
+                  "trim": {
+                    "type": "string",
+                    "title": "Trim",
+                    "enum": [
+                      "default",
+                      "both",
+                      "left",
+                      "right",
+                      "none"
+                    ],
+                    "description": "Padding stripped on read; default picks by pad character so a zero-padded number keeps its trailing zeros"
+                  },
+                  "layout": {
+                    "type": "string",
+                    "title": "Time layout",
+                    "description": "Go time layout for temporal columns (default 20060102 / 150405 / 20060102150405)"
+                  },
+                  "location": {
+                    "type": "string",
+                    "title": "Time zone",
+                    "description": "IANA zone the column is written in; empty is UTC"
+                  }
+                }
+              }
             }
           }
         }

@@ -42,7 +42,7 @@ func (s *putSink) Open(_ context.Context, cfg []byte) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	pr, pw := io.Pipe()
 	s.cancel, s.pr, s.pw = cancel, pr, pw
-	wr, err := fileformat.NewWriter(s.cfg.Format, pw, fileformat.Options{RecordElement: s.cfg.RecordElement})
+	wr, err := fileformat.NewWriter(s.cfg.Format, pw, fileformat.Options{RecordElement: s.cfg.RecordElement, Columns: s.cfg.Columns})
 	if err != nil {
 		return err
 	}

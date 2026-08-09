@@ -43,7 +43,7 @@ func (s *putSink) Open(ctx context.Context, config []byte) error {
 
 	pr, pw := io.Pipe()
 	s.pw = pw
-	wr, err := fileformat.NewWriter(s.cfg.Format, pw, fileformat.Options{RecordElement: s.cfg.RecordElement})
+	wr, err := fileformat.NewWriter(s.cfg.Format, pw, fileformat.Options{RecordElement: s.cfg.RecordElement, Columns: s.cfg.Columns})
 	if err != nil {
 		return err
 	}

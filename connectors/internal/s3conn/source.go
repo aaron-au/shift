@@ -37,7 +37,7 @@ func (s *getSource) Open(ctx context.Context, cfg []byte) error {
 		return err
 	}
 	s.body = out.Body
-	rd, err := fileformat.NewReader(s.cfg.Format, out.Body, fileformat.Options{RecordElement: s.cfg.RecordElement})
+	rd, err := fileformat.NewReader(s.cfg.Format, out.Body, fileformat.Options{RecordElement: s.cfg.RecordElement, Columns: s.cfg.Columns})
 	if err != nil {
 		return err
 	}
