@@ -35,9 +35,8 @@ no product-behavior change.
   integrated coverage from cross-package tests counts), **merges** the
   count-mode profiles correctly (dedupe blocks, sum hits — naive concatenation
   double-counts), and aggregates per-package statement coverage.
-- **`cover` is the test pass used by `check`.** `check` depends on `cover`, not
-  `test`, so the race detector still runs on every gate and there is no double
-  test run. `make test` remains as a standalone quick run.
+- **`check` runs BOTH `test` and `cover`** (amended 2026-08-09 — see below).
+  Both are race-enabled; `cover` additionally enforces the per-package floors.
 - **Hard gate.** Every gated package must meet its floor in
   `coverage.thresholds` (per-package override, else `default`). The build fails
   on any breach.
@@ -109,6 +108,36 @@ Parse→marshal→re-Parse idempotency check) were considered but not adopted:
 a round-trip variant produced a single unreproducible failure that ~17M
 execs could not recreate, and a flaky fuzz target poisons CI — robustness is
 the property that matters for untrusted input.
+
+## Amendment (2026-08-09): `check` runs both test passes
+
+**Original text:** "`check` depends on `cover`, not `test`, so … there is no
+double test run."
+
+**What the Makefile actually does:** `check: fmt-check tidy-check vet lint
+actions vuln leaks test cover` — both.
+
+**Resolution: the implementation is right and this ADR was wrong.** The drift
+was found by the TC-015 sweep (`docs/assurance/test-conformance.md`) and is
+resolved in favour of the code, for a reason the original decision missed:
+
+`cover` exports `SHIFT_COVERAGE=1`, which **skips** the timing-flaky
+connector-subprocess and `hub/e2e` tests so the coverage number is
+deterministic. Those are the tests that prove crash recovery, exactly-once
+scheduling, the signed-artifact supply chain, secrets-never-at-rest and
+payload-never-to-hub. Had `check` depended on `cover` alone, as written, the
+gate would never have run the suite that proves the doctrine — the most
+important tests in the repo, silently skipped on every push and in CI.
+
+The cost is real: the unit suite runs twice, and `check` is correspondingly
+slower. That is the right trade. A gate that is fast because it skips the
+proofs is not a gate.
+
+**Follow-up considered and rejected:** making `cover` run the skipped tests
+without instrumentation, so `check` needs only one pass. It would re-couple the
+coverage number to timing-sensitive tests (the thing `SHIFT_COVERAGE` exists to
+prevent) for a saving measured in minutes. Revisit only if `check` runtime
+becomes a real obstacle.
 
 ## Consequences
 

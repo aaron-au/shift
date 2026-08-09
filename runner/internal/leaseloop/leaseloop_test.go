@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aaron-au/shift/engine/leaktest"
 	"github.com/aaron-au/shift/runner/internal/hubclient"
 	"github.com/aaron-au/shift/runner/internal/service"
 )
@@ -52,12 +53,17 @@ type leaseHub struct {
 	fails       []string
 }
 
+// TC-001 (docs/assurance/test-conformance.md). The lease loop long-polls the
+// hub and runs each leased task on its own goroutine (ADR-0002/ADR-0005); a
+// loop that ignores its stop signal keeps claiming work from a runner that is
+// meant to be draining. The build dir is removed BEFORE the leak check so
+// teardown is not itself mistaken for a leak.
 func TestMain(m *testing.M) {
-	code := m.Run()
-	if genBuild.dir != "" {
-		_ = os.RemoveAll(genBuild.dir)
-	}
-	os.Exit(code)
+	leaktest.Main(m, func() {
+		if genBuild.dir != "" {
+			_ = os.RemoveAll(genBuild.dir)
+		}
+	})
 }
 
 func newLeaseHub(t *testing.T) (*leaseHub, *hubclient.Client) {

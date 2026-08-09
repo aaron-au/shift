@@ -27,11 +27,15 @@ import (
 // buffering). It implements stream.Source; the batch from Next is valid only
 // until the next Next or Close.
 type JSONReader struct {
-	br      *bufio.Reader
-	dec     *json.Decoder
-	opts    ReaderOptions
-	batch   *record.Batch
-	p       parser
+	br    *bufio.Reader
+	dec   *json.Decoder
+	opts  ReaderOptions
+	batch *record.Batch
+	p     parser
+	// raw is the reused decode buffer for one element. Reader state, not a
+	// loop local: see the comment at its use in Next.
+	raw     json.RawMessage
+	budget  *valueBudget
 	started bool
 	array   bool
 	done    bool
@@ -40,8 +44,15 @@ type JSONReader struct {
 // NewJSONReader wraps r. It does not close the underlying reader.
 func NewJSONReader(r io.Reader, opts ReaderOptions) *JSONReader {
 	opts.defaults()
-	br := bufio.NewReader(r)
-	return &JSONReader{br: br, dec: json.NewDecoder(br), opts: opts, batch: record.NewBatch()}
+	// The line Reader bounds a line with MaxLineBytes; here the unit is one
+	// top-level VALUE, and until this budget existed nothing bounded it at all.
+	// Decode materialises a whole value into json.RawMessage, so a single
+	// enormous value is a single enormous allocation — measured at 2,561 MiB of
+	// heap from 521,845 wire bytes when the response was gzipped. The per-line
+	// bound cannot see it, because there are no lines. TC-019.
+	budget := &valueBudget{r: r, limit: int64(opts.MaxLineBytes)}
+	br := bufio.NewReader(budget)
+	return &JSONReader{br: br, budget: budget, dec: json.NewDecoder(br), opts: opts, batch: record.NewBatch()}
 }
 
 // Next returns the next batch, or io.EOF when the document is exhausted.
@@ -77,15 +88,22 @@ func (r *JSONReader) Next(ctx context.Context) (*record.Batch, error) {
 			_, _ = r.dec.Token() // consume ']' (end of input either way)
 			break
 		}
-		var raw json.RawMessage
-		if err := r.dec.Decode(&raw); err != nil {
+		// r.raw is a Reader field, not a local: declared inside the loop it was
+		// reallocated for every element instead of reusing its capacity, which
+		// cost 2 allocations PER RECORD on the reader the http connector uses
+		// for JSON-array APIs. Decode appends into the existing slice once it
+		// has room. Measured and caught by TestJSONReaderDoesNotAllocate
+		// (TC-006).
+		r.raw = r.raw[:0]
+		if err := r.dec.Decode(&r.raw); err != nil {
 			if errors.Is(err, io.EOF) { // stream of values exhausted
 				r.done = true
 				break
 			}
 			return nil, fmt.Errorf("json: %w", err)
 		}
-		v, err := r.p.parseLine(raw, r.batch.Builder(), r.opts.MaxDepth)
+		r.budget.reset() // the bound is per value, not for the whole document
+		v, err := r.p.parseLine(r.raw, r.batch.Builder(), r.opts.MaxDepth)
 		if err != nil {
 			return nil, fmt.Errorf("json: %w", err)
 		}

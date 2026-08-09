@@ -116,8 +116,22 @@ func NewHub(statsFn func(context.Context) (Snapshot, error), rejectedFn func() m
 	if err != nil {
 		return nil, err
 	}
+	// Explicit boundaries, because the SDK default is 0, 5, 10, 25 … 10000 —
+	// millisecond-shaped, while this records SECONDS (RecordHTTP passes
+	// dur.Seconds()). With the default every real request falls in the first
+	// bucket, so histogram_quantile returns ~2.5 whatever the true latency is:
+	// a latency panel that always reads "2.5s" and never moves. The metric name
+	// was right and the numbers behind it were meaningless.
+	//
+	// The ladder below spans 1ms to 10s at roughly 2.5x steps — control-plane
+	// requests are single-digit ms (lease claims, status polls), with a long
+	// tail on long-poll leases, so the resolution belongs at the bottom.
+	// Found by the TC-002 metric conformance sweep.
 	httpDur, err := m.Float64Histogram("shift_hub_http_request_duration_seconds",
-		metric.WithDescription("HTTP request handling duration."))
+		metric.WithDescription("HTTP request handling duration."),
+		metric.WithExplicitBucketBoundaries(
+			0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10,
+		))
 	if err != nil {
 		return nil, err
 	}

@@ -29,11 +29,17 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "fs",
-		Version: "0.4.0",
+		Version: "0.5.0",
 		// Adds the fixedw format and its `columns` layout field: a widened
 		// enum and a new optional property, so every stored config still
 		// loads and every existing flow still runs (ADR-0047 §6).
-		Compat: "compatible",
+		// behaviour-change, not compatible: a path containing NUL is now
+		// refused. The jail was otherwise already correct, but NUL slipped past
+		// resolve — containment stops at the deepest EXISTING ancestor and
+		// never reached the NUL component — and `put` created the destination's
+		// parent directories before the syscall rejected it. A refused path
+		// with a filesystem side effect. ADR-0047 §6.
+		Compat: "behaviour-change",
 		Meta: &sdk.ConnectorMeta{
 			Description: "Local/mounted filesystem: pick a verb (get/put/list/delete/mkdir/rmdir) and a path. All paths are jailed within a configured root.",
 			Category:    "file-transfer",
@@ -216,6 +222,21 @@ func (c *config) requirePath() error {
 func (c *config) resolve(p string) (string, error) {
 	if c.Root == "" {
 		return "", errors.New("fs: root is required")
+	}
+	// No filename on any supported platform can contain a NUL: the kernel takes
+	// a C string, so such a name is either refused (Go checks) or silently
+	// TRUNCATED (a C client would), and a truncated name is a different file
+	// from the one the flow document configured.
+	//
+	// Refused here rather than left to the syscall, and refused rather than
+	// trimmed. Left to the syscall the check lands too late: containedAfterSym-
+	// links stops at the deepest EXISTING ancestor, so a path like
+	// "new/dir/f\x00.ndjson" passes the jail, and put then creates "new/dir"
+	// before failing — a hostile config with a side effect. Trimming it would
+	// operate on some other file that the operator could not correlate with
+	// anything they wrote.
+	if strings.ContainsRune(p, 0) {
+		return "", fmt.Errorf("fs: path %q contains a NUL byte, which no filename can contain", p)
 	}
 	root, err := filepath.Abs(c.Root)
 	if err != nil {

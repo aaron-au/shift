@@ -54,9 +54,22 @@ func (s *callSource) Next(ctx context.Context) (*record.Batch, error) {
 	// Buffer the (bounded) body: a SOAP fault is delivered with an HTTP 500,
 	// so the status alone can't distinguish a fault from a transport error —
 	// we must parse the body to know. The body is a single bounded document.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(s.cfg.MaxResponseBytes)))
+	//
+	// Read ONE byte past the limit so exceeding it is detectable. Reading
+	// exactly MaxResponseBytes cannot distinguish "the document ended here"
+	// from "there is more", so an oversized response was silently truncated
+	// and then surfaced as `xml decode: unexpected EOF` — a size problem
+	// reported as a syntax problem, and, for any XML that happens to stay
+	// well-formed under truncation, silent data loss. The cap itself holds
+	// either way (it is applied to the DECOMPRESSED stream, so a gzip bomb is
+	// bounded too); this only makes hitting it honest. TC-020/TC-021.
+	limit := int64(s.cfg.MaxResponseBytes)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, fmt.Errorf("soap: reading response from %s: %w", s.cfg.Endpoint, err)
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("soap: response from %s exceeds max_response_bytes (%d)", s.cfg.Endpoint, limit)
 	}
 
 	root, perr := parseTree(body)

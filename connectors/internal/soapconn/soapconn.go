@@ -75,8 +75,8 @@ const callConfigSchema = `{
       }
     },
     "allow_local": {"type": "boolean", "title": "Allow local/loopback and private/internal targets (SSRF guard off)", "default": false},
-    "timeout_seconds": {"type": "integer", "title": "Timeout (seconds)", "default": 60},
-    "max_response_bytes": {"type": "integer", "title": "Max response size (bytes)", "default": 16777216}
+    "timeout_seconds": {"type": "integer", "title": "Timeout (seconds)", "description": "Bounds the whole call including reading the response body", "default": 60},
+    "max_response_bytes": {"type": "integer", "title": "Max response size (bytes)", "description": "A response larger than this is rejected (never truncated)", "default": 16777216}
   }
 }`
 
@@ -101,9 +101,16 @@ type config struct {
 	// unspecified, RFC1918/ULA private, and CGNAT (off by default: SSRF guard,
 	// mirrors the http connector, issue #5). Self-hosted runners set it to
 	// reach internal SOAP services.
-	AllowLocal       bool `json:"allow_local"`
-	TimeoutSeconds   int  `json:"timeout_seconds"`
-	MaxResponseBytes int  `json:"max_response_bytes"`
+	AllowLocal bool `json:"allow_local"`
+	// TimeoutSeconds bounds the WHOLE call — connect, redirects and every byte
+	// of the response body (http.Client.Timeout), not just the headers. It is
+	// what stops an endless or trickling endpoint from pinning a runner slot
+	// forever (ADR-0005, TC-021), so it is always finite: zero or negative
+	// takes the 60s default rather than meaning "no limit".
+	TimeoutSeconds int `json:"timeout_seconds"`
+	// MaxResponseBytes bounds the buffered response. Zero or negative takes
+	// the default — "unlimited" is not expressible, deliberately.
+	MaxResponseBytes int `json:"max_response_bytes"`
 }
 
 func parseConfig(raw []byte, into *config) error {

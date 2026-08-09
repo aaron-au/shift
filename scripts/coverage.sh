@@ -38,7 +38,7 @@ MODPATH="github.com/aaron-au/shift"
 
 # Packages excluded from the GATE (still measured + shown). Extended-regex,
 # matched against the full import path.
-EXCLUDE_RE='/cmd/|/telemetry$|/connectorpb$|/pgtest$|/oidctest$|/sdktest$|/e2e$'
+EXCLUDE_RE='/cmd/|/telemetry$|/connectorpb$|/pgtest$|/oidctest$|/sdktest$|/leaktest$|/e2e$'
 
 # Skip the flaky connector-subprocess tests (see header). They still run in
 # `make test`. Deterministic pg/httptest/e2e tests run normally.

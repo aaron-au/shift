@@ -45,6 +45,7 @@ Hub-and-spoke Integration Platform as a Service. Goal: a provisionable, enterpri
 | `docs/dev/` | **Internal developer docs** — how everything operates together (architecture, engine, connector protocol, runner, conventions). Read these first; keep them in lockstep with code (standing rule). |
 | `PLAN.md` | The rebuild plan: topology, milestones M0–M6 with exit criteria, standing rules. |
 | `docs/adr/` | Architecture Decision Records — locked decisions with context. Deviations require a superseding ADR. |
+| `docs/assurance/` | **Assurance registers** — not decisions. `test-conformance.md` tracks, per ADR invariant, whether a test exists that would *fail* if the invariant broke (checked / todo / done, IDs `TC-nnn`). §3 records what a sweep already cleared, so it is not re-litigated. Read before proposing new tests. |
 | `docs/REVIEW-2026-07.md` | Review of the prototype + viability study that triggered the restart. §5 lists what to carry forward and the decision sequence for the rebuild. |
 | `docs/ARCHITECTURE.md` | As-implemented map of the **archived prototype** (now under `_archive/`). Reference for how things used to work. |
 | `docs/reference/schema-v0.sql` | The prototype's 13-table Postgres schema — the best asset from v0; target data model for the hub (needs audit + secrets tables added). |
@@ -66,6 +67,14 @@ engine/     Streaming data plane (M1, done — see docs/bench-M1.md for proven n
               and implied scale; refuses short records and over-wide values rather than truncating)
   spill/      single-file unlinked scratch store + compact binary Value codec
   mem/        watermark Governor (TryReserve fail == spill signal)
+  batchtest/  batch-lifetime enforcement (TC-009). Wrap a source; it destroys each batch
+              the instant its lifetime ends, so a reader/operator that retains across
+              batches fails its own existing assertions. `record.(*Batch).Poison()` is the
+              primitive — it scribbles AND releases, because reuse alone hides the bug
+  leaktest/   stdlib-only goroutine-leak detector (TC-001). `TestMain(m) { leaktest.Main(m) }`
+              fails a package whose tests leave goroutines running. Identity diff, not a
+              denylist. NOT goleak: engine + gateway go.mod are zero-dependency by doctrine,
+              so the gateway keeps a verbatim copy (drift-tested in pkg/shiftlog)
   cmd/shift-bench/  the proof harness; run with -max-rss to enforce exit criteria
 sdk/        Connector SDK (M2, done — see docs/bench-M2.md: 1.32x subprocess overhead):
   sdk.go/server.go   author side: SourceAction/SinkAction + Serve (UDS, token auth, graceful stop);

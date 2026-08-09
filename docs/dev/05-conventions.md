@@ -77,6 +77,52 @@ and `go test -race` across every module. Rules:
 - Integration tests that spawn real subprocesses guard with
   `testing.Short()` and build what they need into `t.TempDir()`.
 - `testing.AllocsPerRun` locks in zero-alloc claims (`record` tests).
+- **Batch-lifetime checking** for any reader or operator — wrap the input in
+  `engine/batchtest` and the contract enforces itself:
+
+  ```go
+  batchtest.AssertPoisonSafe(t, func() batchtest.Source {
+      return NewReader(strings.NewReader(in), ReaderOptions{BatchRecords: 4})
+  })
+  // downstream code (operators, pipelines): AssertPoisonSafeChain(t, newInput, build)
+  ```
+
+  It drives the same input twice — once normally, once with each batch's memory
+  destroyed at the instant its lifetime ends — and fails on any difference. A
+  reader or operator that keeps a slice into a batch it already handed on shows
+  up as a diff; one that copies what it keeps is untouched.
+
+  Two things to know before you use it:
+
+  - It **fatals if fewer than two batches retired.** A one-batch test invalidates
+    nothing while anything is still looking, so it would pass while proving
+    nothing. Feed more input or lower the reader's batch size.
+  - Use the `Unordered` variant only where output order genuinely carries no
+    meaning (the aggregate emits groups in hash order). Everywhere else the
+    ordered comparison is strictly stronger.
+
+  Rationale and findings: `docs/assurance/test-conformance.md` (TC-009).
+
+- **Goroutine-leak checking** in any package that starts goroutines — add
+  `func TestMain(m *testing.M) { leaktest.Main(m) }` (`engine/leaktest`; the
+  gateway imports its own copy at `gateway/internal/leaktest`, since
+  `gateway/go.mod` must stay dependency-free). Wired today in `engine/stream`,
+  `sdk/host`, `runner/internal/{service,gwclient,connpool,api,leaseloop}`,
+  `hub/internal/scheduler`, `gateway/internal/{ingress,runners}`.
+
+  The check diffs goroutine identities across the run, so pre-existing
+  framework goroutines are ignored and nothing needs tuning per package. Two
+  consequences worth knowing before you debug a failure:
+
+  - **A test that constructs a `Service`, `Pool` or client must close it.**
+    Most leaks it reports are a missing `t.Cleanup(func(){ x.Close() })`, not a
+    product bug — but it found a real one on its first run (`sdk/host.connect`
+    stranding a gRPC `ClientConn`), which is the point.
+  - **Unclosed `net/http` and `database/sql` handles are NOT excused.** They
+    are deliberately absent from the ignore list; an idle connection surviving
+    the suite means something was left open.
+
+  Rationale and findings: `docs/assurance/test-conformance.md` (TC-001).
 
 ## Style notes that keep recurring
 

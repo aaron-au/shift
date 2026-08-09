@@ -18,7 +18,20 @@
 
 
 
-default 0
+# TC-016 (docs/assurance/test-conformance.md): raised 0 -> 80 on 2026-08-09.
+#
+# `default` applies to any gated package with no line of its own — which today
+# is none, because every existing package is listed. It therefore governs
+# exactly one thing: what happens when a NEW package lands. At 0 it landed
+# ungated and silently stayed that way; the ratchet only ever protected
+# packages someone had already thought about.
+#
+# 80 is the stated floor for this codebase, and the seeding comment above
+# always intended the permissive default to be temporary. A new package that
+# genuinely cannot reach it (live-I/O connectors are the recurring case) is
+# still free to carry a lower floor — but as an explicit line with a reason,
+# the way azureblobconn and edi do below, rather than by default.
+default 80
 
 github.com/aaron-au/shift/connectors/internal/fsconn 81
 github.com/aaron-au/shift/connectors/internal/soapconn 85
@@ -59,23 +72,15 @@ github.com/aaron-au/shift/engine/record 85
 github.com/aaron-au/shift/engine/schema 88
 github.com/aaron-au/shift/engine/spill 96
 github.com/aaron-au/shift/engine/stream 84
-# hub/internal/api 88 -> 87 (2026-08-06, ADR-0049 gateway pairing).
+# hub/internal/api restored to 88 (2026-08-09, TC-008).
 #
-# The gateway realm added ~130 statements of handler code. Its behaviour is
-# covered — validation, the token being served exactly once and never again,
-# the full pairing exchange against a real gateway, a wrong token, a spent
-# token, rotation, deletion-as-revocation, malformed ids, and a runner
-# credential being refused the realm entirely.
-#
-# What is NOT covered is the remaining error arms of adoptGateway and
-# listGateways: store failures mid-adoption (LearnGatewayFingerprint racing
-# MarkGatewayAdopted) that need failure injection to reach. Writing tests that
-# contrive those paths would move the number without asserting anything a user
-# would notice, which is the opposite of why the gate exists.
-#
-# Recorded here rather than done quietly. If failure injection lands in the
-# store test harness, this goes back to 88.
-github.com/aaron-au/shift/hub/internal/api 87
+# The 87 above was a documented apology: the remaining error arms of
+# adoptGateway/listGateways were store failures mid-operation that "need failure
+# injection to reach", and the note said this returns to 88 if such a harness
+# ever lands. It landed (hub/internal/api/faultinject_test.go — faults injected
+# at the DATABASE via row triggers, so real transactions really roll back), and
+# the package now measures 89.7%.
+github.com/aaron-au/shift/hub/internal/api 88
 github.com/aaron-au/shift/hub/internal/connpolicy 98
 github.com/aaron-au/shift/hub/internal/kek 86
 github.com/aaron-au/shift/hub/internal/oidcauth 94

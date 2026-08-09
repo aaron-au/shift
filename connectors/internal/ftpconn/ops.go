@@ -43,12 +43,16 @@ func (c *config) requireOpArgs(op opKind) error {
 		if c.From == "" || c.To == "" {
 			return errors.New("ftp: rename requires from and to")
 		}
-		return nil
+		// Both halves reach the wire, as RNFR and RNTO — validate both.
+		if err := validateRemotePath("from", c.From); err != nil {
+			return err
+		}
+		return validateRemotePath("to", c.To)
 	}
 	if c.Path == "" {
 		return errors.New("ftp: path is required")
 	}
-	return nil
+	return validateRemotePath("path", c.Path)
 }
 
 // opSource performs one config-driven file operation and emits a single status

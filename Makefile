@@ -72,6 +72,14 @@ fuzz:
 	@echo "--- fuzz consign.Verify";  FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh pkg    ./consign       FuzzVerify
 	@echo "--- fuzz ndjson.Reader";   FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh engine ./format/ndjson FuzzReader
 	@echo "--- fuzz spill.Decode";    FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh engine ./spill         FuzzDecode
+	@echo "--- fuzz edi.Reader";      FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh engine ./format/edi    FuzzReader
+	@echo "--- fuzz fixedw.Reader";   FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh engine ./format/fixedw FuzzReader
+	@echo "--- fuzz xmlf.Reader";     FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh engine ./format/xmlf   FuzzReader
+	@echo "--- fuzz csvf.Reader";     FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh engine ./format/csvf   FuzzReader
+	@echo "--- fuzz record paths";    FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh engine ./record        FuzzParsePath
+	@echo "--- fuzz record scalars";  FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh engine ./record        FuzzParseScalars
+	@echo "--- fuzz schema.Compile";  FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh engine ./schema        FuzzCompile
+	@echo "--- fuzz schema.Validate"; FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh engine ./schema        FuzzValidate
 
 ## bench: micro-benchmarks + shift-bench RSS regression checks (ADR-0003)
 bench:
@@ -126,6 +134,13 @@ leaks:
 ## Supply-chain scans that cannot run in pre-push (image/Dockerfile/SAST) live
 ## in the separate release/scheduled tier (.github/workflows/supply-chain.yml),
 ## an explicit ADR-0006 extension — not smuggled in as CI-only correctness.
+## BOTH `test` and `cover` run, deliberately (TC-015, ADR-0022 amendment
+## 2026-08-09). `cover` sets SHIFT_COVERAGE=1, which SKIPS the connector-
+## subprocess and hub/e2e tests to keep the coverage number deterministic —
+## and those are the tests that prove crash recovery, exactly-once scheduling,
+## the signed-artifact supply chain, secrets-never-at-rest and payload-never-
+## to-hub. Dropping `test` here would make the gate fast by not running the
+## proofs of the doctrine. Do not "optimise" it away.
 check: fmt-check tidy-check vet lint actions vuln leaks test cover
 	@echo "check: all gates green"
 

@@ -22,6 +22,19 @@ import (
 	"github.com/aaron-au/shift/runner/internal/task"
 )
 
+// DefaultTaskTimeout bounds a single task when the operator sets none.
+//
+// Six hours is deliberately generous — it is not a performance target, it is
+// the point past which "still streaming" and "wedged" have become the same
+// thing to everyone except the process. The proven numbers put a 1 GB stream in
+// minutes (docs/bench-M1.md), so a task still running after six hours is not a
+// big file; it is a flow nobody is going to get an answer from.
+//
+// It exists because the alternative — no ceiling — makes a hang permanent: the
+// task holds its admission reservation for the life of the runner, and ADR-0005
+// makes admission the only capacity control there is.
+const DefaultTaskTimeout = 6 * time.Hour
+
 // Options configure the service.
 type Options struct {
 	// ConnectorDir holds shift-connector-<name> binaries.
@@ -46,17 +59,31 @@ type Options struct {
 	TaskHistory int
 	// PoolIdleTTL reaps idle connectors (default 5m).
 	PoolIdleTTL time.Duration
-	// TaskTimeout bounds a single task's execution. 0 (default) means no
-	// timeout — streaming workloads (large CSV/EDI, DB sync) are legitimately
-	// long, so a wall-clock cap is opt-in. Regardless of this, every task's
-	// context is cancelled when the service drains, so a hung connector never
-	// strands admission budget past shutdown (ADR-0005).
+	// TaskTimeout bounds a single task's execution. Any value <= 0 takes
+	// DefaultTaskTimeout — there is no "off".
+	//
+	// It used to default to 0 meaning UNBOUNDED, on the reasoning that
+	// streaming workloads (large CSV/EDI, DB sync) are legitimately long. That
+	// reasoning is right about duration and wrong about the failure mode: a
+	// task that never finishes holds its admission reservation forever, and
+	// under ADR-0005 admission is the runner's only capacity control. One
+	// wedged flow permanently shrinks the machine, and nothing reports it —
+	// the task simply stays `running`. The engine has a real instance of this
+	// today: the tee→join enrichment topology deadlocks above ~10 batches
+	// (TC-029, docs/assurance/test-conformance.md).
+	//
+	// A deployment that genuinely wants no ceiling can still say so, by setting
+	// a duration long enough to be one. That is a decision someone made, which
+	// is the entire difference.
 	TaskTimeout time.Duration
 }
 
 func (o *Options) defaults() {
 	if o.MemBudget <= 0 {
 		o.MemBudget = 1 << 30
+	}
+	if o.TaskTimeout <= 0 {
+		o.TaskTimeout = DefaultTaskTimeout
 	}
 	if o.TaskWatermark <= 0 {
 		o.TaskWatermark = 64 << 20
@@ -274,11 +301,9 @@ func (s *Service) run(id string, doc *flow.Document, o SubmitOpts) {
 		ctx    context.Context
 		cancel context.CancelFunc
 	)
-	if s.opts.TaskTimeout > 0 {
-		ctx, cancel = context.WithTimeout(s.baseCtx, s.opts.TaskTimeout)
-	} else {
-		ctx, cancel = context.WithCancel(s.baseCtx)
-	}
+	// Always bounded: defaults() guarantees a positive TaskTimeout, so there is
+	// no arm here that runs a task without a ceiling.
+	ctx, cancel = context.WithTimeout(s.baseCtx, s.opts.TaskTimeout)
 	defer cancel()
 
 	// Admission: reserve or wait for a release. The wait is unbounded by

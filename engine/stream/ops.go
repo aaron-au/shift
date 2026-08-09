@@ -220,9 +220,16 @@ func coerceValue(bld *record.Builder, v record.Value, to record.Kind) (record.Va
 		bld.BeginList() // scratch container so the builder owns the arena copy
 		switch v.Kind() {
 		case record.KindInt:
-			bld.StringLiteral(strconv.FormatInt(v.Int(), 10))
+			// Appended into a stack buffer, not FormatInt: FormatInt returns a
+			// fresh Go string for anything outside its small-int cache, which
+			// was one allocation PER RECORD on a hot operator — measured, and
+			// caught by TestCoerceToTextDoesNotAllocate (TC-006). The exact-kind
+			// arm below always did it this way; this arm was the odd one out.
+			var buf [24]byte
+			bld.String(strconv.AppendInt(buf[:0], v.Int(), 10))
 		case record.KindFloat:
-			bld.StringLiteral(strconv.FormatFloat(v.Float(), 'g', -1, 64))
+			var buf [32]byte
+			bld.String(strconv.AppendFloat(buf[:0], v.Float(), 'g', -1, 64))
 		case record.KindDecimal, record.KindTimestamp, record.KindDate, record.KindTime:
 			// One canonical rendering, shared with the format writers, so a
 			// coerced string and a written field never disagree.

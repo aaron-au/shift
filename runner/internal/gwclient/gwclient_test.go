@@ -191,9 +191,12 @@ func TestUnreachableGatewayBacksOffWithoutExiting(t *testing.T) {
 	url := gw.URL
 	gw.Close() // refuse every connection from here on
 
+	svc := service.New(service.Options{})
+	defer func() { _ = svc.Close(5 * time.Second) }()
+
 	l := New(Options{
 		Addrs:    []string{url},
-		Service:  service.New(service.Options{}),
+		Service:  svc,
 		Lookup:   func(string) (*flowdoc.Document, bool) { return nil, false },
 		PollWait: 50 * time.Millisecond,
 	})

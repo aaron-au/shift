@@ -3,6 +3,7 @@ module github.com/aaron-au/shift/hub
 go 1.26.2
 
 require (
+	github.com/aaron-au/shift/engine v0.0.0
 	github.com/aaron-au/shift/pkg v0.0.0-00010101000000-000000000000
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/go-jose/go-jose/v4 v4.1.4
@@ -18,7 +19,6 @@ require (
 )
 
 require (
-	github.com/aaron-au/shift/engine v0.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect

@@ -36,7 +36,9 @@ Legend: **A** = has an automated (Level-1) test · **V** = has a verification
 | csv reader/writer | `engine/format/csvf` tests | test pass | ✅ |
 | **XML streaming reader** (`xmlf`) | `engine/format/xmlf` tests (PR #23) | test pass | 🟡 (PR open) |
 | Operators: project/filter/coerce/flatten/aggregate | `engine/stream` tests | test pass | ✅ |
-| Batch-lifetime + no map[string]interface{} contracts | code review + lint (depguard) | gate green | ✅ |
+| No map[string]interface{} on the hot path | lint (depguard) + review | gate green | ✅ |
+| Batch-lifetime contract (valid only until the next `Next`) | ⬜ **prose comments only** — no harness proves it | ⬜ | 🟡 TC-009 |
+| No goroutine leaks (tasks, branches, pipes, pools) | `engine/leaktest` wired as `TestMain` in 10 packages | gate green | ✅ TC-001 |
 
 ## 2. Connectors (each verb exercised)
 
@@ -176,3 +178,7 @@ Run `make bench` (hard RSS gates) and `make bench-report` (the visible matrix
 - End-to-end latency percentiles in the operational e2e.
 - Browser-driven studio visual e2e (issue #15) to turn Studio rows into **A**.
 - Level-1 automation for branch/merge once flow-model v3 (ADR-0029) lands.
+- Work the open rows in `docs/assurance/test-conformance.md`. That register
+  asks a different question from this plan — not "does the feature have a
+  test" but "would a test *fail* if the invariant broke" — and a ✅ here can
+  legitimately sit above a ⬜ there. Rows referencing `TC-nnn` are linked.

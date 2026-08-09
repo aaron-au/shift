@@ -74,8 +74,11 @@ func (a *api) admin(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, ok := a.authenticateAdmin(r)
 		if !ok {
-			// One opaque failure for every path — no oracle.
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			// One opaque failure for every path — no oracle. Still the
+			// ADR-0023 envelope: a client that parses every other error
+			// response one way should not need a second parser for the one it
+			// meets most often. The message stays deliberately uninformative.
+			writeErr(w, http.StatusUnauthorized, errUnauthorized)
 			return
 		}
 		if id.role != "admin" && r.Method != http.MethodGet {
@@ -155,7 +158,7 @@ func (a *api) adminOrRunner(next http.HandlerFunc) http.Handler {
 			next(w, r.WithContext(withIdentity(r.Context(), id)))
 			return
 		}
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		writeErr(w, http.StatusUnauthorized, errUnauthorized)
 	})
 }
 
@@ -188,7 +191,7 @@ func (a *api) runner(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, account, err := a.authRunner(r)
 		if err != nil {
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			writeErr(w, http.StatusUnauthorized, errUnauthorized)
 			return
 		}
 		if !a.opts.RateLimit.Allow("runner", id) {
@@ -292,3 +295,10 @@ func (a *api) me(w http.ResponseWriter, r *http.Request) {
 		"kind": id.kind, "id": id.id, "email": id.email, "role": id.role, "account": id.account,
 	})
 }
+
+// errUnauthorized is the single message every authentication failure returns,
+// in every realm. Deliberately uninformative: distinguishing "no such runner"
+// from "wrong secret" from "expired session" hands an attacker an oracle. What
+// it is NOT is a different response SHAPE from every other error the API emits
+// — that was the ADR-0023 gap TC-012 found.
+var errUnauthorized = errors.New("unauthorized")
