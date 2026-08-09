@@ -26,11 +26,21 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "sftp",
-		Version: "0.5.0",
+		Version: "0.6.0",
 		// Adds the fixedw format and its `columns` layout field: a widened
 		// enum and a new optional property, so every stored config still
 		// loads and every existing flow still runs (ADR-0047 §6).
-		Compat: "compatible",
+		// behaviour-change, not compatible: the config surface is untouched, so
+		// the compat gate cannot see this — but inputs that used to be ACCEPTED
+		// are now refused. A `list` entry named "..", or containing "/", fails
+		// the listing instead of being path.Join'd into a path that leaves the
+		// listed directory. The emitted path exists to feed a following
+		// get/delete/rename node, so a hostile entry name made that node act
+		// outside the directory the author listed, with these credentials
+		// (zip-slip). Reachable even through pkg/sftp, which drops "." and ".."
+		// only after applying path.Base to the RAW name — so a server replying
+		// "x/.." delivers "..". ADR-0047 §6 exists for what the gate cannot see.
+		Compat: "behaviour-change",
 		Meta: &sdk.ConnectorMeta{
 			Description: "SFTP file operations: pick a verb (get/put/list/delete/mkdir/rmdir/rename) and a path. Host-key verified.",
 			Category:    "file-transfer",

@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/textproto"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -35,11 +36,26 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "ftp",
-		Version: "0.4.0",
+		Version: "0.5.0",
 		// Adds the fixedw format and its `columns` layout field: a widened
 		// enum and a new optional property, so every stored config still
 		// loads and every existing flow still runs (ADR-0047 §6).
-		Compat: "compatible",
+		// behaviour-change, not compatible: the config surface is untouched, so
+		// the compat gate cannot see this — but inputs that used to be ACCEPTED
+		// are now refused. A path containing CR, LF or NUL is rejected, because
+		// FTP commands travel in a CRLF-delimited line and the client library
+		// builds "DELE %s" without validating the argument: one configured path
+		// became two FTP commands, running with the connection's credentials
+		// outside the verb the flow author was granted (CWE-93, proven on the
+		// wire). An injected PORT/EPRT would additionally make the SERVER dial
+		// an address of the attacker's choosing — egress this connector's own
+		// network guard can never see, because it is not the process
+		// connecting. ADR-0047 §6 exists for exactly what the gate cannot see.
+		//
+		// Also: a `list` entry named "..", or containing "/", now fails the
+		// listing rather than being path.Join'd into a path that leaves the
+		// listed directory for a following get/delete/rename node (zip-slip).
+		Compat: "behaviour-change",
 		Meta: &sdk.ConnectorMeta{
 			Description: "FTP/FTPS file operations: pick a verb (get/put/list/delete/mkdir/rmdir/rename) and a path. Explicit TLS (FTPS) on by default; certificate verified.",
 			Category:    "file-transfer",
@@ -186,6 +202,9 @@ func (c *config) requireFileFormat() error {
 	if c.Path == "" {
 		return errors.New("ftp: path is required")
 	}
+	if err := validateRemotePath("path", c.Path); err != nil {
+		return err
+	}
 	return fileformat.Validate("ftp", &c.Format, c.Columns)
 }
 
@@ -193,6 +212,39 @@ func (c *config) requireFileFormat() error {
 func (c *config) requireDir() error {
 	if c.Path == "" {
 		return errors.New("ftp: path (directory) is required")
+	}
+	return validateRemotePath("path", c.Path)
+}
+
+// validateRemotePath refuses a configured remote path that would not name a
+// file but append a second command to the FTP control channel.
+//
+// FTP is a LINE protocol. jlaffaye/ftp interpolates the path straight into
+// "DELE %s" / "RNTO %s" / "STOR %s" and net/textproto terminates the line with
+// CRLF; neither validates the argument. A path of "a.txt\r\nDELE /etc/passwd"
+// therefore puts TWO commands on the wire — verified against a recording
+// server by TestACarriageReturnInAPathCannotInjectASecondFTPCommand. That turns
+// a node the author was granted for one verb into arbitrary FTP, and an
+// injected PORT/EPRT would make the SERVER dial an address of the attacker's
+// choosing: egress this connector's network guard can never see, because this
+// process is not the one connecting.
+//
+// NUL is refused alongside CR and LF. No FTP pathname can contain one, and a
+// C-implemented server truncates the name there — so the file acted on would
+// not be the file named.
+//
+// The path is REJECTED, never stripped or escaped. Silently rewriting it would
+// delete or overwrite some other file, leaving the operator with damage they
+// cannot correlate against anything in the flow document; an error names the
+// field and the offending path (%q, so the control characters are visible in
+// the log rather than mangling it).
+//
+// Nothing legitimate is lost: FTP pathnames are carried inside a CRLF-delimited
+// command line, so spaces, unicode, dots and long names all still pass.
+func validateRemotePath(field, p string) error {
+	if i := strings.IndexAny(p, "\r\n\x00"); i >= 0 {
+		return fmt.Errorf("ftp: %s %q contains a control character at byte %d; FTP is a line protocol, "+
+			"so this would inject a second command rather than name a file", field, p, i)
 	}
 	return nil
 }

@@ -27,6 +27,21 @@ type xmlAttr struct {
 	value string
 }
 
+// maxXMLDepth bounds element nesting.
+//
+// parseTree itself is iterative and survives any depth, but everything that
+// walks the tree afterwards — findLocal, xmlNode.build — is recursive, and Go
+// answers a runaway recursion with `fatal error: stack overflow`, which is NOT
+// a panic and cannot be recovered: the connector process dies outright.
+// Measured: 7,518 gzipped bytes (a million nested <a> elements, well inside the
+// 16 MiB response cap) killed the process. Depth is the one dimension the byte
+// cap cannot bound, because deep costs the attacker almost nothing per level.
+//
+// 1024 is far past anything real. SOAP envelopes nest on the order of tens of
+// levels even with WS-Security headers and nested business objects, so this
+// refuses only documents that were never going to be data.
+const maxXMLDepth = 1024
+
 // parseTree decodes an XML document into an element tree. Namespaces are
 // resolved by the decoder; we keep only local names so matching (Envelope,
 // Body, Fault) is prefix-agnostic (soap:/soapenv:/s:/env: all work). Namespace
@@ -59,6 +74,9 @@ func parseTree(doc []byte) (*xmlNode, error) {
 				root = n
 			}
 			stack = append(stack, n)
+			if len(stack) > maxXMLDepth {
+				return nil, fmt.Errorf("soap: xml nesting deeper than %d elements", maxXMLDepth)
+			}
 		case xml.EndElement:
 			if len(stack) > 0 {
 				stack = stack[:len(stack)-1]

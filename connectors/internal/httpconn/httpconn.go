@@ -19,7 +19,15 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "http",
-		Version: "0.1.0",
+		Version: "0.2.0",
+		// behaviour-change, not compatible: the config only GAINED an optional
+		// field, but the connector no longer lets the transport inflate a gzip
+		// response without limit. A response that used to stream now fails if
+		// it inflates past max_decompression_ratio (default 100x), and a
+		// Content-Encoding we never offered is refused instead of being handed
+		// to the parser. Same config, different behaviour — which is exactly
+		// what this class is for (ADR-0047).
+		Compat: "behaviour-change",
 		Meta: &sdk.ConnectorMeta{
 			Description: "Stream records from an HTTP GET (NDJSON) and POST records to an HTTP endpoint. SSRF-guarded.",
 			Category:    "protocol",
@@ -62,7 +70,8 @@ const configSchema = `{
       }
     },
     "allow_local": {"type": "boolean", "title": "Allow local/loopback and private/internal targets (SSRF guard off)", "default": false},
-    "timeout_seconds": {"type": "integer", "title": "Timeout (seconds)", "default": 300}
+    "timeout_seconds": {"type": "integer", "title": "Timeout (seconds)", "description": "Bounds the whole request including reading the response body", "default": 300},
+    "max_decompression_ratio": {"type": "integer", "title": "Max decompression ratio", "description": "Refuse a gzip response that inflates to more than this many bytes per wire byte", "default": 100}
   }
 }`
 
@@ -82,8 +91,15 @@ type commonConfig struct {
 	// unspecified, RFC1918/ULA private, and CGNAT (off by default: SSRF guard,
 	// ADR-0007, issue #5). Self-hosted runners set it to reach internal APIs.
 	AllowLocal bool `json:"allow_local"`
-	// TimeoutSeconds bounds the whole request (default 300).
+	// TimeoutSeconds bounds the WHOLE request — connect, redirects and every
+	// byte of the response body (http.Client.Timeout), not just the headers.
+	// It is the bound that stops an endless or trickling source from pinning a
+	// runner slot forever (ADR-0005), so it is always finite: a zero or
+	// negative value takes the 300s default rather than meaning "no limit".
 	TimeoutSeconds int `json:"timeout_seconds"`
+	// MaxDecompressionRatio bounds inflated bytes per wire byte of a gzip
+	// response (default 100). See decompress.go for why a ratio, and why 100.
+	MaxDecompressionRatio int `json:"max_decompression_ratio"`
 }
 
 func (c *commonConfig) validate() error {
@@ -152,11 +168,20 @@ func (c *commonConfig) client() *http.Client {
 		},
 	}
 	return &http.Client{
+		// Timeout covers connect, redirects AND reading the response body, so
+		// it is what terminates an endless or trickling source. validate()
+		// guarantees it is non-zero (TC-021).
 		Timeout: time.Duration(c.TimeoutSeconds) * time.Second,
 		Transport: &http.Transport{
-			DialContext:         dialer.DialContext,
-			MaxIdleConns:        4,
-			IdleConnTimeout:     60 * time.Second,
+			DialContext:     dialer.DialContext,
+			MaxIdleConns:    4,
+			IdleConnTimeout: 60 * time.Second,
+			// The transport must not negotiate compression on its own: when it
+			// does, it also inflates the response transparently and unbounded,
+			// which is a decompression path we never opted into and cannot
+			// meter (TC-020). The source asks for gzip itself and decodes it
+			// through decodeBody's ratio bound instead.
+			DisableCompression:  true,
 			ForceAttemptHTTP2:   true,
 			TLSHandshakeTimeout: 15 * time.Second,
 		},

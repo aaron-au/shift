@@ -67,11 +67,23 @@ func (s *postSink) Write(ctx context.Context, b *record.Batch) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		var body []byte
+		if dec, derr := s.cfg.decodeBody(resp); derr == nil {
+			body, _ = io.ReadAll(io.LimitReader(dec, 4<<10))
+		}
 		return fmt.Errorf("http: post %s: status %d: %.200s", s.cfg.URL, resp.StatusCode, body)
 	}
-	_, _ = io.Copy(io.Discard, resp.Body) // drain for connection reuse
+	// Drain for connection reuse only — bounded, because the destination of a
+	// POST is as untrusted as any other remote: an endless success body would
+	// otherwise spin here for the whole request timeout. Anything past the cap
+	// costs us a fresh connection next batch, which is the cheap outcome.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, sinkDrainBytes))
 	return nil
 }
+
+// sinkDrainBytes caps the post-success drain. Real APIs answer a bulk POST with
+// a small JSON ack; 64 KiB is far above that and far below anything that costs
+// time to read.
+const sinkDrainBytes = 64 << 10
 
 func (s *postSink) Close() error { return nil }
