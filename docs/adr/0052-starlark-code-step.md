@@ -104,13 +104,46 @@ explicit rounding call rather than a silent one.
 
 ### 4. Bounded by fuel, memory and output size
 
-- **Fuel, not wall-clock.** `SetMaxExecutionSteps` is deterministic and needs
-  no goroutine to kill. Wall-clock via context is a secondary backstop only.
-- **Memory is accounted, not merely capped.** Script state is charged to
-  `mem.Governor`, so it participates in ADR-0005 admission rather than sitting
-  outside the memory model and quietly breaking the bounded-RSS property.
-- **Output is bounded.** A script cannot return a record larger than a
-  configured ceiling; the failure is an error naming the step.
+- **Fuel, not wall-clock.** `SetMaxExecutionSteps` is deterministic, so a
+  script always fits its budget or never does, and no result depends on machine
+  load.
+- **Output is bounded** on field count and nesting depth. Fuel bounds the
+  *work* a script does; this is a separate budget bounding what it can hand
+  back.
+- **Evaluation is isolated on its own goroutine**, with `recover` and a
+  wall-clock deadline. This contains an interpreter panic — which would
+  otherwise take the runner process down and lose every in-flight task rather
+  than the one at fault — and lets the caller abandon a script and fail the
+  task instead of blocking a worker.
+
+**And there is no per-script memory limit. This is a real, measured gap, not
+an oversight to be discovered later.**
+
+`go.starlark.net` exposes `SetMaxExecutionSteps` and `Cancel` and nothing for
+allocation. Fuel counts STEPS, and one step can allocate a great deal:
+`{"x": "a" * 200000000}` completed inside a **1000-step** budget having
+allocated **190 MiB** (measured against this implementation before the deadline
+existed). Neither the goroutine nor the deadline changes that — Go has no
+per-goroutine heap cap, and an abandoned goroutine keeps its allocations until
+it returns. Isolation buys containment and recovery, not a ceiling, and must
+never be described as if it did.
+
+What actually bounds memory today, in order of what does the work:
+
+1. The **streaming model itself** — memory is a function of batch size, not
+   payload size, so a script sees one record at a time and its output is
+   bounded above.
+2. The **output bounds** above, which stop a script handing back an unbounded
+   structure.
+3. A process-level ceiling (`GOMEMLIMIT`), which turns the failure mode from
+   OOM-kill into GC pressure. Recommended for any deployment enabling code
+   steps.
+4. The **deadline**, which stops a thrashing script holding a worker.
+
+A genuine per-script ceiling needs memory isolation the host language cannot
+provide — which is precisely the trigger recorded in §1 for moving to the wasm
+runtime. That is now a concrete reason with a number attached rather than a
+hypothetical, and it is the strongest argument on the wasm side of that choice.
 
 ### 5. Determinism is enforced, because at-least-once demands it
 

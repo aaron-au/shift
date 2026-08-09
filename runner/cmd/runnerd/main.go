@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -62,6 +63,23 @@ func loopbackGateway(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// applyMemoryLimit sets a soft heap ceiling from the admission budget unless
+// the operator has set GOMEMLIMIT themselves.
+func applyMemoryLimit(budget string) {
+	if os.Getenv("GOMEMLIMIT") != "" {
+		return // the operator's choice wins
+	}
+	n, err := parseSize(budget)
+	if err != nil || n <= 0 {
+		return // the budget is validated elsewhere; this is a backstop, not a gate
+	}
+	// Headroom above the admission budget: the budget governs task state, and
+	// the process also holds connector pools, HTTP buffers and the runtime
+	// itself. A ceiling at exactly the budget would spend the runner's life in
+	// the collector.
+	debug.SetMemoryLimit(n + n/2)
+}
+
 func main() {
 	var (
 		listen        = flag.String("listen", envOr("SHIFT_LISTEN", "127.0.0.1:8340"), "API/dashboard address (loopback by default; auth arrives with hub identity in M4)")
@@ -85,6 +103,21 @@ func main() {
 		taskTimeout   = flag.Duration("task-timeout", envDuration("SHIFT_RUNNER_TASK_TIMEOUT", 0), "max execution time per task (0=off; streaming workloads are legitimately long)")
 	)
 	flag.Parse()
+
+	// A process-level heap ceiling, defaulting to the admission budget.
+	//
+	// Everything else in the runner bounds memory by construction: streaming
+	// makes RSS a function of batch size rather than payload size, and blocking
+	// operators spill at their watermark. The exception is a `starlark` step —
+	// fuel counts execution steps, not bytes, so a script can allocate heavily
+	// in very few steps (ADR-0052 §4 documents the measurement).
+	//
+	// GOMEMLIMIT is a SOFT limit: crossing it makes the collector work harder
+	// rather than failing an allocation. That is the useful behaviour here —
+	// the runner degrades and its deadlines fire, instead of the OOM killer
+	// taking the process out and losing every in-flight task rather than the
+	// one at fault. An explicit GOMEMLIMIT in the environment always wins.
+	applyMemoryLimit(*memBudget)
 	// Structured logs on STDOUT (ADR-0046). Before anything else logs: the
 	// runner had no structured logging at all, and the first line a runner
 	// writes should already be filterable.

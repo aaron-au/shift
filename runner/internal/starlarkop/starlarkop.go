@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"go.starlark.net/starlark"
 	"go.starlark.net/syntax"
@@ -55,6 +56,11 @@ type Options struct {
 	// MaxOutputFields / MaxOutputDepth override the output bounds.
 	MaxOutputFields int
 	MaxOutputDepth  int
+	// Deadline bounds one record's evaluation in wall-clock time — the
+	// backstop for what fuel cannot see, since fuel counts steps and a single
+	// step can allocate a great deal (see isolate.go). 0 takes
+	// DefaultDeadline.
+	Deadline time.Duration
 	// Allowed overrides the environment opt-in. Nil consults AllowEnv; a
 	// non-nil value is used as given, which is how tests exercise both sides
 	// of the gate without setting process state.
@@ -73,11 +79,12 @@ func Allowed() bool {
 
 // Program is a compiled script, reusable across records and batches.
 type Program struct {
-	fn     *starlark.Function
-	opts   Options
-	fuel   uint64
-	fields int
-	depth  int
+	fn       *starlark.Function
+	opts     Options
+	fuel     uint64
+	fields   int
+	depth    int
+	deadline time.Duration
 }
 
 // Compile parses and executes the script once, capturing its `transform`
@@ -100,10 +107,11 @@ func Compile(opts Options) (*Program, error) {
 			len(opts.Script), DefaultMaxScriptBytes)
 	}
 	p := &Program{
-		opts:   opts,
-		fuel:   or(opts.Fuel, DefaultFuel),
-		fields: orInt(opts.MaxOutputFields, DefaultMaxOutputFields),
-		depth:  orInt(opts.MaxOutputDepth, DefaultMaxOutputDepth),
+		opts:     opts,
+		fuel:     or(opts.Fuel, DefaultFuel),
+		fields:   orInt(opts.MaxOutputFields, DefaultMaxOutputFields),
+		depth:    orInt(opts.MaxOutputDepth, DefaultMaxOutputDepth),
+		deadline: opts.Deadline,
 	}
 
 	thread := p.newThread()
@@ -195,11 +203,10 @@ func (p *Program) Run(ctx context.Context, dst *record.Batch, rec record.Value) 
 		return record.Value{}, false, err
 	}
 	thread := p.newThread()
-	// A context backstop behind the fuel budget: fuel bounds work, this bounds
-	// wall-clock if a host call ever blocks.
-	thread.SetLocal("ctx", ctx)
-
-	res, err := starlark.Call(thread, p.fn, starlark.Tuple{wrap(rec)}, nil)
+	// On its own goroutine, so an interpreter panic is contained and a script
+	// the fuel budget cannot stop can be abandoned. See isolate.go for what
+	// that does and — importantly — does not buy.
+	res, err := p.callIsolated(ctx, thread, p.fn, wrap(rec))
 	if err != nil {
 		return record.Value{}, false, p.scriptError(err)
 	}

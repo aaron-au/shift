@@ -1,6 +1,7 @@
 package main
 
 import (
+	"runtime/debug"
 	"testing"
 
 	"github.com/aaron-au/shift/runner/internal/api"
@@ -90,6 +91,52 @@ func TestLoopbackGateway(t *testing.T) {
 	} {
 		if got := loopbackGateway(addr); got != want {
 			t.Errorf("loopbackGateway(%q) = %v, want %v", addr, got, want)
+		}
+	}
+}
+
+// TestTheHeapCeilingDefaultsToTheAdmissionBudget: everything else in the
+// runner bounds memory by construction, but a `starlark` step's fuel counts
+// steps rather than bytes (ADR-0052 §4), so the process keeps a soft ceiling.
+// Soft matters: crossing it makes the collector work harder, where an OOM kill
+// would lose every in-flight task rather than the one at fault.
+func TestTheHeapCeilingDefaultsToTheAdmissionBudget(t *testing.T) {
+	t.Setenv("GOMEMLIMIT", "")
+	before := debug.SetMemoryLimit(-1) // read without setting
+	t.Cleanup(func() { debug.SetMemoryLimit(before) })
+
+	applyMemoryLimit("1GiB")
+	got := debug.SetMemoryLimit(-1)
+	// Budget plus half: the budget governs task state, while the process also
+	// holds connector pools, HTTP buffers and the runtime itself.
+	if want := int64(1<<30) + int64(1<<30)/2; got != want {
+		t.Errorf("memory limit = %d, want %d", got, want)
+	}
+}
+
+// An operator who sets GOMEMLIMIT means it.
+func TestAnExplicitMemoryLimitWins(t *testing.T) {
+	t.Setenv("GOMEMLIMIT", "512MiB")
+	before := debug.SetMemoryLimit(-1)
+	t.Cleanup(func() { debug.SetMemoryLimit(before) })
+
+	applyMemoryLimit("1GiB")
+	if got := debug.SetMemoryLimit(-1); got != before {
+		t.Errorf("memory limit = %d, want it untouched (%d)", got, before)
+	}
+}
+
+// A malformed budget must not take the runner down: this is a backstop, and
+// the budget itself is validated where it is actually used.
+func TestAnUnparseableBudgetLeavesTheCeilingAlone(t *testing.T) {
+	t.Setenv("GOMEMLIMIT", "")
+	before := debug.SetMemoryLimit(-1)
+	t.Cleanup(func() { debug.SetMemoryLimit(before) })
+
+	for _, bad := range []string{"", "banana", "-5", "0"} {
+		applyMemoryLimit(bad)
+		if got := debug.SetMemoryLimit(-1); got != before {
+			t.Errorf("budget %q changed the ceiling to %d", bad, got)
 		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aaron-au/shift/engine/record"
 )
@@ -354,5 +355,71 @@ func TestOnlyARecordOrNoneMayBeReturned(t *testing.T) {
 		if err == nil {
 			t.Errorf("%q returned a non-record and was accepted", script)
 		}
+	}
+}
+
+// TestADeadlineAbandonsAScriptFuelCannotStop covers the gap fuel leaves: fuel
+// counts STEPS, and a single step can allocate a great deal, so a script can
+// sit far inside its fuel budget while consuming the machine. Measured before
+// this existed: 190 MiB allocated inside a 1000-step budget.
+//
+// The deadline does not bound memory — nothing in-process can (see isolate.go)
+// — but it stops the runner waiting on such a script forever.
+func TestADeadlineAbandonsAScriptFuelCannotStop(t *testing.T) {
+	prog, err := Compile(Options{
+		Script: `
+def transform(rec):
+    n = 0
+    for i in range(100000000):
+        n = n + i
+    return {"n": n}
+`,
+		// Fuel high enough not to fire, deadline low enough to.
+		StepID: "s1", Fuel: 1 << 62, Deadline: 50 * time.Millisecond, Allowed: yes(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, _, err = runOne(t, prog, func(b *record.Builder) {
+		b.KeyLiteral("x")
+		b.Int(1)
+	})
+	if err == nil {
+		t.Fatal("a script past its deadline was not abandoned")
+	}
+	if !strings.Contains(err.Error(), "did not finish") {
+		t.Errorf("error = %v, want it to name the deadline", err)
+	}
+	// The caller must be released promptly rather than waiting on the script.
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("caller blocked for %s after the deadline", elapsed)
+	}
+}
+
+// TestDeadlineErrorsCarryNoPayload — the abandonment message reaches the hub.
+func TestDeadlineErrorsCarryNoPayload(t *testing.T) {
+	prog, err := Compile(Options{
+		Script: `
+def transform(rec):
+    n = 0
+    for i in range(100000000):
+        n = n + rec.pan
+    return {"n": n}
+`,
+		StepID: "s1", Fuel: 1 << 62, Deadline: 30 * time.Millisecond, Allowed: yes(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = runOne(t, prog, func(b *record.Builder) {
+		b.KeyLiteral("pan")
+		b.Int(4111111111111111)
+	})
+	if err == nil {
+		t.Fatal("expected a deadline error")
+	}
+	if strings.Contains(err.Error(), "4111111111111111") {
+		t.Errorf("deadline error carries payload: %q", err)
 	}
 }
