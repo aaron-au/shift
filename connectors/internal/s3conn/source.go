@@ -2,7 +2,9 @@ package s3conn
 
 import (
 	"context"
+	"io"
 
+	"github.com/aaron-au/shift/connectors/internal/decompress"
 	"github.com/aaron-au/shift/connectors/internal/fileformat"
 	"github.com/aaron-au/shift/engine/record"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -13,9 +15,10 @@ import (
 // batches with the configured format. The body is never buffered whole — the
 // format reader wraps the response's io.ReadCloser directly.
 type getSource struct {
-	cfg    config
-	body   interface{ Close() error }
-	reader fileformat.Reader
+	cfg     config
+	body    interface{ Close() error }
+	bounded *decompress.Reader // non-nil only when the object was compressed
+	reader  fileformat.Reader
 }
 
 func (s *getSource) Open(ctx context.Context, cfg []byte) error {
@@ -37,7 +40,21 @@ func (s *getSource) Open(ctx context.Context, cfg []byte) error {
 		return err
 	}
 	s.body = out.Body
-	rd, err := fileformat.NewReader(s.cfg.Format, out.Body, fileformat.Options{RecordElement: s.cfg.RecordElement, Columns: s.cfg.Columns})
+	// An object's Content-Encoding is set by whoever wrote it to the bucket,
+	// which in a shared or partner-fed bucket is not the flow's author. Before
+	// this, a gzip-encoded object reached the record parser still compressed
+	// and surfaced as `unexpected character '\x1f'` — gzip's magic number
+	// reported as a data error (TC-020).
+	body := io.Reader(out.Body)
+	if out.ContentEncoding != nil && *out.ContentEncoding != "" {
+		rd, err := decompress.Gzip(out.Body, decompress.Ratio(s.cfg.MaxDecompressionRatio), s.cfg.Key)
+		if err != nil {
+			return err
+		}
+		s.bounded = rd
+		body = rd
+	}
+	rd, err := fileformat.NewReader(s.cfg.Format, body, fileformat.Options{RecordElement: s.cfg.RecordElement, Columns: s.cfg.Columns})
 	if err != nil {
 		return err
 	}
@@ -46,7 +63,19 @@ func (s *getSource) Open(ctx context.Context, cfg []byte) error {
 }
 
 func (s *getSource) Next(ctx context.Context) (*record.Batch, error) {
-	return s.reader.Next(ctx)
+	b, err := s.reader.Next(ctx)
+	if err == nil {
+		return b, nil
+	}
+	// Consult the bound on every failure AND on EOF: a tripped ratio truncates
+	// mid-record, so the format reader reports its own parse error — or a clean
+	// EOF — and hides the real, size-shaped cause.
+	if s.bounded != nil {
+		if tripped := s.bounded.Tripped(); tripped != nil {
+			return nil, tripped
+		}
+	}
+	return b, err
 }
 
 func (s *getSource) Close() error {

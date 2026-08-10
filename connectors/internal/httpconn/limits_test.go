@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aaron-au/shift/connectors/internal/decompress"
 	"github.com/aaron-au/shift/engine/record"
 )
 
@@ -103,7 +104,7 @@ func TestAGzipBombIsRefusedWhileItIsStillInflating(t *testing.T) {
 	unit := bytes.Repeat([]byte(`{"a":1,"b":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`+"\n"), 1024)
 	wire, inflated := gzipOf(t, unit, 1024) // ~48 MiB inflated
 	if ratio := inflated / len(wire); ratio < 200 {
-		t.Fatalf("test bomb only amplifies %dx; it must exceed the %dx bound to prove anything", ratio, defaultMaxDecompressionRatio)
+		t.Fatalf("test bomb only amplifies %dx; it must exceed the %dx bound to prove anything", ratio, decompress.DefaultMaxRatio)
 	}
 	srv := gzipServer(t, "application/x-ndjson", wire)
 
@@ -179,9 +180,9 @@ func TestAWellCompressedResponseStillStreamsEveryRecord(t *testing.T) {
 	_ = zw.Close()
 	ratio := raw.Len() / out.Len()
 	t.Logf("realistic NDJSON corpus: %d bytes -> %d bytes (%dx)", raw.Len(), out.Len(), ratio)
-	if ratio >= defaultMaxDecompressionRatio {
+	if ratio >= decompress.DefaultMaxRatio {
 		t.Fatalf("this corpus compresses %dx, at or above the %dx bound — the default is too tight for real data",
-			ratio, defaultMaxDecompressionRatio)
+			ratio, decompress.DefaultMaxRatio)
 	}
 	srv := gzipServer(t, "application/x-ndjson", out.Bytes())
 

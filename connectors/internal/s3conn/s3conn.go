@@ -36,11 +36,14 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "s3",
-		Version: "0.4.0",
-		// Adds the fixedw format and its `columns` layout field: a widened
-		// enum and a new optional property, so every stored config still
-		// loads and every existing flow still runs (ADR-0047 §6).
-		Compat: "compatible",
+		Version: "0.5.0",
+		// Decodes Content-Encoding deliberately and bounds it (TC-020). A
+		// gzip-encoded object previously reached the record parser still
+		// compressed and failed at byte one with `unexpected character
+		// '\x1f'`; it now reads, up to the ratio bound. Nothing that worked
+		// stops working, but the outcome for such an object changes, so it is
+		// declared as a behaviour change rather than as a widening (ADR-0047 §6).
+		Compat: "behaviour-change",
 		Meta: &sdk.ConnectorMeta{
 			Description: "AWS S3 and S3-compatible (MinIO/Ceph/R2) object storage: pick a verb (get/put/list/delete). Static tenant credentials; SSRF-guarded.",
 			Category:    "object-storage",
@@ -86,7 +89,8 @@ var (
     "key": {"type": "string", "title": "Object key", "description": "Full object key/path within the bucket"},
     "format": ` + fileformat.SchemaEnum() + `,
     "record_element": ` + fileformat.RecordElementProp + `,
-    "columns": ` + fileformat.ColumnsProp() + `
+    "columns": ` + fileformat.ColumnsProp() + `,
+    "max_decompression_ratio": {"type": "integer", "title": "Max decompression ratio", "description": "For an object stored with Content-Encoding: gzip, refuse it if it inflates to more than this many bytes per wire byte", "default": 100}
   }}`
 
 	listConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"S3 list",
@@ -122,6 +126,10 @@ type config struct {
 	PathStyle      bool                `json:"path_style"`
 	AllowLocal     bool                `json:"allow_local"`
 	TimeoutSeconds int                 `json:"timeout_seconds"`
+	// MaxDecompressionRatio bounds inflated bytes / wire bytes for an object
+	// stored with Content-Encoding: gzip (decompress.DefaultMaxRatio when
+	// zero). See connectors/internal/decompress for why this is a ratio.
+	MaxDecompressionRatio int `json:"max_decompression_ratio,omitempty"`
 }
 
 // parseConfig unmarshals and validates the connection fields shared by every
@@ -225,6 +233,13 @@ func (c *config) httpClient() *http.Client {
 			IdleConnTimeout:     60 * time.Second,
 			ForceAttemptHTTP2:   true,
 			TLSHandshakeTimeout: 15 * time.Second,
+			// Never inflate anything on our behalf. The AWS SDK sets its own
+			// Accept-Encoding today, so the transport does not transparently
+			// decompress here — but that is a property of a dependency, not of
+			// this code, and the identical transport in azureblobconn WAS
+			// exposed by an SDK that does not. getSource decodes gzip
+			// deliberately and meters it (TC-020).
+			DisableCompression: true,
 		},
 	}
 }

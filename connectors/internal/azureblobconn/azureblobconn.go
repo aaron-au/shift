@@ -26,6 +26,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 
+	"github.com/aaron-au/shift/connectors/internal/decompress"
 	"github.com/aaron-au/shift/connectors/internal/fileformat"
 	"github.com/aaron-au/shift/sdk"
 )
@@ -36,11 +37,13 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "azureblob",
-		Version: "0.4.0",
-		// Adds the fixedw format and its `columns` layout field: a widened
-		// enum and a new optional property, so every stored config still
-		// loads and every existing flow still runs (ADR-0047 §6).
-		Compat: "compatible",
+		Version: "0.5.0",
+		// Bounds gzip inflation on download (TC-020). This REFUSES input that
+		// was previously accepted — measured, a blob of 1,822,535 wire bytes
+		// inflated to 512 MiB and 7,780,738 records and completed with no
+		// error — so it is a behaviour change even though the config surface
+		// only gains an optional max_decompression_ratio (ADR-0047 §6).
+		Compat: "behaviour-change",
 		Meta: &sdk.ConnectorMeta{
 			Description: "Azure Blob Storage: pick a verb (get/put/list/delete). Static-credential auth (account key, connection string, or container SAS). Network-guarded.",
 			Category:    "cloud-storage",
@@ -83,7 +86,8 @@ var (
     "blob": {"type": "string", "title": "Blob", "description": "Blob name/key within the container"},
     "format": ` + fileformat.SchemaEnum() + `,
     "record_element": ` + fileformat.RecordElementProp + `,
-    "columns": ` + fileformat.ColumnsProp() + `
+    "columns": ` + fileformat.ColumnsProp() + `,
+    "max_decompression_ratio": {"type": "integer", "title": "Max decompression ratio", "description": "For a blob stored with Content-Encoding: gzip, refuse it if it inflates to more than this many bytes per wire byte", "default": 100}
   }}`
 
 	listConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"Azure blob list",
@@ -116,6 +120,10 @@ type config struct {
 	// can be read out of it without being told where the fields are.
 	Columns    []fileformat.Column `json:"columns,omitempty"`
 	AllowLocal bool                `json:"allow_local"`
+	// MaxDecompressionRatio bounds inflated bytes / wire bytes for a blob
+	// stored with Content-Encoding: gzip (decompress.DefaultMaxRatio when
+	// zero). See connectors/internal/decompress for why this is a ratio.
+	MaxDecompressionRatio int `json:"max_decompression_ratio,omitempty"`
 }
 
 // parseConfig unmarshals and validates the auth/connection fields shared by
@@ -218,7 +226,7 @@ func openStore(_ context.Context, c *config) (blobStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &azStore{cc: cc}, nil
+	return &azStore{cc: cc, maxRatio: c.MaxDecompressionRatio}, nil
 }
 
 // containerClient constructs a container-scoped Azure client for the selected
@@ -257,6 +265,8 @@ func (c *config) containerClient() (*container.Client, error) {
 // azStore is the production blobStore backed by an Azure container client.
 type azStore struct {
 	cc *container.Client
+	// maxRatio bounds gzip inflation for Download; 0 means the default.
+	maxRatio int
 }
 
 func (s *azStore) Download(ctx context.Context, blob string) (io.ReadCloser, error) {
@@ -266,6 +276,18 @@ func (s *azStore) Download(ctx context.Context, blob string) (io.ReadCloser, err
 			return nil, errNotFound
 		}
 		return nil, err
+	}
+	// A blob's Content-Encoding is chosen by whoever wrote it, which in a
+	// partner-fed or shared container is not the flow's author. The transport
+	// no longer inflates it for us, so this is the only place it is undone —
+	// and it is metered (TC-020).
+	if resp.ContentEncoding != nil && *resp.ContentEncoding != "" {
+		rd, err := decompress.Gzip(resp.Body, decompress.Ratio(s.maxRatio), blob)
+		if err != nil {
+			_ = resp.Body.Close()
+			return nil, err
+		}
+		return rd, nil
 	}
 	return resp.Body, nil
 }
@@ -372,6 +394,13 @@ func guardedClient(allowLocal bool) *http.Client {
 			IdleConnTimeout:     60 * time.Second,
 			ForceAttemptHTTP2:   true,
 			TLSHandshakeTimeout: 15 * time.Second,
+			// The transport must not inflate anything on our behalf. Left on,
+			// it advertises gzip itself and transparently decompresses the
+			// reply, which gave this connector an unbounded decompressor it
+			// never opted into: measured, 1,822,535 wire bytes became 512 MiB
+			// and 7,780,738 records, streamed to completion with no error.
+			// Download re-adds gzip deliberately and meters it (TC-020).
+			DisableCompression: true,
 		},
 	}
 }
