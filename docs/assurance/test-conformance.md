@@ -318,6 +318,19 @@ luck.
 **TC-029 remains open** — it is a design change (spill the join build side), not
 a fix, and nothing in the join path was touched.
 
+### 2g. Test-suite reliability
+
+| ID | Claim | Evidence | Status |
+|---|---|---|---|
+| TC-035 | The suite gives the same answer under load as it does idle | `hub/e2e`'s two crash-redispatch tests (`TestCrashRecovery`, `TestTheSinkSeesTheSameIdempotencyKeyAfterACrashRedispatch`) **timed out** once during a full `make test` — 155s and 103s against a 20–72s norm — then passed five consecutive times (isolated, package, `-race`, module-wide `-shuffle=on`, full `make test`). Both spawn real `runnerd` and connector subprocesses, and `go test ./...` runs the hub's packages in parallel against one Postgres | ⬜ |
+
+Recorded rather than shrugged off. A test that fails under load is a test people
+learn to re-run, and a suite people learn to re-run is one where a real failure
+gets waved through. The fix is not a longer timeout — it is either isolating the
+process-spawning e2e tests from the parallel package run, or making their waits
+condition-based rather than wall-clock. Deciding which needs a reproduction
+first, which is why this is a row and not a patch.
+
 ### 2e. Hostile and malformed user data (opened 2026-08-09)
 
 **Why this is its own section.** In an iPaaS effectively 100% of the bytes are
