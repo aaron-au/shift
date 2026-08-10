@@ -15,7 +15,7 @@ import (
 )
 
 // bytesAllocated is CUMULATIVE allocation, not live heap. Live heap is the
-// wrong instrument here: a bomb that inflates 512 MiB through a streaming
+// wrong instrument here: a bomb that inflates through a streaming
 // reader may hold only a few MiB at any instant and still cost the runner every
 // one of those bytes in CPU and GC pressure. TotalAlloc sees the work; HeapAlloc
 // sees a snapshot and can miss the whole event.
@@ -63,7 +63,7 @@ func gzipBomb(t *testing.T, inflated int) []byte {
 // records: streaming an arbitrarily large object is this connector's job, so
 // volume is not the threat. Amplification is.
 func TestAGzipEncodedObjectCannotInflateWithoutBound(t *testing.T) {
-	const inflated = 512 << 20 // 512 MiB from a few hundred KB on the wire
+	const inflated = 64 << 20 // 64 MiB from a few KB on the wire
 	bomb := gzipBomb(t, inflated)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

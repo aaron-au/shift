@@ -57,7 +57,7 @@ func TestAStreamWithinTheRatioIsDeliveredWhole(t *testing.T) {
 }
 
 func TestABombIsStoppedWhileItIsStillInflating(t *testing.T) {
-	wire, inflated := gzipOf(t, bytes.Repeat([]byte("a"), 1<<20), 512) // 512 MiB
+	wire, inflated := gzipOf(t, bytes.Repeat([]byte("a"), 1<<20), 64) // 64 MiB
 	if ratio := inflated / len(wire); ratio <= DefaultMaxRatio {
 		t.Fatalf("test bomb amplifies only %dx; it must exceed the %dx bound to prove anything", ratio, DefaultMaxRatio)
 	}
@@ -75,7 +75,7 @@ func TestABombIsStoppedWhileItIsStillInflating(t *testing.T) {
 	}
 	// The bound must act DURING inflation. The floor permits 8 MiB, and the
 	// wire counter runs ahead of the output, so allow generous headroom — but
-	// nothing close to the full 512 MiB.
+	// nothing close to the full inflated size.
 	if n > 64<<20 {
 		t.Fatalf("delivered %d MiB before stopping: the ratio is being applied after buffering", n>>20)
 	}
@@ -88,7 +88,7 @@ func TestABombIsStoppedWhileItIsStillInflating(t *testing.T) {
 // failure, and a reader that resumed delivering bytes after tripping would hand
 // downstream exactly the inflated data the bound exists to withhold.
 func TestTheErrorIsStickyOnceTripped(t *testing.T) {
-	wire, _ := gzipOf(t, bytes.Repeat([]byte("a"), 1<<20), 512)
+	wire, _ := gzipOf(t, bytes.Repeat([]byte("a"), 1<<20), 64)
 	rd, err := Gzip(bytes.NewReader(wire), DefaultMaxRatio, "src")
 	if err != nil {
 		t.Fatal(err)

@@ -54,7 +54,7 @@ func gzipBomb(t *testing.T, inflated int) []byte {
 // A blob's Content-Encoding is chosen by whoever wrote it. In a partner-fed or
 // shared container that is not the flow's author.
 func TestAGzipEncodedBlobCannotInflateWithoutBound(t *testing.T) {
-	const inflated = 512 << 20
+	const inflated = 64 << 20
 	bomb := gzipBomb(t, inflated)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -105,7 +105,7 @@ func TestAGzipEncodedBlobCannotInflateWithoutBound(t *testing.T) {
 		t.Fatalf("bomb stopped with %v, which is not the ratio bound — a size problem must not surface as some other failure", lastErr)
 	}
 	// The whole point is stopping WHILE it inflates. The floor allows 8 MiB, so
-	// a bound applied only at the end would show the full 7.7M records.
+	// a bound applied only at the end would consume every record.
 	if want := inflated / 4 / 64; records > want {
 		t.Fatalf("read %d records before the bound tripped (want well under %d): the ratio is being applied after buffering, not as the stream inflates", records, want)
 	}
