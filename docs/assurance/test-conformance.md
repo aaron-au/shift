@@ -273,11 +273,25 @@ accepts every one of these flows and the runner then fails or hangs on them.
 These are the most serious findings of the whole sweep, and they are exactly
 what six hand-built topologies could never have surfaced.
 
+**Closed 2026-08-09 — TC-027 and TC-028 fixed, and the hunt found two more.**
+All four share one root cause: `edgeIn` is keyed by the plan edge a pipe
+crosses, and **three** functions used that key with two different conventions.
+`buildFanOut` registered at the branch's *last* node; `segmentTo` looked up at
+its *first*; `inputEdge` at the fan-out. The key now has a documented meaning
+and all three agree.
+
 | ID | Defect | Repro | Severity |
 |---|---|---|---|
 | TC-027 | A fan-out branch that reaches a merge **with no intervening operator** always fails at run time. `buildFanOut` registers the branch pipe under `edgeKey(last, endID)` — which is `edgeKey(mergeID, mergeID)` when the branch is empty — while `inputEdge` looks it up under `edgeKey(fanOutID, mergeID)` | `src → tee[a,m]; a: filter → m; m: merge concat [a, tee] → sink` ⇒ `service: fan-out "t" has no branch feeding "m"`. Confirmed for both tee and router | Deterministic failure; validated flow, refused at run time |
 | TC-028 | A fan-out **downstream of a merge that is itself fed by a fan-out** fails **non-deterministically**. `compile()` iterates `plan.Nodes`, a Go **map**, so fan-out build order is random. If the downstream one compiles first it recurses through the merge before the upstream one has registered its branch pipes, falls back to `streamLeaving`→`segmentTo`, and hits an incompatible edge-key convention | `src → tee → 2 filters → merge(concat) → tee → 2 sinks` — **failed 9 of 20 runs of the identical document**, `service: node "a" reads a fan-out branch that terminates elsewhere` | **Non-deterministic.** Same flow, same runner, coin-flip. This is ADR-0029's named enrichment shape |
 | TC-029 | The enrichment shape **deadlocks permanently** above ~10 batches. The join blocks building its right side while the probe branch backs up into a 4-deep pipe behind a 4-deep tee queue, so the tee can never finish feeding the build side | `src → tee → [probe, build] → join → sink`: completes at 5k records, **hangs forever** at 12k and 50k | **Worst of the three.** `TaskTimeout` defaults to 0, so the task stays `running` indefinitely **holding its admission reservation** — a permanent resource leak on the runner (ADR-0005) |
+
+| TC-033 | **Nested fan-out with ≥2 operators between parent and child** fails deterministically — same key mismatch, third convention | `node "t2" reads a fan-out branch that terminates elsewhere` | Deterministic refusal of a validated flow |
+| TC-034 | **Nested fan-out with exactly ONE operator between: silent data corruption.** The two keys coincidentally collide, so the branch operator is applied a SECOND time on top of a pipe that already carries it | A rename project emitted `{"nid":null}` instead of `{"nid":0}`. **No error.** Filters and pass-through projections mask it entirely | **The worst defect of the sweep.** Not a refusal — wrong records delivered to a customer's system with no signal at all |
+
+TC-033 and TC-034 were not on anyone's list; they surfaced while probing the
+shapes around TC-027/TC-028. TC-034 is the one that matters: every other defect
+in this register fails loudly. This one succeeds and lies.
 
 **Two consequences worth separating from the bugs themselves:**
 
@@ -289,11 +303,33 @@ what six hand-built topologies could never have surfaced.
    leak.** Independent of TC-029, a runner should not be able to hold a
    reservation forever because one flow wedged. Worth its own decision.
 
-Until TC-027/TC-028 are fixed the generative test suppresses those shapes
-(`topoGen.noFanOut`, and merge legs always get ≥1 operator) so the suite is
-green and stable. **Remove the suppressions as part of the fix** — the coverage
-returns for free, and leaving them is how a known bug becomes a permanent
-blind spot.
+**Suppressions removed, and replaced with positive coverage.** The generator no
+longer avoids these shapes; it *tallies* them (`empty-merge-leg`,
+`fanout-below-merge`) and the corpus assertion fails if a future generator
+change stops producing them. Absence of a shape can no longer masquerade as 32
+green cases.
+
+Measured failure rate for TC-028, the non-deterministic one: **9/20** unfixed
+(matching the original report), **110/200** with the other fixes but the
+ordering reverted, **0/200** fixed. The regression test runs 20 in-test
+iterations, so at ~50% a clean pass is a one-in-a-million accident rather than
+luck.
+
+**TC-029 remains open** — it is a design change (spill the join build side), not
+a fix, and nothing in the join path was touched.
+
+### 2g. Test-suite reliability
+
+| ID | Claim | Evidence | Status |
+|---|---|---|---|
+| TC-035 | The suite gives the same answer under load as it does idle | `hub/e2e`'s two crash-redispatch tests (`TestCrashRecovery`, `TestTheSinkSeesTheSameIdempotencyKeyAfterACrashRedispatch`) **timed out** once during a full `make test` — 155s and 103s against a 20–72s norm — then passed five consecutive times (isolated, package, `-race`, module-wide `-shuffle=on`, full `make test`). Both spawn real `runnerd` and connector subprocesses, and `go test ./...` runs the hub's packages in parallel against one Postgres | ⬜ |
+
+Recorded rather than shrugged off. A test that fails under load is a test people
+learn to re-run, and a suite people learn to re-run is one where a real failure
+gets waved through. The fix is not a longer timeout — it is either isolating the
+process-spawning e2e tests from the parallel package run, or making their waits
+condition-based rather than wall-clock. Deciding which needs a reproduction
+first, which is why this is a row and not a patch.
 
 ### 2e. Hostile and malformed user data (opened 2026-08-09)
 
@@ -324,14 +360,29 @@ shape elsewhere.
 | TC-022 | **Structural depth/width cannot exhaust the stack or the arena** — deep nesting, a record with a million fields, XML entity expansion (billion laughs), pathological schemas | `MaxDepth` on `ndjson`/`xmlf` only. TC-018 (the `$ref` 2^n expansion) is an instance of this class | ⬜ |
 | TC-023 | **Path/name handling from a remote listing is safe** — `../`, absolute paths, symlinks, NUL/control characters, zip-slip | `hostilenames_test.go` in all five file/object connectors | **Closed 2026-08-09. Found an FTP command injection (CWE-93) and zip-slip in two listings — all fixed.** See the closure note | ✅ |
 | TC-024 | **Encoding hostility degrades, never corrupts** — invalid UTF-8, mixed encodings, BOMs, NUL bytes, lone surrogates. The record model must not silently produce mojibake a customer later trusts | Partly covered by the TC-003 fuzz seeds; no explicit assertion about what a customer *receives* | ⬜ |
-| TC-025 | **A single bad record does not destroy the run.** The customer's stated need: "recover/ignore invalid data" | **PRODUCT GAP, not a test gap.** ADR-0031's error model is step-level: a bad record fails the step and dead-letters the flow. There is no per-record quarantine/skip/continue. Needs a decision + ADR before any test can be written | ⬜ |
-| TC-026 | **The customer is told what was rejected and why.** Assurance that delivered data was valid | **PRODUCT GAP.** ADR-0042 §4 validates webhook *input* synchronously; there is no per-record validation report for data a connector *fetched*. Needs a decision + ADR | ⬜ |
+| TC-025 | **A single bad record does not destroy the run.** The customer's stated need: "recover/ignore invalid data" | **ADR-0053 written 2026-08-09** — `@verify` is a router whose predicate is a schema; rejects route down an ordinary edge to a destination the developer owns | Designed, not built. No test can close this until the node exists | ⬜ |
+| TC-026 | **The customer is told what was rejected and why.** Assurance that delivered data was valid | **ADR-0053 §6** — per-step counts and rejection reasons (field path + failed rule). Field names and rule ids are metadata; values never appear, so it rides the execution report without touching the two-plane split | Designed, not built | ⬜ |
 
-**TC-025/TC-026 are deliberately marked product gaps.** They are the half of
-the request that cannot be closed by testing, because the behaviour does not
-exist to test. Writing a test now would either bless the current
-fail-the-whole-flow behaviour or assert a feature nobody has specified. They
-need an ADR first.
+**TC-025/TC-026 were product gaps; they now have a design.** ADR-0053 settles
+it, and the shape it does NOT take is the point: a quarantine facility owned by
+the platform was designed and rejected, because every version of it grows a
+store, a retention policy and an eviction story — a queue holding customer
+payload, in a system whose hub must never see payload and whose runners are
+disposable. That is the Kafka lesson arriving by a different road.
+
+Instead: verification is a **router whose predicate is a schema**. Rejects take
+an ordinary edge to a sink the developer already owns, so retention, encryption
+and access control are answered by a destination that already has them. The
+platform stores nothing. Opt-in is structural — no node, no change.
+
+The schema is **author-owned and pinned in the flow**, with connector
+declarations seeding the editor rather than governing it: a schema supplied by
+the source cannot detect that source changing, which is the event verification
+exists to catch. Discovery is design-time only; at run time the compiled
+validator is built with the plan, so there is no fetch and the per-record cost
+is evaluation alone.
+
+Still todo, and only closable once the node is built.
 
 ### 2b. ADR-specific invariants
 
