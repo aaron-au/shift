@@ -360,11 +360,36 @@ shape elsewhere.
 | TC-019 | **Every reader bounds a single unit.** One record/line/field/segment cannot be unbounded | `ndjson` MaxLineBytes + MaxDepth ✅ · `xmlf` MaxDepth ✅ · `edi` MaxSegmentBytes ✅ (fixed under TC-003) · `csvf` MaxRecordBytes ✅ (`budget.go`, `bomb_test.go` — before the fix an unclosed quoted field buffered 64 MiB and failed only when the *input ran out*) | 🟡 **Four of five closed 2026-08-09.** Residual: `fixedw`'s `SkipLines` reads a leading line with no length bound before the first record, and `Unseparated` is bounded by its layout but was never asserted to be. Small; audit both | 🟡 |
 | TC-020 | **Decompression is bounded.** A compression bomb cannot exhaust the runner | `connectors/internal/decompress` (ratio bound, 12 tests) wired into `httpconn`, `azureblobconn` and `s3conn`; `soapconn` bounded separately by `max_response_bytes` applied to the *decompressed* stream | **Closed 2026-08-10. Found a second unbounded connector — `azureblobconn` streamed 7,780,738 records out of 1,822,535 wire bytes, to completion, with no error.** See the closure note | ✅ |
 | TC-021 | **A stream that never ends is bounded** — total bytes, total records, wall clock. A source that trickles forever must not pin a runner slot indefinitely | Unaudited | ⬜ |
-| TC-022 | **Structural depth/width cannot exhaust the stack or the arena** — deep nesting, a record with a million fields, XML entity expansion (billion laughs), pathological schemas | `MaxDepth` on `ndjson`/`xmlf` only. TC-018 (the `$ref` 2^n expansion) is an instance of this class | ⬜ |
+| TC-022 | **Structural depth/width cannot exhaust the stack or the arena** — deep nesting, a record with a million fields, XML entity expansion (billion laughs), pathological schemas | Depth: `MaxDepth` on `ndjson`/`xmlf`, `maxXMLDepth` on `soapconn`. **Width: `maxXMLElements` (`soapconn/width_test.go`)** | 🟡 **soapconn closed 2026-08-10 — 1,600,101 wire bytes allocated 421 MiB and SUCCEEDED; now 35 MiB and refused.** Residual: TC-018's `$ref` 2^n expansion is the same class in `engine/schema`, and `ndjson`/`xmlf` width is bounded only indirectly by the per-line/segment caps | 🟡 |
 | TC-023 | **Path/name handling from a remote listing is safe** — `../`, absolute paths, symlinks, NUL/control characters, zip-slip | `hostilenames_test.go` in all five file/object connectors | **Closed 2026-08-09. Found an FTP command injection (CWE-93) and zip-slip in two listings — all fixed.** See the closure note | ✅ |
 | TC-024 | **Encoding hostility degrades, never corrupts** — invalid UTF-8, mixed encodings, BOMs, NUL bytes, lone surrogates. The record model must not silently produce mojibake a customer later trusts | Partly covered by the TC-003 fuzz seeds; no explicit assertion about what a customer *receives* | ⬜ |
 | TC-025 | **A single bad record does not destroy the run.** The customer's stated need: "recover/ignore invalid data" | **ADR-0053 written 2026-08-09** — `@verify` is a router whose predicate is a schema; rejects route down an ordinary edge to a destination the developer owns | Designed, not built. No test can close this until the node exists | ⬜ |
 | TC-026 | **The customer is told what was rejected and why.** Assurance that delivered data was valid | **ADR-0053 §6** — per-step counts and rejection reasons (field path + failed rule). Field names and rule ids are metadata; values never appear, so it rides the execution report without touching the two-plane split | Designed, not built | ⬜ |
+
+**TC-022 note (2026-08-10) — the third structural dimension.**
+
+`soapconn` bounded total bytes (`max_response_bytes`) and nesting
+(`maxXMLDepth`). Width was invisible to both: cost is O(number of elements) and
+an element costs four bytes on the wire. Measured, **1,600,101 bytes of `<a/>`
+allocated 421 MiB — 256-276x — and the call succeeded.** Same shape as TC-020,
+with structure amplifying instead of gzip.
+
+Two fixes, and the order they were found in is the point:
+
+1. The obvious suspect was `make(map[string][]*xmlNode, len(n.children))` in
+   `build`, which pre-sizes buckets to the CHILD count rather than the
+   distinct-NAME count — a 400,000-entry map to hold one key, on exactly the
+   shape SOAP returns most (a list of identically-named entries). Fixing it
+   saved 30 MiB. **That was 7% of the problem**, and assuming it was the answer
+   would have closed the row on a real but minor improvement.
+2. The rest is irreducible per-element cost across the decoder's tokens, the
+   node tree and the record built from it. Unlike decompression this cannot be
+   a ratio — elements are only a few bytes each — so the honest bound is a
+   count: `maxXMLElements` (100,000, `max_response_elements`), checked as the
+   document is read rather than after.
+
+Result: 421 MiB → 35 MiB, refused by name, with a 5,000-element list still
+accepted. **soap 0.1.0 → 0.2.0, `behaviour-change`** (ADR-0047 §6).
 
 **TC-017 closure note (2026-08-10) — the fuzzing found no product bug and three test bugs.**
 

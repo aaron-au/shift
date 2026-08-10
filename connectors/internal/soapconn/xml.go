@@ -42,14 +42,41 @@ type xmlAttr struct {
 // refuses only documents that were never going to be data.
 const maxXMLDepth = 1024
 
+// maxXMLElements bounds the TOTAL number of elements in a response.
+//
+// Width is the third structural dimension, and neither of the other two bounds
+// can see it: a response can sit inside max_response_bytes and inside
+// maxXMLDepth and still be enormously expensive, because cost here is O(number
+// of elements) while an element costs four bytes on the wire ("<a/>").
+//
+// Measured (width_test.go): 1,600,101 wire bytes of `<a/>` allocated 421 MiB —
+// 256-276x amplification — and the call SUCCEEDED. That is the TC-020 shape
+// with structure doing the amplifying instead of gzip: cheap for the sender,
+// expensive for us.
+//
+// Unlike decompression this cannot be expressed as a ratio, because elements
+// are inherently only a few bytes each; the honest bound is a count. Most of
+// the per-element cost is irreducible (the decoder's tokens, the node, and the
+// record it builds), so the count is what has to be limited.
+//
+// 100,000 is well past real SOAP traffic — a 5,000-entry list with ten fields
+// each is 55,000 elements — while holding the worst case to roughly 100 MiB.
+// Raise it with max_response_elements for the rare service that genuinely
+// returns more.
+const maxXMLElements = 100_000
+
 // parseTree decodes an XML document into an element tree. Namespaces are
 // resolved by the decoder; we keep only local names so matching (Envelope,
 // Body, Fault) is prefix-agnostic (soap:/soapenv:/s:/env: all work). Namespace
 // declaration attributes (xmlns / xmlns:*) are dropped.
-func parseTree(doc []byte) (*xmlNode, error) {
+func parseTree(doc []byte, maxElements int) (*xmlNode, error) {
+	if maxElements <= 0 {
+		maxElements = maxXMLElements
+	}
 	dec := xml.NewDecoder(bytes.NewReader(doc))
 	var root *xmlNode
 	var stack []*xmlNode
+	var elements int
 	for {
 		tok, err := dec.Token()
 		if errors.Is(err, io.EOF) {
@@ -60,6 +87,13 @@ func parseTree(doc []byte) (*xmlNode, error) {
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
+			// Counted BEFORE the node is built, so the refusal happens as the
+			// document is read rather than after the memory has been spent.
+			elements++
+			if elements > maxElements {
+				return nil, fmt.Errorf("soap: response has more than %d elements (max_response_elements); "+
+					"memory cost is per element, and an element costs four bytes on the wire", maxElements)
+			}
 			n := &xmlNode{name: t.Name.Local}
 			for _, a := range t.Attr {
 				if a.Name.Local == "xmlns" || a.Name.Space == "xmlns" {
@@ -178,8 +212,15 @@ func (n *xmlNode) build(bld *record.Builder) {
 	}
 	// Group children by local name, preserving first-seen order; a name seen
 	// more than once becomes a list.
-	order := make([]string, 0, len(n.children))
-	groups := make(map[string][]*xmlNode, len(n.children))
+	//
+	// Neither collection is pre-sized to the child count. They are keyed by
+	// DISTINCT NAME, and the shape SOAP actually returns — a list of N
+	// identically-named entries — has one key for any N. Sizing by len(children)
+	// allocated a 400,000-entry map to hold a single key, which was most of the
+	// 276x memory amplification measured in width_test.go: 1.6 MB on the wire
+	// cost 421 MiB of heap, and the response SUCCEEDED (TC-022).
+	var order []string
+	groups := make(map[string][]*xmlNode)
 	for _, c := range n.children {
 		if _, seen := groups[c.name]; !seen {
 			order = append(order, c.name)

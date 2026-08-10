@@ -1,10 +1,11 @@
 {
   "_note": "Recorded connector action surface — the LAST RELEASED shape. The compatibility gate (ADR-0047 §8) diffs the current build against this and refuses a declared compat class the diff cannot support. Regenerate deliberately with SHIFT_UPDATE_SURFACE=1 and review the diff; it is the only record of what was shipped.",
   "name": "soap",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "compat": "behaviour-change",
   "descriptor": {
     "name": "soap",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "actions": [
       {
         "action": "call",
@@ -82,6 +83,12 @@
               "title": "Max response size (bytes)",
               "description": "A response larger than this is rejected (never truncated)",
               "default": 16777216
+            },
+            "max_response_elements": {
+              "type": "integer",
+              "title": "Max response elements",
+              "description": "Reject a response containing more XML elements than this; memory cost is per element, which the byte limit cannot see",
+              "default": 100000
             }
           }
         }
