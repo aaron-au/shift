@@ -144,7 +144,8 @@ func (a *api) authenticateAdmin(r *http.Request) (identity, bool) {
 // hash probe; the admin path may hit the IdP).
 func (a *api) adminOrRunner(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if id, account, err := a.authRunner(r); err == nil {
+		id, account, err := a.authRunner(r)
+		if err == nil {
 			if !a.opts.RateLimit.Allow("runner", id) {
 				ratelimit.Reject(w)
 				return
@@ -154,8 +155,19 @@ func (a *api) adminOrRunner(next http.HandlerFunc) http.Handler {
 			next(w, r.WithContext(ctx))
 			return
 		}
-		if id, ok := a.authenticateAdmin(r); ok {
-			next(w, r.WithContext(withIdentity(r.Context(), id)))
+		// The admin path is tried REGARDLESS of why the runner check failed. An
+		// admin request is expected to fail it, and short-circuiting on a store
+		// error would deny an administrator whose own credential needs no
+		// database — including during the very outage they are investigating.
+		if adminID, ok := a.authenticateAdmin(r); ok {
+			next(w, r.WithContext(withIdentity(r.Context(), adminID)))
+			return
+		}
+		// Neither realm admitted the caller. If the runner check could not be
+		// ANSWERED — overwhelmingly a database outage — say so, rather than
+		// reporting the same 401 a bad credential gets (TC-031).
+		if !errors.Is(err, store.ErrUnauthorized) {
+			writeErr(w, http.StatusServiceUnavailable, errUnavailable)
 			return
 		}
 		writeErr(w, http.StatusUnauthorized, errUnauthorized)
@@ -187,11 +199,34 @@ func (a *api) authRunner(r *http.Request) (id, account string, err error) {
 	return a.st.AuthRunner(r.Context(), bearer(r))
 }
 
+// errUnavailable is what a runner is told when the hub cannot ANSWER the
+// question of who it is, as opposed to answering "not you".
+var errUnavailable = errors.New("service unavailable")
+
+// runnerAuthFailure maps an authRunner error to a status.
+//
+// Only store.ErrUnauthorized means the credential was rejected. Anything else
+// — overwhelmingly a database outage — means the hub could not check, and
+// reporting that as 401 sends an operator hunting a credential problem that
+// does not exist while every runner in the fleet reports the same thing
+// (TC-031).
+//
+// This is diagnosability, not availability: hubclient does not treat 401 as
+// terminal and leaseloop retries with backoff, so the fleet already recovers
+// on its own. It recovers while telling the operator the wrong story.
+func runnerAuthFailure(err error) (int, error) {
+	if errors.Is(err, store.ErrUnauthorized) {
+		return http.StatusUnauthorized, errUnauthorized
+	}
+	return http.StatusServiceUnavailable, errUnavailable
+}
+
 func (a *api) runner(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, account, err := a.authRunner(r)
 		if err != nil {
-			writeErr(w, http.StatusUnauthorized, errUnauthorized)
+			status, body := runnerAuthFailure(err)
+			writeErr(w, status, body)
 			return
 		}
 		if !a.opts.RateLimit.Allow("runner", id) {

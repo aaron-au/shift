@@ -174,7 +174,7 @@ Rows raised while closing an earlier one. Numbered from where §2a left off.
 | ID | Claim / ADR | Evidence today | Gap | Status |
 |---|---|---|---|---|
 | TC-017 | The remaining untrusted-input surfaces are fuzzed (ADR-0022 §5) | 6 new targets in `make fuzz`: `gateway/internal/ingress` (whole request line, identity forwarding, status-path split, X-Forwarded-For) and `runner/internal/starlarkop` (Compile, Run) | **Closed 2026-08-10.** ~21M executions, **no production bug** — and three defects in the *tests*, which is the finding. See the closure note | ✅ |
-| TC-018 | Schema compilation is bounded (ADR-0042) | None | `schema.Compile` inlines each `$ref` by recompiling its target per reference site, and its cycle guard (`c.resolving`) only blocks cycles on the *current stack*. A diamond of `$defs`, each level referencing the next twice, compiles in 2^n nodes from ~1 KB of schema text. Authenticated-author-only today, so not urgent — but it is a compile-time bomb the moment schema text arrives from anywhere less trusted, and ADR-0042 §4 leans on Compile being cheap. Raised while closing TC-003 | ⬜ |
+| TC-018 | Schema compilation is bounded (ADR-0042) | `engine/schema/expansion_test.go` — a 40-level `$defs` diamond, plus guards for ordinary reuse and for indirect recursion | **Closed 2026-08-10.** Measured: **3,694 bytes of schema text had not finished compiling after 20 seconds** (2^40 nodes). `$ref` targets are now memoised — compiled once, node shared — which is sound because a compiled node is immutable and compilation is context-free. Now 0.00s and 0 MiB. The recursion guard is unaffected: the memo is written only AFTER a successful compile, so a target still on the stack can never be served from it (pinned by its own test) | ✅ |
 
 **TC-012 closure note.** The 401 is the response a client meets more often than
 any other, and it was the one shape no client could parse the same way as the
@@ -192,12 +192,21 @@ Three further findings from TC-008/TC-012, recorded not fixed:
 
 - **405 Method Not Allowed is router-generated `text/plain`**, outside the
   envelope. Mux-owned surface; needs a decision rather than a patch (⇒ TC-030).
-- **A runner gets 401 when the hub's DATABASE is down** — `authRunner` is a DB
-  round-trip and any error becomes an opaque 401. Checked the consequence
-  rather than assuming it: `hubclient` does **not** treat 401 as terminal, and
-  `leaseloop` retries with backoff, so this is a **diagnosability** bug, not an
-  availability one — an operator is sent hunting a credential problem that does
-  not exist. A 503 would say the true thing (⇒ TC-031).
+  Seen again incidentally on 2026-08-10 while writing the TC-031 test, which hit
+  the wrong path and got `"Method Not Allowed\n"` back — so this is reachable by
+  ordinary client error, not only by deliberate probing.
+- ~~**A runner gets 401 when the hub's DATABASE is down**~~ — **FIXED
+  2026-08-10 (TC-031).** `authRunner` is a DB round-trip and any error became an
+  opaque 401. Checked the consequence rather than assuming it: `hubclient` does
+  **not** treat 401 as terminal, and `leaseloop` retries with backoff, so this
+  was a **diagnosability** bug, not an availability one — the fleet recovered
+  while telling the operator the wrong story, and every runner reporting
+  "unauthorized" at once looks like a credential problem. Only
+  `store.ErrUnauthorized` now means 401; anything else is 503. Both halves are
+  pinned (`hub/internal/api/dbdown_test.go`) — a bad secret must still be 401,
+  or a hub that never says "not you" cannot be diagnosed either. Non-vacuity:
+  restoring the blanket 401 fails the outage test with the exact envelope
+  `{"error":{"status":401,"message":"unauthorized"}}`.
 - `POST /api/v1/connectors/collect` ignores its request body entirely (200 for
   `{`); it is driven by `?apply=1`. Malformed input silently accepted.
 
@@ -357,7 +366,7 @@ shape elsewhere.
 
 | ID | Property | Status today | Status |
 |---|---|---|---|
-| TC-019 | **Every reader bounds a single unit.** One record/line/field/segment cannot be unbounded | `ndjson` MaxLineBytes + MaxDepth ✅ · `xmlf` MaxDepth ✅ · `edi` MaxSegmentBytes ✅ (fixed under TC-003) · `csvf` MaxRecordBytes ✅ (`budget.go`, `bomb_test.go` — before the fix an unclosed quoted field buffered 64 MiB and failed only when the *input ran out*) | 🟡 **Four of five closed 2026-08-09.** Residual: `fixedw`'s `SkipLines` reads a leading line with no length bound before the first record, and `Unseparated` is bounded by its layout but was never asserted to be. Small; audit both | 🟡 |
+| TC-019 | **Every reader bounds a single unit.** One record/line/field/segment cannot be unbounded | `ndjson` MaxLineBytes + MaxDepth ✅ · `xmlf` MaxDepth ✅ · `edi` MaxSegmentBytes ✅ (TC-003) · `csvf` MaxRecordBytes ✅ · **`fixedw` MaxLineBytes ✅** (`bomb_test.go`) | **Closed 2026-08-10. The last one was a real bug, not an audit.** `fixedw` was recorded as "bounded by its layout"; in fact `readLine` fell back to unbounded accumulation whenever a line exceeded the bufio buffer, on the record path as well as `SkipLines`. A source that never emits a newline ran `go test` to its **180-second timeout still buffering**. Now: 256 MiB offered, 1 MiB consumed, 4 MiB allocated against a 1 MiB bound — cost tracks the limit, not the input. `Unseparated` reads a fixed-length record and is bounded by construction | ✅ |
 | TC-020 | **Decompression is bounded.** A compression bomb cannot exhaust the runner | `connectors/internal/decompress` (ratio bound, 12 tests) wired into `httpconn`, `azureblobconn` and `s3conn`; `soapconn` bounded separately by `max_response_bytes` applied to the *decompressed* stream | **Closed 2026-08-10. Found a second unbounded connector — `azureblobconn` streamed 7,780,738 records out of 1,822,535 wire bytes, to completion, with no error.** See the closure note | ✅ |
 | TC-021 | **A stream that never ends is bounded** — total bytes, total records, wall clock. A source that trickles forever must not pin a runner slot indefinitely | Unaudited | ⬜ |
 | TC-022 | **Structural depth/width cannot exhaust the stack or the arena** — deep nesting, a record with a million fields, XML entity expansion (billion laughs), pathological schemas | Depth: `MaxDepth` on `ndjson`/`xmlf`, `maxXMLDepth` on `soapconn`. **Width: `maxXMLElements` (`soapconn/width_test.go`)** | 🟡 **soapconn closed 2026-08-10 — 1,600,101 wire bytes allocated 421 MiB and SUCCEEDED; now 35 MiB and refused.** Residual: TC-018's `$ref` 2^n expansion is the same class in `engine/schema`, and `ndjson`/`xmlf` width is bounded only indirectly by the per-line/segment caps | 🟡 |
