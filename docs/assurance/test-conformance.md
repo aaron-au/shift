@@ -55,7 +55,7 @@ ADR's central claim stops being true? No line ⇒ a row below.
 | TC-002 | Alert on metric names; they are an operator contract (ADR-0020) | None. Both `*/internal/telemetry` packages have zero tests and are gate-excluded by ADR-0022 | `pkg/shiftlog` has an AST-level suite pinning `event` names and key spelling (`vocabulary_test.go`). Metrics are the same contract with none of the discipline — a rename silently breaks dashboards. Mirror the vocabulary test for metric names + labels | ⬜ |
 | TC-003 | Parsers eating untrusted bytes never panic/hang/over-allocate (ADR-0022 §5, ADR-0042) | 7 new targets across `edi`, `fixedw`, `xmlf`, `csvf`, `record` (ParsePath + scalars), `schema` (Compile + Validate), wired into `make fuzz` | **Closed 2026-08-09. Found a real memory-exhaustion bug in `edi` — fixed.** Gateway ingress and starlark script text remain unfuzzed (⇒ TC-017) | ✅ |
 | TC-004 | Exact decimal/temporal semantics: 128-bit `Compare`, `ExactSum` (ADR-0051) | `engine/record/{decimal_diff_test.go,temporal_diff_test.go}` — generated inputs checked against `math/big` and `time`, plus 3 fuzz targets | **Closed 2026-08-09.** No bug — but 3 of 5 injected mutants were caught ONLY by these tests, which is the hand-picked-cases weakness demonstrated rather than asserted | ✅ |
-| TC-005 | **Any** validated topology executes — nested fan-out, mixed fan-out/fan-in included (ADR-0029) | `runner/internal/service/topology_gen_test.go` — 32 generated valid DAGs from a fixed seed, asserting exact record conservation | **Closed 2026-08-09 — and the claim is FALSE.** Three real executor bugs found (TC-027, TC-028, TC-029). The generator suppresses the two broken shapes so the suite is green; remove the suppressions when they are fixed | ✅ |
+| TC-005 | **Any** validated topology executes — nested fan-out, mixed fan-out/fan-in included (ADR-0029) | `runner/internal/service/topology_gen_test.go` — 32 generated valid DAGs from a fixed seed at 12,000 records, asserting exact record conservation | **Closed 2026-08-09; the claim was FALSE and is now true.** Five real executor bugs found (TC-027, TC-028, TC-033, TC-034, TC-029) and all five fixed. The last suppression — a 9-record corpus, kept only so the enrichment shape failed instead of hanging — was lifted on 2026-08-10 with TC-029 | ✅ |
 | TC-006 | 0-alloc steady state on the hot path (ADR-0003, ADR-0004) | `alloc_test.go` in `engine/{stream,record,format/ndjson,format/csvf}` — every hot path measured, 0 asserted exactly where it is 0 | **Closed 2026-08-09.** Found and **fixed** three per-record allocations on hot paths (coerce-to-text, JSONReader, csvf typed columns); corrected an inaccurate package doc | ✅ |
 | TC-007 | Protocol + artifact versioning stays backward-compatible (ADR-0007, ADR-0047); migrations are production code (ADR-0006) | `sdk/host/legacy_connector_test.go` — a real protocol-1 connector subprocess driven through the current Launch/handshake/Pull path | 🟡 **Connector half closed 2026-08-09.** The hub-schema half is still open: `Store.Migrate` is only ever applied to an EMPTY database — no populated v(N−1) upgrade, no immutability check on released migration files | 🟡 |
 | TC-008 | Store-failure error arms behave (ADR-0009, ADR-0049) | `hub/internal/api/{faultinject_test.go,storefault_test.go}` — faults injected at the DATABASE (row triggers raising a chosen SQLSTATE on a chosen firing), so real transactions really roll back | **Closed 2026-08-09.** No partial-write bug found: every multi-statement operation rolled back cleanly. api coverage 87.3% → 89.7%, so the apologetic 87 floor can go back to 88 | ✅ |
@@ -173,7 +173,7 @@ Rows raised while closing an earlier one. Numbered from where §2a left off.
 
 | ID | Claim / ADR | Evidence today | Gap | Status |
 |---|---|---|---|---|
-| TC-017 | The remaining untrusted-input surfaces are fuzzed (ADR-0022 §5) | TC-003 closed the format readers, `record.ParsePath` and `engine/schema` | Still unfuzzed: **gateway ingress** route/header/auth parsing — the one component in a DMZ, so its parser eats bytes straight off the public internet — and **starlark script text** (ADR-0052; scripts are authenticated but the compiler is not hardened against them). Raised while closing TC-003 | ⬜ |
+| TC-017 | The remaining untrusted-input surfaces are fuzzed (ADR-0022 §5) | 6 new targets in `make fuzz`: `gateway/internal/ingress` (whole request line, identity forwarding, status-path split, X-Forwarded-For) and `runner/internal/starlarkop` (Compile, Run) | **Closed 2026-08-10.** ~21M executions, **no production bug** — and three defects in the *tests*, which is the finding. See the closure note | ✅ |
 | TC-018 | Schema compilation is bounded (ADR-0042) | None | `schema.Compile` inlines each `$ref` by recompiling its target per reference site, and its cycle guard (`c.resolving`) only blocks cycles on the *current stack*. A diamond of `$defs`, each level referencing the next twice, compiles in 2^n nodes from ~1 KB of schema text. Authenticated-author-only today, so not urgent — but it is a compile-time bomb the moment schema text arrives from anywhere less trusted, and ADR-0042 §4 leans on Compile being cheap. Raised while closing TC-003 | ⬜ |
 
 **TC-012 closure note.** The 401 is the response a client meets more often than
@@ -265,10 +265,13 @@ reverse proxy* in front of an S3-compatible endpoint could resolve it. Rejecting
 
 ### 2f. DAG executor defects (opened 2026-08-09 by TC-005)
 
-ADR-0029's central claim — *any validated topology executes* — is **not true
-today**. The generative test found three ways it fails. All three are in
-`runner/internal/service/dag.go`; none is in validation, so `pkg/flowdoc`
-accepts every one of these flows and the runner then fails or hangs on them.
+ADR-0029's central claim — *any validated topology executes* — was **not true**.
+The generative test found five ways it failed. All five were in
+`runner/internal/service/dag.go`; none was in validation, so `pkg/flowdoc`
+accepted every one of these flows and the runner then failed or hung on them.
+
+**All five are now fixed** (TC-027/028/033/034 on 2026-08-09, TC-029 on
+2026-08-10), and the corpus that found them runs unsuppressed.
 
 These are the most serious findings of the whole sweep, and they are exactly
 what six hand-built topologies could never have surfaced.
@@ -284,7 +287,7 @@ and all three agree.
 |---|---|---|---|
 | TC-027 | A fan-out branch that reaches a merge **with no intervening operator** always fails at run time. `buildFanOut` registers the branch pipe under `edgeKey(last, endID)` — which is `edgeKey(mergeID, mergeID)` when the branch is empty — while `inputEdge` looks it up under `edgeKey(fanOutID, mergeID)` | `src → tee[a,m]; a: filter → m; m: merge concat [a, tee] → sink` ⇒ `service: fan-out "t" has no branch feeding "m"`. Confirmed for both tee and router | Deterministic failure; validated flow, refused at run time |
 | TC-028 | A fan-out **downstream of a merge that is itself fed by a fan-out** fails **non-deterministically**. `compile()` iterates `plan.Nodes`, a Go **map**, so fan-out build order is random. If the downstream one compiles first it recurses through the merge before the upstream one has registered its branch pipes, falls back to `streamLeaving`→`segmentTo`, and hits an incompatible edge-key convention | `src → tee → 2 filters → merge(concat) → tee → 2 sinks` — **failed 9 of 20 runs of the identical document**, `service: node "a" reads a fan-out branch that terminates elsewhere` | **Non-deterministic.** Same flow, same runner, coin-flip. This is ADR-0029's named enrichment shape |
-| TC-029 | The enrichment shape **deadlocks permanently** above ~10 batches. The join blocks building its right side while the probe branch backs up into a 4-deep pipe behind a 4-deep tee queue, so the tee can never finish feeding the build side | `src → tee → [probe, build] → join → sink`: completes at 5k records, **hangs forever** at 12k and 50k | **Worst of the three.** `TaskTimeout` defaults to 0, so the task stays `running` indefinitely **holding its admission reservation** — a permanent resource leak on the runner (ADR-0005) |
+| TC-029 | ~~The enrichment shape **deadlocks permanently** above ~10 batches~~ — **FIXED 2026-08-10.** A fan-out branch that a blocking merge will not read yet now ends in a governed `stream.SpillBuffer` whose writer never blocks, instead of a bounded pipe (ADR-0029 amendment) | `src → tee → [probe, build] → join → sink` at 12k records: **hung forever**, now completes in ~0.02s with all 12,000 records joined. `runner/internal/service/enrichment_test.go`, deadline-guarded so a regression fails rather than hangs | ✅ **The TC-005 corpus cap is lifted with it**: `topologyRecords` 9 → 12,000, so all 32 generated topologies now exercise multi-batch flow |
 
 | TC-033 | **Nested fan-out with ≥2 operators between parent and child** fails deterministically — same key mismatch, third convention | `node "t2" reads a fan-out branch that terminates elsewhere` | Deterministic refusal of a validated flow |
 | TC-034 | **Nested fan-out with exactly ONE operator between: silent data corruption.** The two keys coincidentally collide, so the branch operator is applied a SECOND time on top of a pipe that already carries it | A rename project emitted `{"nid":null}` instead of `{"nid":0}`. **No error.** Filters and pass-through projections mask it entirely | **The worst defect of the sweep.** Not a refusal — wrong records delivered to a customer's system with no signal at all |
@@ -362,6 +365,38 @@ shape elsewhere.
 | TC-024 | **Encoding hostility degrades, never corrupts** — invalid UTF-8, mixed encodings, BOMs, NUL bytes, lone surrogates. The record model must not silently produce mojibake a customer later trusts | Partly covered by the TC-003 fuzz seeds; no explicit assertion about what a customer *receives* | ⬜ |
 | TC-025 | **A single bad record does not destroy the run.** The customer's stated need: "recover/ignore invalid data" | **ADR-0053 written 2026-08-09** — `@verify` is a router whose predicate is a schema; rejects route down an ordinary edge to a destination the developer owns | Designed, not built. No test can close this until the node exists | ⬜ |
 | TC-026 | **The customer is told what was rejected and why.** Assurance that delivered data was valid | **ADR-0053 §6** — per-step counts and rejection reasons (field path + failed rule). Field names and rule ids are metadata; values never appear, so it rides the execution report without touching the two-plane split | Designed, not built | ⬜ |
+
+**TC-017 closure note (2026-08-10) — the fuzzing found no product bug and three test bugs.**
+
+~21M executions across six targets left the gateway's request parsing and the
+starlark compiler standing. What it did break was this register's own work:
+
+1. **A vacuous target.** `FuzzIngressNeverForwardsAClientIdentity` passed with
+   the identity strip DELETED from `forwardable`. The route it configured had an
+   allowlist of `10.0.0.0/8` while the test's peer was `192.0.2.10`, so every
+   request 404'd at the allowlist and never reached the forwarding path, and a
+   timeout branch swallowed it. The tell was in plain sight — 8 seeds took 14
+   seconds — and only the non-vacuity probe caught it. A property test that
+   cannot reach the code it targets is worse than no test, because it reports
+   success. `TestTheIdentityFuzzTargetActuallyReachesARunner` now guards it, and
+   with the strip removed three tests fail.
+2. **An over-broad property (gateway).** The target claimed no client header
+   value may reach the runner under an `X-Shift-*` name. The fuzzer produced
+   `X-Forwarded-For: 10.1.0.0` and the value duly appeared as
+   `X-Shift-Client-Ip` — which is ADR-0038's trusted-proxy design working, not a
+   leak. "Derived from" and "forwarded verbatim" are different claims; the
+   property was narrowed to headers the CALLER named `X-Shift-*`.
+3. **An over-broad property (starlark).** `FuzzCompile` asserted that no 64-byte
+   run of the input may appear in an error, and the fuzzer produced a 64-byte
+   identifier, yielding `undefined: AAAA…`. That is legitimate diagnosis: the
+   *script* is authored configuration the hub already stores in the flow
+   document, whereas a *record's* contents are payload it must never see.
+   ADR-0052 §8 is about the latter. The verbatim check now applies to `Run`
+   only; both targets still forbid a backtrace.
+
+Two of those three were the fuzzer correcting the specification rather than the
+code — which is the honest outcome to record, and the reason the closure note
+says "no product bug" rather than "passed".
 
 **TC-020 closure note (2026-08-10) — a property that held by accident of a dependency.**
 

@@ -9,6 +9,9 @@ capture on DAG flows (#60), per-branch idempotency keys (#61), and nested or
 mixed topologies (#59) — `runner/internal/service/dag.go` compiles any
 validated DAG into segments joined at tee/router/merge nodes, with
 `stream.Pipe` carrying a branch's output into a downstream merge or fan-out.
+**Amended 2026-08-10** (see the amendment at the end): the claim "any validated
+topology executes" was false for the enrichment shape, which deadlocked; a
+branch feeding a join is now buffered rather than piped.
 
 Fan-out spill (§2) is deliberately absent: the bounded branch queues block
 instead, which is memory-bounded and matches this ADR's own "the tee runs at
@@ -372,3 +375,97 @@ effects, so v3 makes the rule explicit:
   the failing *upstream* step (unchanged ADR-0013 rule); a handler on the
   `merge` itself covers the merge operator only. Confirm this reads naturally on
   the canvas.
+
+## Amendment (2026-08-10): a fan-out branch that feeds a join is buffered, not piped
+
+**Status: accepted; implemented.** `engine/stream/spillbuffer.go`,
+`engine/spill` multi-extent segments, `runner/internal/service/dag.go`. Closes
+register row TC-029 (`docs/assurance/test-conformance.md`).
+
+### What was wrong
+
+This ADR's central claim is that **any validated topology executes**. For the
+shape it names as the most common real integration, that was false:
+
+```
+src → tee → [probe, build] → join → sink
+```
+
+A join blocks on its build side — it consumes that whole input before emitting
+anything — so it does not read the probe branch until the build branch has
+ended. Both branches are fed by one tee, and both the tee's per-branch queue and
+the branch `stream.Pipe` are bounded at four batches. So the probe side fills,
+the tee blocks handing it another batch, and the build side it must also feed
+never receives another record.
+
+Measured: the shape **completed at 5,000 records and hung permanently at
+12,000**. Nothing timed out, nothing errored, and the task held its admission
+reservation forever — a resource leak on the runner (ADR-0005), not merely a
+failed flow.
+
+The generative topology suite (TC-005) was capping its corpus at 9 records to
+stay under the threshold. That cap was a suppression, and it is now removed.
+
+### Why backpressure could not fix it
+
+Bounded pipes are right when the consumer is *behind*. Here the consumer is not
+reading **at all**, and no rate of production is slow enough for a consumer that
+has not started. The probe stream has to go somewhere until the join is ready
+for it. That is a buffering problem wearing a backpressure problem's clothes.
+
+### Decision
+
+**A fan-out branch whose records a blocking merge will not read yet terminates
+in a governed buffer instead of a bounded pipe.** `stream.SpillBuffer` accepts
+records without ever blocking its writer: they stay in memory while
+`mem.Governor` grants them, and the first refusal switches the buffer to the
+scratch store, so growth lands on disk exactly as it does for the aggregate and
+the join. Once spilling starts it never stops, which makes the in-memory
+records the earliest ones and lets draining memory-then-disk preserve arrival
+order without a merge step.
+
+The substitution is deliberately narrow — all three must hold:
+
+1. the branch ends at a **join** (the only merge mode that blocks on one input
+   while refusing the other; `concat` reads both as they arrive), and
+2. the branch is **not the build input** (the build side is starved, not backed
+   up), and
+3. a **sibling branch of the same fan-out** also feeds that join, which is what
+   makes one bounded producer responsible for both inputs.
+
+A join fed by two independent sources fails (3) and keeps the unbuffered path,
+because neither side can starve the other. Everything else keeps the bounded
+pipe, and a run with no such branch never opens a scratch file at all.
+
+This partially answers this ADR's own open question on **cross-branch
+backpressure fairness**: `spill` is now the behaviour where blocking would
+deadlock, chosen structurally rather than configured. `block` remains the
+default everywhere else and `drop` remains rejected — it still collides with
+ADR-0005's "never silently dropped".
+
+### Consequence: a spill segment is a list of extents
+
+Two operators can now need to spill at the same time — the branch buffer fills
+while the join builds — and `spill.Store` allowed only one open segment.
+
+A file per writer was rejected: that is the directory of small files the
+doctrine exists to prevent. Instead a `Segment` carries extents, so interleaved
+writers share one file and each reads back its own bytes in order. **Adjacent
+writes coalesce**, so a segment written without competition is still exactly one
+extent with the same `Off`/`Len` it always had — every pre-existing caller and
+its stored layout are unchanged, and the extent list appears only when
+interleaving actually happened.
+
+### Consequences
+
+- The enrichment shape runs. At 12,000 records it completes in ~0.02s where it
+  previously never completed; all 12,000 records emerge joined.
+- TC-005's corpus now runs at 12,000 records instead of 9, so all 32 generated
+  topologies exercise multi-batch flow. That is the only version of the suite
+  that can support this ADR's central claim.
+- A buffered branch trades memory-then-disk for the deadlock. That is the same
+  trade every blocking operator here already makes, and it is bounded by the
+  same governor.
+- Disk, not memory, is now the limit for a very large probe branch. A flow whose
+  probe side exceeds the scratch volume will fail on scratch rather than hang —
+  a worse outcome than streaming, a much better one than a permanent hang.

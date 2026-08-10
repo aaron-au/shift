@@ -46,16 +46,19 @@ const topologySeed = 20260809
 // not in a nightly fuzzing job.
 const topologyCases = 32
 
-// topologyRecords is the size of the injected body. It is deliberately small
-// enough to be ONE ndjson batch (the reader's default is 1024 records/batch).
+// topologyRecords is the size of the injected body.
 //
-// That is not only for speed. A fan-out branch feeding a blocking merge (a
-// join builds its whole right side before the probe streams) parks its records
-// in the tee's per-branch queue and the branch pipe, both bounded at 4 batches
-// — so the enrichment shape deadlocks permanently somewhere between 5 and 12
-// batches of input, measured. Raising this number would make this test HANG
-// rather than fail, which is a much worse way to learn it.
-const topologyRecords = 9
+// It used to be 9 — one ndjson batch — and that was a SUPPRESSION, not a speed
+// choice: a fan-out branch feeding a blocking merge parked its records in the
+// tee's per-branch queue and the branch pipe, both bounded at 4 batches, so the
+// enrichment shape deadlocked permanently somewhere between 5 and 12 batches
+// (TC-029). Raising it would have made this suite hang rather than fail.
+//
+// TC-029 is fixed: such a branch now lands in a governed SpillBuffer whose
+// writer never blocks. 12,000 records is well past the old hang threshold, so
+// the corpus now exercises multi-batch flow through every generated shape —
+// which is the only way this suite can claim that any validated topology runs.
+const topologyRecords = 12000
 
 // mset is a multiset over source record ids: how many copies of record i a
 // stream carries at some point in the graph.
