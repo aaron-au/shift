@@ -202,17 +202,59 @@ should not be reinvented here.
   of every deployed flow on upgrade, and it cannot say where the skipped records
   went.
 
+## Resolved (2026-08-10)
+
+The three questions this ADR opened are now answered.
+
+### Where the connector-boundary check runs: in the RUNNER
+
+The question was originally posed as "`sdk.SourceAction` or the runner", which
+obscured the real geometry. Both options sit on the runner host: connectors are
+gRPC subprocesses the runner launches (ADR-0001), so the choice was between the
+connector's own process and the runner's.
+
+**It cannot be the hub.** Verification reads payload, per record, and the hub
+never touches payload (ADR-0016). That is not a preference to trade off.
+
+The split that does apply is ownership, and it already follows the control/data
+plane line:
+
+- **The hub owns what "valid" means.** The schema lives in the flow document —
+  authored, versioned, and published there, seeded at design time from
+  connector-declared schemas (ADR-0018). Nothing about that changes.
+- **The runner owns checking it.** One implementation, applied to every
+  connector including third-party ones that never adopt anything.
+
+Putting it in the SDK would be marginally cheaper and would make the guarantee
+conditional on each connector author implementing it. TC-020 is the standing
+lesson against that shape: a property that holds only where someone opted in is
+not a platform property.
+
+### A rejection reason carries the field's KIND, for type failures only
+
+`type` failures report the kind found ("expected integer, got string"), because
+there the kind IS the diagnosis and a type name identifies no data.
+
+`enum`, `const` and `pattern` failures report the path and the rule alone. The
+kind is already implied by those rules, and the genuinely useful detail is the
+value — which this design deliberately does not carry. An author who needs
+values has test-mode capture (ADR-0014): bounded, redacted, runner-only, and
+already the right set of properties for looking at payload.
+
+### The report is counts, so there is no sampling threshold
+
+The open question asked where the report should switch from enumerating
+rejections to counting them. It dissolves: the report is counts keyed by
+**(field path, failed rule)**, so its size is bounded by the number of distinct
+rules in the schema — fixed at plan build — and NOT by the number of records. A
+million rejections produce the same report as ten.
+
+**One bound is still required.** A schema using `additionalProperties` or
+`patternProperties` derives field paths from the DATA, so the distinct-path set
+is unbounded. Those report the first N distinct paths plus an overflow count.
+That is the only place a cap is needed, and it is a property of the schema
+rather than of the traffic.
+
 ## Open questions
 
-- Does the connector-boundary variant belong in `sdk.SourceAction` (the
-  connector validates before framing) or in the runner immediately after the
-  source (the runner validates what arrives)? The former is cheaper and closer
-  to the contract; the latter keeps the connector SDK smaller and works for
-  connectors that never adopt it.
-- Should a rejection reason carry the JSON Pointer of the failing field only, or
-  also its *kind*? The kind is metadata and would help diagnosis; it is one step
-  closer to the value and deserves a deliberate answer.
-- Sampling: at 10⁶ rejects, per-reason counts are useful and a per-record reason
-  list is not. Where the report switches from enumerating to counting is a
-  bounding decision like ADR-0014's, and should be made before build rather than
-  discovered under load.
+None. This ADR is ready to build.

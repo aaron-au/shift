@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"syscall"
 	"time"
 
@@ -36,8 +37,15 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "s3",
-		Version: "0.5.0",
-		// Decodes Content-Encoding deliberately and bounds it (TC-020). A
+		Version: "0.6.0",
+		// Refuses a `..` path segment in a key when a CUSTOM ENDPOINT is
+		// configured (TC-032): S3 keys are opaque, but a normalising proxy in
+		// front of an S3-compatible endpoint can resolve one to a different
+		// object. AWS proper is unaffected, so no legitimate AWS key is
+		// refused — but an S3-compatible deployment using such a key stops
+		// working, which is a behaviour change.
+		//
+		// Also decodes Content-Encoding deliberately and bounds it (TC-020). A
 		// gzip-encoded object previously reached the record parser still
 		// compressed and failed at byte one with `unexpected character
 		// '\x1f'`; it now reads, up to the ratio bound. Nothing that worked
@@ -166,6 +174,9 @@ func (c *config) requireKeyFormat() error {
 	if c.Key == "" {
 		return errors.New("s3: key is required")
 	}
+	if err := c.refuseDotSegments(c.Key, "key"); err != nil {
+		return err
+	}
 	return fileformat.Validate("s3", &c.Format, c.Columns)
 }
 
@@ -173,6 +184,44 @@ func (c *config) requireKeyFormat() error {
 func (c *config) requireKey() error {
 	if c.Key == "" {
 		return errors.New("s3: key is required")
+	}
+	return c.refuseDotSegments(c.Key, "key")
+}
+
+// refuseDotSegments rejects a `..` path segment, but ONLY when a custom
+// endpoint is configured (TC-032).
+//
+// An S3 key is an opaque byte string: "/" is a display convention with no
+// directory semantics, so `data/../x` addresses an object literally called
+// `data/../x`. This connector therefore never cleans a key — cleaning would
+// address a DIFFERENT object than the flow document names, which is the same
+// mistake as following a traversal, inverted. Against AWS proper there is
+// nothing to traverse and nothing to refuse.
+//
+// The risk is the middlebox. The AWS SDK percent-encodes control characters,
+// but "." and "/" are legal path characters, so the key reaches the wire as
+// written: `GET /bucket/../../etc/passwd`. A reverse proxy in front of an
+// S3-compatible endpoint — nginx and friends normalise `..` in paths by
+// default — can resolve that to a different resource, possibly outside the
+// bucket.
+//
+// So the refusal is scoped to exactly the case that carries the risk: a custom
+// `endpoint`, meaning something other than AWS is being addressed and a proxy
+// may sit in front of it. No legitimate AWS key is refused, and the refusal is
+// loud rather than silent — the alternative, quietly rewriting the key, would
+// read the wrong object and report success.
+func (c *config) refuseDotSegments(key, field string) error {
+	if c.Endpoint == "" {
+		return nil
+	}
+	for seg := range strings.SplitSeq(key, "/") {
+		if seg != ".." {
+			continue
+		}
+		return fmt.Errorf("s3: %s %q contains a %q path segment and a custom endpoint is configured; "+
+			"S3 treats keys as opaque, but a normalising proxy in front of an S3-compatible endpoint can "+
+			"resolve this to a different object. Address the object by its literal key, or remove the "+
+			"custom endpoint to use AWS directly", field, key, "..")
 	}
 	return nil
 }

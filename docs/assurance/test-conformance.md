@@ -190,11 +190,15 @@ which is the only version of this sweep that keeps working.
 
 Three further findings from TC-008/TC-012, recorded not fixed:
 
-- **405 Method Not Allowed is router-generated `text/plain`**, outside the
-  envelope. Mux-owned surface; needs a decision rather than a patch (⇒ TC-030).
-  Seen again incidentally on 2026-08-10 while writing the TC-031 test, which hit
-  the wrong path and got `"Method Not Allowed\n"` back — so this is reachable by
-  ordinary client error, not only by deliberate probing.
+- ~~**405 Method Not Allowed is router-generated `text/plain`**~~ — **FIXED
+  2026-08-10 (TC-030).** Decided in favour of holding ADR-0023's promise as
+  written rather than narrowing it: `routerErrors` middleware rewrites a
+  ROUTER-generated 404/405 into the envelope, distinguished from a handler's own
+  answer by the content type writeJSON has already set. The mux's `Allow` header
+  survives, since it is the useful part of a 405. Reachable by ordinary client
+  error, not only by probing — it was found by a test of ours that requested
+  `/api/v1/runners/lease` instead of `/api/v1/lease`. Non-vacuity: removing the
+  middleware fails three tests (`hub/internal/api/routererr_test.go`).
 - ~~**A runner gets 401 when the hub's DATABASE is down**~~ — **FIXED
   2026-08-10 (TC-031).** `authRunner` is a DB round-trip and any error became an
   opaque 401. Checked the consequence rather than assuming it: `hubclient` does
@@ -267,10 +271,18 @@ accepted, and the config surface is unchanged — precisely the case §6 exists
 for, and `TestSurfaceStaysCompatible` correctly refused the bump until the
 surface was re-recorded.
 
-**Reported, not fixed:** S3 `..` reaches the request line unescaped
-(`/b/../../etc/passwd`). Real S3 treats keys opaquely, but a *normalising
-reverse proxy* in front of an S3-compatible endpoint could resolve it. Rejecting
-`..` would reject technically legal keys ⇒ TC-032.
+**~~Reported, not fixed~~ — FIXED 2026-08-10 (TC-032).** S3 `..` reached the
+request line unescaped (`/b/../../etc/passwd`). Real S3 treats keys opaquely, so
+there is nothing to traverse; the risk is a *normalising reverse proxy* in front
+of an S3-compatible endpoint, which resolves `..` by default.
+
+The rule is scoped to exactly that case: a `..` **path segment** is refused only
+when a custom `endpoint` is configured. AWS proper accepts the same keys, so no
+technically legal AWS key is refused, and a key that merely CONTAINS dots
+(`report..final`, `v1.2..3/data`) is untouched. The refusal is loud and explains
+both conditions — silently cleaning the key would read a DIFFERENT object and
+report success, which is the same mistake inverted. **s3 0.5.0 → 0.6.0,
+`behaviour-change`.**
 
 ### 2f. DAG executor defects (opened 2026-08-09 by TC-005)
 
@@ -562,5 +574,6 @@ Remaining, in agreed order:
 10. **TC-018** — memoise `$ref` compilation; a 1 KB schema expands to 2^n nodes
 11. **TC-031**, **TC-019** residual, **TC-021** — small and contained
 12. **TC-002** metric-name conformance, **TC-024** encoding hostility, **TC-035** e2e load sensitivity
-13. **TC-030**, **TC-032** — need a decision, not a patch
-14. **TC-025**/**TC-026** — build ADR-0053
+13. ~~**TC-030**, **TC-032**~~ — **decided and done 2026-08-10**
+14. **TC-025**/**TC-026** — build ADR-0053, whose three open questions are now
+    resolved (see the ADR's "Resolved" section)
