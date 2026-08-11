@@ -13,6 +13,11 @@ enforced or merely stated.
 |---|---|
 | [`test-conformance.md`](test-conformance.md) | Does each ADR invariant have a test that would fail if the invariant broke? |
 
+The register records **what** is proven. The practice guide distilled from
+working it — how to write a test that can fail, which instrument to measure
+with, and what to check next — is
+[`docs/dev/10-testing.md`](../dev/10-testing.md).
+
 ## How a register differs from the other docs
 
 | Doc | Axis | Cadence |

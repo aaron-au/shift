@@ -42,7 +42,7 @@ Hub-and-spoke Integration Platform as a Service. Goal: a provisionable, enterpri
 
 | Doc | What it is |
 |---|---|
-| `docs/dev/` | **Internal developer docs** — how everything operates together (architecture, engine, connector protocol, runner, conventions). Read these first; keep them in lockstep with code (standing rule). |
+| `docs/dev/` | **Internal developer docs** — how everything operates together (architecture, engine, connector protocol, runner, conventions). Read these first; keep them in lockstep with code (standing rule). `10-testing.md` is the testing practice guide: how to write a test that can actually fail, and what to sweep next. |
 | `PLAN.md` | The rebuild plan: topology, milestones M0–M6 with exit criteria, standing rules. |
 | `docs/adr/` | Architecture Decision Records — locked decisions with context. Deviations require a superseding ADR. |
 | `docs/assurance/` | **Assurance registers** — not decisions. `test-conformance.md` tracks, per ADR invariant, whether a test exists that would *fail* if the invariant broke (checked / todo / done, IDs `TC-nnn`). §3 records what a sweep already cleared, so it is not re-litigated. Read before proposing new tests. |
