@@ -32,6 +32,11 @@ is wrong in the same PR.
 8. [08-release-ops.md](08-release-ops.md) — release checklist (digest-pinning,
    supply-chain tier, SBOM/signing), staging, rollback, backup/restore drill,
    and incident basics (#9).
+9. [10-testing.md](10-testing.md) — **how to write tests that can actually
+   fail**, and what to check next. Distilled from three review sweeps that
+   found 19 real bugs, six of which produced no error at all. Read it before
+   adding tests to a new surface; `05-conventions.md` covers the gate, this
+   covers whether the tests mean anything.
 
 ## Where decisions live
 

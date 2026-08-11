@@ -68,6 +68,11 @@ and `go test -race` across every module. Rules:
 
 ## Testing idioms used here
 
+> The idioms are below; **[`10-testing.md`](10-testing.md) is the guide to using
+> them well** — non-vacuity, choosing the instrument, bounding units, and the
+> checklist of what to sweep next. A test that has never been observed failing
+> is not evidence.
+
 - Differential testing against a reference implementation where one exists
   (ndjson vs `encoding/json`), plus `go test -fuzz` seeds kept green.
 - Spilled-vs-in-memory equivalence for anything with an overflow path.
