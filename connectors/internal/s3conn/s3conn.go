@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"syscall"
 	"time"
 
@@ -36,11 +37,21 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "s3",
-		Version: "0.4.0",
-		// Adds the fixedw format and its `columns` layout field: a widened
-		// enum and a new optional property, so every stored config still
-		// loads and every existing flow still runs (ADR-0047 §6).
-		Compat: "compatible",
+		Version: "0.6.0",
+		// Refuses a `..` path segment in a key when a CUSTOM ENDPOINT is
+		// configured (TC-032): S3 keys are opaque, but a normalising proxy in
+		// front of an S3-compatible endpoint can resolve one to a different
+		// object. AWS proper is unaffected, so no legitimate AWS key is
+		// refused — but an S3-compatible deployment using such a key stops
+		// working, which is a behaviour change.
+		//
+		// Also decodes Content-Encoding deliberately and bounds it (TC-020). A
+		// gzip-encoded object previously reached the record parser still
+		// compressed and failed at byte one with `unexpected character
+		// '\x1f'`; it now reads, up to the ratio bound. Nothing that worked
+		// stops working, but the outcome for such an object changes, so it is
+		// declared as a behaviour change rather than as a widening (ADR-0047 §6).
+		Compat: "behaviour-change",
 		Meta: &sdk.ConnectorMeta{
 			Description: "AWS S3 and S3-compatible (MinIO/Ceph/R2) object storage: pick a verb (get/put/list/delete). Static tenant credentials; SSRF-guarded.",
 			Category:    "object-storage",
@@ -86,7 +97,8 @@ var (
     "key": {"type": "string", "title": "Object key", "description": "Full object key/path within the bucket"},
     "format": ` + fileformat.SchemaEnum() + `,
     "record_element": ` + fileformat.RecordElementProp + `,
-    "columns": ` + fileformat.ColumnsProp() + `
+    "columns": ` + fileformat.ColumnsProp() + `,
+    "max_decompression_ratio": {"type": "integer", "title": "Max decompression ratio", "description": "For an object stored with Content-Encoding: gzip, refuse it if it inflates to more than this many bytes per wire byte", "default": 100}
   }}`
 
 	listConfigSchema = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","title":"S3 list",
@@ -122,6 +134,10 @@ type config struct {
 	PathStyle      bool                `json:"path_style"`
 	AllowLocal     bool                `json:"allow_local"`
 	TimeoutSeconds int                 `json:"timeout_seconds"`
+	// MaxDecompressionRatio bounds inflated bytes / wire bytes for an object
+	// stored with Content-Encoding: gzip (decompress.DefaultMaxRatio when
+	// zero). See connectors/internal/decompress for why this is a ratio.
+	MaxDecompressionRatio int `json:"max_decompression_ratio,omitempty"`
 }
 
 // parseConfig unmarshals and validates the connection fields shared by every
@@ -158,6 +174,9 @@ func (c *config) requireKeyFormat() error {
 	if c.Key == "" {
 		return errors.New("s3: key is required")
 	}
+	if err := c.refuseDotSegments(c.Key, "key"); err != nil {
+		return err
+	}
 	return fileformat.Validate("s3", &c.Format, c.Columns)
 }
 
@@ -165,6 +184,44 @@ func (c *config) requireKeyFormat() error {
 func (c *config) requireKey() error {
 	if c.Key == "" {
 		return errors.New("s3: key is required")
+	}
+	return c.refuseDotSegments(c.Key, "key")
+}
+
+// refuseDotSegments rejects a `..` path segment, but ONLY when a custom
+// endpoint is configured (TC-032).
+//
+// An S3 key is an opaque byte string: "/" is a display convention with no
+// directory semantics, so `data/../x` addresses an object literally called
+// `data/../x`. This connector therefore never cleans a key — cleaning would
+// address a DIFFERENT object than the flow document names, which is the same
+// mistake as following a traversal, inverted. Against AWS proper there is
+// nothing to traverse and nothing to refuse.
+//
+// The risk is the middlebox. The AWS SDK percent-encodes control characters,
+// but "." and "/" are legal path characters, so the key reaches the wire as
+// written: `GET /bucket/../../etc/passwd`. A reverse proxy in front of an
+// S3-compatible endpoint — nginx and friends normalise `..` in paths by
+// default — can resolve that to a different resource, possibly outside the
+// bucket.
+//
+// So the refusal is scoped to exactly the case that carries the risk: a custom
+// `endpoint`, meaning something other than AWS is being addressed and a proxy
+// may sit in front of it. No legitimate AWS key is refused, and the refusal is
+// loud rather than silent — the alternative, quietly rewriting the key, would
+// read the wrong object and report success.
+func (c *config) refuseDotSegments(key, field string) error {
+	if c.Endpoint == "" {
+		return nil
+	}
+	for seg := range strings.SplitSeq(key, "/") {
+		if seg != ".." {
+			continue
+		}
+		return fmt.Errorf("s3: %s %q contains a %q path segment and a custom endpoint is configured; "+
+			"S3 treats keys as opaque, but a normalising proxy in front of an S3-compatible endpoint can "+
+			"resolve this to a different object. Address the object by its literal key, or remove the "+
+			"custom endpoint to use AWS directly", field, key, "..")
 	}
 	return nil
 }
@@ -225,6 +282,13 @@ func (c *config) httpClient() *http.Client {
 			IdleConnTimeout:     60 * time.Second,
 			ForceAttemptHTTP2:   true,
 			TLSHandshakeTimeout: 15 * time.Second,
+			// Never inflate anything on our behalf. The AWS SDK sets its own
+			// Accept-Encoding today, so the transport does not transparently
+			// decompress here — but that is a property of a dependency, not of
+			// this code, and the identical transport in azureblobconn WAS
+			// exposed by an SDK that does not. getSource decodes gzip
+			// deliberately and meters it (TC-020).
+			DisableCompression: true,
 		},
 	}
 }

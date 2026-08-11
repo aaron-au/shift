@@ -80,6 +80,12 @@ fuzz:
 	@echo "--- fuzz record scalars";  FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh engine ./record        FuzzParseScalars
 	@echo "--- fuzz schema.Compile";  FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh engine ./schema        FuzzCompile
 	@echo "--- fuzz schema.Validate"; FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh engine ./schema        FuzzValidate
+	@echo "--- fuzz gateway request";  FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh gateway ./internal/ingress FuzzIngressRequestLine
+	@echo "--- fuzz gateway identity"; FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh gateway ./internal/ingress FuzzIngressNeverForwardsAClientIdentity
+	@echo "--- fuzz gateway status";   FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh gateway ./internal/ingress FuzzStatusPathParsing
+	@echo "--- fuzz gateway clientip"; FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh gateway ./internal/ingress FuzzClientIP
+	@echo "--- fuzz starlark compile"; FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh runner  ./internal/starlarkop FuzzCompile
+	@echo "--- fuzz starlark run";     FUZZTIME=$(FUZZTIME) ./scripts/fuzz.sh runner  ./internal/starlarkop FuzzRun
 
 ## bench: micro-benchmarks + shift-bench RSS regression checks (ADR-0003)
 bench:

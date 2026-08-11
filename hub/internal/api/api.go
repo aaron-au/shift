@@ -282,7 +282,7 @@ func Handler(st *store.Store, opts Options) (http.Handler, error) {
 	mux.Handle("POST /api/v1/execution-status/{id}/finish", a.runner(a.finishExecution))
 	mux.Handle("GET /api/v1/execution-status/{id}", a.runner(a.getExecutionStatus))
 
-	return httpsec.Headers(a.observe(mux)), nil
+	return httpsec.Headers(a.observe(routerErrors(mux))), nil
 }
 
 type reqIDKey struct{}

@@ -34,7 +34,14 @@ import (
 func Connector() sdk.Connector {
 	return sdk.Connector{
 		Name:    "soap",
-		Version: "0.1.0",
+		Version: "0.2.0",
+		// Bounds the ELEMENT COUNT of a response (TC-022). Width was the one
+		// structural dimension neither max_response_bytes nor the depth cap
+		// could see: measured, 1,600,101 wire bytes of `<a/>` allocated 421 MiB
+		// and the call SUCCEEDED. This refuses input that was previously
+		// accepted, so it is a behaviour change even though the config surface
+		// only gains an optional max_response_elements (ADR-0047 6).
+		Compat: "behaviour-change",
 		Meta: &sdk.ConnectorMeta{
 			Description: "Call a SOAP/XML web service: POST an envelope (with ${param} placeholders) and parse the XML response into records. Faults surface as errors. SSRF-guarded.",
 			Category:    "protocol",
@@ -76,7 +83,8 @@ const callConfigSchema = `{
     },
     "allow_local": {"type": "boolean", "title": "Allow local/loopback and private/internal targets (SSRF guard off)", "default": false},
     "timeout_seconds": {"type": "integer", "title": "Timeout (seconds)", "description": "Bounds the whole call including reading the response body", "default": 60},
-    "max_response_bytes": {"type": "integer", "title": "Max response size (bytes)", "description": "A response larger than this is rejected (never truncated)", "default": 16777216}
+    "max_response_bytes": {"type": "integer", "title": "Max response size (bytes)", "description": "A response larger than this is rejected (never truncated)", "default": 16777216},
+    "max_response_elements": {"type": "integer", "title": "Max response elements", "description": "Reject a response containing more XML elements than this; memory cost is per element, which the byte limit cannot see", "default": 100000}
   }
 }`
 
@@ -111,6 +119,10 @@ type config struct {
 	// MaxResponseBytes bounds the buffered response. Zero or negative takes
 	// the default — "unlimited" is not expressible, deliberately.
 	MaxResponseBytes int `json:"max_response_bytes"`
+	// MaxResponseElements bounds the number of XML elements in a response.
+	// Zero takes maxXMLElements. Width is the dimension neither the byte cap
+	// nor the depth cap can see (TC-022).
+	MaxResponseElements int `json:"max_response_elements,omitempty"`
 }
 
 func parseConfig(raw []byte, into *config) error {

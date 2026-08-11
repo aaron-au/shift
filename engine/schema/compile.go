@@ -35,6 +35,21 @@ type compiler struct {
 	// have no bounded compiled form here, and would otherwise compile into an
 	// infinite tree or a stack overflow.
 	resolving []string
+	// memo caches the compiled form of each $ref target, keyed by the reference
+	// string, so a target referenced N times is compiled ONCE and the node is
+	// shared.
+	//
+	// Without it each reference site recompiled its target, and the cycle guard
+	// above only rejects a $ref already on the CURRENT stack — so a diamond of
+	// $defs, each level referencing the next twice, is not a cycle and nothing
+	// stopped it doubling per level. Measured (expansion_test.go): 3,694 bytes
+	// of schema text, 40 levels, 2^40 nodes — Compile had not returned after 20
+	// seconds (TC-018).
+	//
+	// Sharing is sound because a compiled node is immutable and compilation is
+	// context-free: the same pointer always yields the same node, whatever the
+	// site referring to it.
+	memo map[string]*node
 }
 
 // assertions is the closed set of keywords that CONSTRAIN a document.
@@ -204,9 +219,20 @@ func (c *compiler) ref(v any, ptr string) (*node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s: $ref %q: %w", errCompile, at(ptr), s, err)
 	}
+	if n, ok := c.memo[s]; ok {
+		return n, nil
+	}
 	c.resolving = append(c.resolving, s)
 	defer func() { c.resolving = c.resolving[:len(c.resolving)-1] }()
-	return c.node(target, s)
+	n, err := c.node(target, s)
+	if err != nil {
+		return nil, err
+	}
+	if c.memo == nil {
+		c.memo = make(map[string]*node)
+	}
+	c.memo[s] = n
+	return n, nil
 }
 
 // resolvePointer walks an RFC 6901 JSON Pointer. It accepts any local target,

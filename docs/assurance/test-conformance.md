@@ -55,7 +55,7 @@ ADR's central claim stops being true? No line ⇒ a row below.
 | TC-002 | Alert on metric names; they are an operator contract (ADR-0020) | None. Both `*/internal/telemetry` packages have zero tests and are gate-excluded by ADR-0022 | `pkg/shiftlog` has an AST-level suite pinning `event` names and key spelling (`vocabulary_test.go`). Metrics are the same contract with none of the discipline — a rename silently breaks dashboards. Mirror the vocabulary test for metric names + labels | ⬜ |
 | TC-003 | Parsers eating untrusted bytes never panic/hang/over-allocate (ADR-0022 §5, ADR-0042) | 7 new targets across `edi`, `fixedw`, `xmlf`, `csvf`, `record` (ParsePath + scalars), `schema` (Compile + Validate), wired into `make fuzz` | **Closed 2026-08-09. Found a real memory-exhaustion bug in `edi` — fixed.** Gateway ingress and starlark script text remain unfuzzed (⇒ TC-017) | ✅ |
 | TC-004 | Exact decimal/temporal semantics: 128-bit `Compare`, `ExactSum` (ADR-0051) | `engine/record/{decimal_diff_test.go,temporal_diff_test.go}` — generated inputs checked against `math/big` and `time`, plus 3 fuzz targets | **Closed 2026-08-09.** No bug — but 3 of 5 injected mutants were caught ONLY by these tests, which is the hand-picked-cases weakness demonstrated rather than asserted | ✅ |
-| TC-005 | **Any** validated topology executes — nested fan-out, mixed fan-out/fan-in included (ADR-0029) | `runner/internal/service/topology_gen_test.go` — 32 generated valid DAGs from a fixed seed, asserting exact record conservation | **Closed 2026-08-09 — and the claim is FALSE.** Three real executor bugs found (TC-027, TC-028, TC-029). The generator suppresses the two broken shapes so the suite is green; remove the suppressions when they are fixed | ✅ |
+| TC-005 | **Any** validated topology executes — nested fan-out, mixed fan-out/fan-in included (ADR-0029) | `runner/internal/service/topology_gen_test.go` — 32 generated valid DAGs from a fixed seed at 12,000 records, asserting exact record conservation | **Closed 2026-08-09; the claim was FALSE and is now true.** Five real executor bugs found (TC-027, TC-028, TC-033, TC-034, TC-029) and all five fixed. The last suppression — a 9-record corpus, kept only so the enrichment shape failed instead of hanging — was lifted on 2026-08-10 with TC-029 | ✅ |
 | TC-006 | 0-alloc steady state on the hot path (ADR-0003, ADR-0004) | `alloc_test.go` in `engine/{stream,record,format/ndjson,format/csvf}` — every hot path measured, 0 asserted exactly where it is 0 | **Closed 2026-08-09.** Found and **fixed** three per-record allocations on hot paths (coerce-to-text, JSONReader, csvf typed columns); corrected an inaccurate package doc | ✅ |
 | TC-007 | Protocol + artifact versioning stays backward-compatible (ADR-0007, ADR-0047); migrations are production code (ADR-0006) | `sdk/host/legacy_connector_test.go` — a real protocol-1 connector subprocess driven through the current Launch/handshake/Pull path | 🟡 **Connector half closed 2026-08-09.** The hub-schema half is still open: `Store.Migrate` is only ever applied to an EMPTY database — no populated v(N−1) upgrade, no immutability check on released migration files | 🟡 |
 | TC-008 | Store-failure error arms behave (ADR-0009, ADR-0049) | `hub/internal/api/{faultinject_test.go,storefault_test.go}` — faults injected at the DATABASE (row triggers raising a chosen SQLSTATE on a chosen firing), so real transactions really roll back | **Closed 2026-08-09.** No partial-write bug found: every multi-statement operation rolled back cleanly. api coverage 87.3% → 89.7%, so the apologetic 87 floor can go back to 88 | ✅ |
@@ -173,8 +173,8 @@ Rows raised while closing an earlier one. Numbered from where §2a left off.
 
 | ID | Claim / ADR | Evidence today | Gap | Status |
 |---|---|---|---|---|
-| TC-017 | The remaining untrusted-input surfaces are fuzzed (ADR-0022 §5) | TC-003 closed the format readers, `record.ParsePath` and `engine/schema` | Still unfuzzed: **gateway ingress** route/header/auth parsing — the one component in a DMZ, so its parser eats bytes straight off the public internet — and **starlark script text** (ADR-0052; scripts are authenticated but the compiler is not hardened against them). Raised while closing TC-003 | ⬜ |
-| TC-018 | Schema compilation is bounded (ADR-0042) | None | `schema.Compile` inlines each `$ref` by recompiling its target per reference site, and its cycle guard (`c.resolving`) only blocks cycles on the *current stack*. A diamond of `$defs`, each level referencing the next twice, compiles in 2^n nodes from ~1 KB of schema text. Authenticated-author-only today, so not urgent — but it is a compile-time bomb the moment schema text arrives from anywhere less trusted, and ADR-0042 §4 leans on Compile being cheap. Raised while closing TC-003 | ⬜ |
+| TC-017 | The remaining untrusted-input surfaces are fuzzed (ADR-0022 §5) | 6 new targets in `make fuzz`: `gateway/internal/ingress` (whole request line, identity forwarding, status-path split, X-Forwarded-For) and `runner/internal/starlarkop` (Compile, Run) | **Closed 2026-08-10.** ~21M executions, **no production bug** — and three defects in the *tests*, which is the finding. See the closure note | ✅ |
+| TC-018 | Schema compilation is bounded (ADR-0042) | `engine/schema/expansion_test.go` — a 40-level `$defs` diamond, plus guards for ordinary reuse and for indirect recursion | **Closed 2026-08-10.** Measured: **3,694 bytes of schema text had not finished compiling after 20 seconds** (2^40 nodes). `$ref` targets are now memoised — compiled once, node shared — which is sound because a compiled node is immutable and compilation is context-free. Now 0.00s and 0 MiB. The recursion guard is unaffected: the memo is written only AFTER a successful compile, so a target still on the stack can never be served from it (pinned by its own test) | ✅ |
 
 **TC-012 closure note.** The 401 is the response a client meets more often than
 any other, and it was the one shape no client could parse the same way as the
@@ -190,14 +190,27 @@ which is the only version of this sweep that keeps working.
 
 Three further findings from TC-008/TC-012, recorded not fixed:
 
-- **405 Method Not Allowed is router-generated `text/plain`**, outside the
-  envelope. Mux-owned surface; needs a decision rather than a patch (⇒ TC-030).
-- **A runner gets 401 when the hub's DATABASE is down** — `authRunner` is a DB
-  round-trip and any error becomes an opaque 401. Checked the consequence
-  rather than assuming it: `hubclient` does **not** treat 401 as terminal, and
-  `leaseloop` retries with backoff, so this is a **diagnosability** bug, not an
-  availability one — an operator is sent hunting a credential problem that does
-  not exist. A 503 would say the true thing (⇒ TC-031).
+- ~~**405 Method Not Allowed is router-generated `text/plain`**~~ — **FIXED
+  2026-08-10 (TC-030).** Decided in favour of holding ADR-0023's promise as
+  written rather than narrowing it: `routerErrors` middleware rewrites a
+  ROUTER-generated 404/405 into the envelope, distinguished from a handler's own
+  answer by the content type writeJSON has already set. The mux's `Allow` header
+  survives, since it is the useful part of a 405. Reachable by ordinary client
+  error, not only by probing — it was found by a test of ours that requested
+  `/api/v1/runners/lease` instead of `/api/v1/lease`. Non-vacuity: removing the
+  middleware fails three tests (`hub/internal/api/routererr_test.go`).
+- ~~**A runner gets 401 when the hub's DATABASE is down**~~ — **FIXED
+  2026-08-10 (TC-031).** `authRunner` is a DB round-trip and any error became an
+  opaque 401. Checked the consequence rather than assuming it: `hubclient` does
+  **not** treat 401 as terminal, and `leaseloop` retries with backoff, so this
+  was a **diagnosability** bug, not an availability one — the fleet recovered
+  while telling the operator the wrong story, and every runner reporting
+  "unauthorized" at once looks like a credential problem. Only
+  `store.ErrUnauthorized` now means 401; anything else is 503. Both halves are
+  pinned (`hub/internal/api/dbdown_test.go`) — a bad secret must still be 401,
+  or a hub that never says "not you" cannot be diagnosed either. Non-vacuity:
+  restoring the blanket 401 fails the outage test with the exact envelope
+  `{"error":{"status":401,"message":"unauthorized"}}`.
 - `POST /api/v1/connectors/collect` ignores its request body entirely (200 for
   `{`); it is driven by `?apply=1`. Malformed input silently accepted.
 
@@ -258,17 +271,28 @@ accepted, and the config surface is unchanged — precisely the case §6 exists
 for, and `TestSurfaceStaysCompatible` correctly refused the bump until the
 surface was re-recorded.
 
-**Reported, not fixed:** S3 `..` reaches the request line unescaped
-(`/b/../../etc/passwd`). Real S3 treats keys opaquely, but a *normalising
-reverse proxy* in front of an S3-compatible endpoint could resolve it. Rejecting
-`..` would reject technically legal keys ⇒ TC-032.
+**~~Reported, not fixed~~ — FIXED 2026-08-10 (TC-032).** S3 `..` reached the
+request line unescaped (`/b/../../etc/passwd`). Real S3 treats keys opaquely, so
+there is nothing to traverse; the risk is a *normalising reverse proxy* in front
+of an S3-compatible endpoint, which resolves `..` by default.
+
+The rule is scoped to exactly that case: a `..` **path segment** is refused only
+when a custom `endpoint` is configured. AWS proper accepts the same keys, so no
+technically legal AWS key is refused, and a key that merely CONTAINS dots
+(`report..final`, `v1.2..3/data`) is untouched. The refusal is loud and explains
+both conditions — silently cleaning the key would read a DIFFERENT object and
+report success, which is the same mistake inverted. **s3 0.5.0 → 0.6.0,
+`behaviour-change`.**
 
 ### 2f. DAG executor defects (opened 2026-08-09 by TC-005)
 
-ADR-0029's central claim — *any validated topology executes* — is **not true
-today**. The generative test found three ways it fails. All three are in
-`runner/internal/service/dag.go`; none is in validation, so `pkg/flowdoc`
-accepts every one of these flows and the runner then fails or hangs on them.
+ADR-0029's central claim — *any validated topology executes* — was **not true**.
+The generative test found five ways it failed. All five were in
+`runner/internal/service/dag.go`; none was in validation, so `pkg/flowdoc`
+accepted every one of these flows and the runner then failed or hung on them.
+
+**All five are now fixed** (TC-027/028/033/034 on 2026-08-09, TC-029 on
+2026-08-10), and the corpus that found them runs unsuppressed.
 
 These are the most serious findings of the whole sweep, and they are exactly
 what six hand-built topologies could never have surfaced.
@@ -284,7 +308,7 @@ and all three agree.
 |---|---|---|---|
 | TC-027 | A fan-out branch that reaches a merge **with no intervening operator** always fails at run time. `buildFanOut` registers the branch pipe under `edgeKey(last, endID)` — which is `edgeKey(mergeID, mergeID)` when the branch is empty — while `inputEdge` looks it up under `edgeKey(fanOutID, mergeID)` | `src → tee[a,m]; a: filter → m; m: merge concat [a, tee] → sink` ⇒ `service: fan-out "t" has no branch feeding "m"`. Confirmed for both tee and router | Deterministic failure; validated flow, refused at run time |
 | TC-028 | A fan-out **downstream of a merge that is itself fed by a fan-out** fails **non-deterministically**. `compile()` iterates `plan.Nodes`, a Go **map**, so fan-out build order is random. If the downstream one compiles first it recurses through the merge before the upstream one has registered its branch pipes, falls back to `streamLeaving`→`segmentTo`, and hits an incompatible edge-key convention | `src → tee → 2 filters → merge(concat) → tee → 2 sinks` — **failed 9 of 20 runs of the identical document**, `service: node "a" reads a fan-out branch that terminates elsewhere` | **Non-deterministic.** Same flow, same runner, coin-flip. This is ADR-0029's named enrichment shape |
-| TC-029 | The enrichment shape **deadlocks permanently** above ~10 batches. The join blocks building its right side while the probe branch backs up into a 4-deep pipe behind a 4-deep tee queue, so the tee can never finish feeding the build side | `src → tee → [probe, build] → join → sink`: completes at 5k records, **hangs forever** at 12k and 50k | **Worst of the three.** `TaskTimeout` defaults to 0, so the task stays `running` indefinitely **holding its admission reservation** — a permanent resource leak on the runner (ADR-0005) |
+| TC-029 | ~~The enrichment shape **deadlocks permanently** above ~10 batches~~ — **FIXED 2026-08-10.** A fan-out branch that a blocking merge will not read yet now ends in a governed `stream.SpillBuffer` whose writer never blocks, instead of a bounded pipe (ADR-0029 amendment) | `src → tee → [probe, build] → join → sink` at 12k records: **hung forever**, now completes in ~0.02s with all 12,000 records joined. `runner/internal/service/enrichment_test.go`, deadline-guarded so a regression fails rather than hangs | ✅ **The TC-005 corpus cap is lifted with it**: `topologyRecords` 9 → 12,000, so all 32 generated topologies now exercise multi-batch flow |
 
 | TC-033 | **Nested fan-out with ≥2 operators between parent and child** fails deterministically — same key mismatch, third convention | `node "t2" reads a fan-out branch that terminates elsewhere` | Deterministic refusal of a validated flow |
 | TC-034 | **Nested fan-out with exactly ONE operator between: silent data corruption.** The two keys coincidentally collide, so the branch operator is applied a SECOND time on top of a pipe that already carries it | A rename project emitted `{"nid":null}` instead of `{"nid":0}`. **No error.** Filters and pass-through projections mask it entirely | **The worst defect of the sweep.** Not a refusal — wrong records delivered to a customer's system with no signal at all |
@@ -354,14 +378,112 @@ shape elsewhere.
 
 | ID | Property | Status today | Status |
 |---|---|---|---|
-| TC-019 | **Every reader bounds a single unit.** One record/line/field/segment cannot be unbounded | `ndjson` MaxLineBytes + MaxDepth ✅ · `xmlf` MaxDepth ✅ · `edi` MaxSegmentBytes ✅ (fixed under TC-003) · **`csvf` has NO size bound — measured**: an unclosed quoted field buffered 64 MiB and failed only at column 67108866, i.e. when the *input ran out*, not because of any limit. Against an endless stream it grows without limit · `fixedw` bounded by its layout, but `SkipLines`/`Unseparated` unaudited | ⬜ |
-| TC-020 | **Decompression is bounded.** A compression bomb cannot exhaust the runner | No explicit decompression anywhere — but Go's `http.Transport` transparently inflates `Content-Encoding: gzip`, so `httpconn` HAS an unbounded decompression path it never opted into. Per-line bounds limit the damage for ndjson; nothing bounds total inflated bytes or duration | ⬜ |
-| TC-021 | **A stream that never ends is bounded** — total bytes, total records, wall clock. A source that trickles forever must not pin a runner slot indefinitely | Unaudited | ⬜ |
-| TC-022 | **Structural depth/width cannot exhaust the stack or the arena** — deep nesting, a record with a million fields, XML entity expansion (billion laughs), pathological schemas | `MaxDepth` on `ndjson`/`xmlf` only. TC-018 (the `$ref` 2^n expansion) is an instance of this class | ⬜ |
+| TC-019 | **Every reader bounds a single unit.** One record/line/field/segment cannot be unbounded | `ndjson` MaxLineBytes + MaxDepth ✅ · `xmlf` MaxDepth ✅ · `edi` MaxSegmentBytes ✅ (TC-003) · `csvf` MaxRecordBytes ✅ · **`fixedw` MaxLineBytes ✅** (`bomb_test.go`) | **Closed 2026-08-10. The last one was a real bug, not an audit.** `fixedw` was recorded as "bounded by its layout"; in fact `readLine` fell back to unbounded accumulation whenever a line exceeded the bufio buffer, on the record path as well as `SkipLines`. A source that never emits a newline ran `go test` to its **180-second timeout still buffering**. Now: 256 MiB offered, 1 MiB consumed, 4 MiB allocated against a 1 MiB bound — cost tracks the limit, not the input. `Unseparated` reads a fixed-length record and is bounded by construction | ✅ |
+| TC-020 | **Decompression is bounded.** A compression bomb cannot exhaust the runner | `connectors/internal/decompress` (ratio bound, 12 tests) wired into `httpconn`, `azureblobconn` and `s3conn`; `soapconn` bounded separately by `max_response_bytes` applied to the *decompressed* stream | **Closed 2026-08-10. Found a second unbounded connector — `azureblobconn` streamed 7,780,738 records out of 1,822,535 wire bytes, to completion, with no error.** See the closure note | ✅ |
+| TC-021 | **A stream that never ends is bounded** — total bytes, total records, wall clock. A source that trickles forever must not pin a runner slot indefinitely | `DefaultTaskTimeout` (6h, no "off") + `runner/internal/service/endless_test.go` — a task is interrupted by the ceiling, and the admission reservation comes back **whichever way it ends** | ✅ **Closed 2026-08-10, and two thirds of the row were the wrong property.** A total-bytes or total-records cap would refuse the work the product exists to do (ADR-0003's exit criterion is a 1 GB stream at bounded RSS) — the same argument the decompression bound settled: volume is not the threat. What matters is the slot, which is precisely what TC-029 leaked | ✅ |
+| TC-022 | **Structural depth/width cannot exhaust the stack or the arena** — deep nesting, a record with a million fields, XML entity expansion (billion laughs), pathological schemas | Depth: `MaxDepth` on `ndjson`/`xmlf`, `maxXMLDepth` on `soapconn`. **Width: `maxXMLElements` (`soapconn/width_test.go`)** | 🟡 **soapconn closed 2026-08-10 — 1,600,101 wire bytes allocated 421 MiB and SUCCEEDED; now 35 MiB and refused.** Residual: TC-018's `$ref` 2^n expansion is the same class in `engine/schema`, and `ndjson`/`xmlf` width is bounded only indirectly by the per-line/segment caps | 🟡 |
 | TC-023 | **Path/name handling from a remote listing is safe** — `../`, absolute paths, symlinks, NUL/control characters, zip-slip | `hostilenames_test.go` in all five file/object connectors | **Closed 2026-08-09. Found an FTP command injection (CWE-93) and zip-slip in two listings — all fixed.** See the closure note | ✅ |
 | TC-024 | **Encoding hostility degrades, never corrupts** — invalid UTF-8, mixed encodings, BOMs, NUL bytes, lone surrogates. The record model must not silently produce mojibake a customer later trusts | Partly covered by the TC-003 fuzz seeds; no explicit assertion about what a customer *receives* | ⬜ |
 | TC-025 | **A single bad record does not destroy the run.** The customer's stated need: "recover/ignore invalid data" | **ADR-0053 written 2026-08-09** — `@verify` is a router whose predicate is a schema; rejects route down an ordinary edge to a destination the developer owns | Designed, not built. No test can close this until the node exists | ⬜ |
 | TC-026 | **The customer is told what was rejected and why.** Assurance that delivered data was valid | **ADR-0053 §6** — per-step counts and rejection reasons (field path + failed rule). Field names and rule ids are metadata; values never appear, so it rides the execution report without touching the two-plane split | Designed, not built | ⬜ |
+
+**TC-022 note (2026-08-10) — the third structural dimension.**
+
+`soapconn` bounded total bytes (`max_response_bytes`) and nesting
+(`maxXMLDepth`). Width was invisible to both: cost is O(number of elements) and
+an element costs four bytes on the wire. Measured, **1,600,101 bytes of `<a/>`
+allocated 421 MiB — 256-276x — and the call succeeded.** Same shape as TC-020,
+with structure amplifying instead of gzip.
+
+Two fixes, and the order they were found in is the point:
+
+1. The obvious suspect was `make(map[string][]*xmlNode, len(n.children))` in
+   `build`, which pre-sizes buckets to the CHILD count rather than the
+   distinct-NAME count — a 400,000-entry map to hold one key, on exactly the
+   shape SOAP returns most (a list of identically-named entries). Fixing it
+   saved 30 MiB. **That was 7% of the problem**, and assuming it was the answer
+   would have closed the row on a real but minor improvement.
+2. The rest is irreducible per-element cost across the decoder's tokens, the
+   node tree and the record built from it. Unlike decompression this cannot be
+   a ratio — elements are only a few bytes each — so the honest bound is a
+   count: `maxXMLElements` (100,000, `max_response_elements`), checked as the
+   document is read rather than after.
+
+Result: 421 MiB → 35 MiB, refused by name, with a 5,000-element list still
+accepted. **soap 0.1.0 → 0.2.0, `behaviour-change`** (ADR-0047 §6).
+
+**TC-017 closure note (2026-08-10) — the fuzzing found no product bug and three test bugs.**
+
+~21M executions across six targets left the gateway's request parsing and the
+starlark compiler standing. What it did break was this register's own work:
+
+1. **A vacuous target.** `FuzzIngressNeverForwardsAClientIdentity` passed with
+   the identity strip DELETED from `forwardable`. The route it configured had an
+   allowlist of `10.0.0.0/8` while the test's peer was `192.0.2.10`, so every
+   request 404'd at the allowlist and never reached the forwarding path, and a
+   timeout branch swallowed it. The tell was in plain sight — 8 seeds took 14
+   seconds — and only the non-vacuity probe caught it. A property test that
+   cannot reach the code it targets is worse than no test, because it reports
+   success. `TestTheIdentityFuzzTargetActuallyReachesARunner` now guards it, and
+   with the strip removed three tests fail.
+2. **An over-broad property (gateway).** The target claimed no client header
+   value may reach the runner under an `X-Shift-*` name. The fuzzer produced
+   `X-Forwarded-For: 10.1.0.0` and the value duly appeared as
+   `X-Shift-Client-Ip` — which is ADR-0038's trusted-proxy design working, not a
+   leak. "Derived from" and "forwarded verbatim" are different claims; the
+   property was narrowed to headers the CALLER named `X-Shift-*`.
+3. **An over-broad property (starlark).** `FuzzCompile` asserted that no 64-byte
+   run of the input may appear in an error, and the fuzzer produced a 64-byte
+   identifier, yielding `undefined: AAAA…`. That is legitimate diagnosis: the
+   *script* is authored configuration the hub already stores in the flow
+   document, whereas a *record's* contents are payload it must never see.
+   ADR-0052 §8 is about the latter. The verbatim check now applies to `Run`
+   only; both targets still forbid a backtrace.
+
+Two of those three were the fuzzer correcting the specification rather than the
+code — which is the honest outcome to record, and the reason the closure note
+says "no product bug" rather than "passed".
+
+**TC-020 closure note (2026-08-10) — a property that held by accident of a dependency.**
+
+The register said this row was closed for `httpconn` in the 2026-08-09 sweep. It
+was not closed as a *row*: the audit fixed the connector that had been measured
+and did not ask whether the same shape existed elsewhere. It did.
+
+`soapconn`, `s3conn` and `azureblobconn` build the same plain `*http.Transport`.
+Go's transport advertises `Accept-Encoding: gzip` on its own and transparently
+inflates the reply, so all three owned a decompressor none of them wrote and
+none could see in its own source. Whether that was *exposed* came down to
+whether the SDK underneath happened to set the header first:
+
+- `soapconn` — **safe, and deliberately so.** `max_response_bytes` is applied to
+  the decompressed stream. Measured: 1,043,738 wire bytes claiming 1 GiB cost 41
+  MiB and stopped in 99 ms.
+- `s3conn` — **safe by accident.** The AWS SDK sets its own `Accept-Encoding`,
+  so nothing inflated. Measured: 0 records, 3 MiB, ending in `ndjson: line 1:
+  column 1: unexpected character '\x1f'` — gzip's magic number reported as a
+  data error.
+- `azureblobconn` — **not safe.** The Azure SDK does not set the header.
+  Measured: **1,822,535 wire bytes became 512 MiB and 7,780,738 records,
+  streamed to completion, ending in a clean `EOF`.** No error, no bound, ~294x
+  amplification, and the flow *succeeds*.
+
+Note what the measurement says about instruments: azureblob's bomb allocated
+**0 MiB** of retained heap, because the streaming architecture worked exactly as
+designed. A memory-based assertion would have called this safe. The cost is
+7.8M records of downstream work bought with 1.8 MB of upload, so the honest
+measure is records and wire-to-output ratio, not RSS.
+
+Two identical transports, opposite outcomes, decided by a dependency neither
+connector controls. That is not a security property; it is a coincidence that
+currently holds. All three now disable the transport's compression, ask for gzip
+deliberately where they want it, and meter what they get through one shared
+`connectors/internal/decompress` — one implementation, because the whole finding
+is that three copies drift.
+
+**Versions bumped `behaviour-change` (ADR-0047 §6):** azureblob 0.4.0 → 0.5.0
+(refuses what it previously accepted), s3 0.4.0 → 0.5.0 (a gzip object now reads
+instead of failing at byte one).
 
 **TC-025/TC-026 were product gaps; they now have a design.** ADR-0053 settles
 it, and the shape it does NOT take is the point: a quarantine facility owned by
@@ -388,7 +510,7 @@ Still todo, and only closable once the node is built.
 
 | ID | Claim / ADR | Evidence today | Gap | Status |
 |---|---|---|---|---|
-| TC-009 | A batch from `Source.Next` is valid only until the next `Next`/`Close`; retaining requires `record.CopyValue` (ADR-0004, CLAUDE.md "Engine contracts to preserve") | Prose comments — `engine/stream/pipe_test.go:20`, `engine/format/fixedw/fixedw_test.go:42`. `docs/test-plan.md` marks this ✅ with evidence *"code review + lint (depguard)"* | **The one contract whose violation reintroduces v0's failure mode, held up by convention.** Needed: a shared harness that scribbles/poisons the batch after `Next`, run over *every* format reader and *every* operator. Catches a retaining operator mechanically. Correct the ✅ in `test-plan.md` to 🟡 when this lands as todo | ⬜ |
+| TC-009 | A batch from `Source.Next` is valid only until the next `Next`/`Close`; retaining requires `record.CopyValue` (ADR-0004, CLAUDE.md "Engine contracts to preserve") | `engine/batchtest` over `record.(*Batch).Poison()`, wired as `lifetime_test.go` in `engine/stream` and all five format readers (`ndjson`, `csvf`, `edi`, `xmlf`, `fixedw`) | **Closed 2026-08-09.** No production retainer found. The harness caught a defect in **itself** first: scribbling alone did not catch a deliberately-planted retainer, because a source reuses one batch, so the refill landed on the same arena and the stale pointer read the NEW record — plausible, wrong, and identical to the unpoisoned run. `Poison` now also releases the chunks, and that non-vacuity test is permanent. `docs/test-plan.md`'s ✅-on-code-review corrected | ✅ |
 | TC-010 | Idempotency keys are **stable across re-dispatched attempts** (ADR-0002) | `hub/e2e/idempotency_test.go` (sink-visible, across a SIGKILL redispatch) + `hub/internal/store/idempotency_test.go` (both re-dispatch paths, byte-for-byte) | **Closed 2026-08-09.** No bug — the key is genuinely stable. See the closure note | ✅ |
 | TC-011 | Admission is governed by real resource signals, **never fixed task-count caps** (ADR-0005) | `runner/internal/service/admission_test.go` — 40 tasks must be resident at a shared barrier simultaneously; peak residency asserted | **Closed 2026-08-09.** No bug. Non-vacuity: a 4-slot semaphore in the admission loop fails it with "admission is gating on a count, not on resources" | ✅ |
 | TC-012 | Every API error carries the machine-readable envelope + version (ADR-0023) | `hub/internal/api/routesweep_test.go` — routes enumerated from `api.go` by `go/ast`, swept set asserted **==** registered set, 89 routes / 169 subtests | **Closed 2026-08-09. Found a real ADR-0023 gap — fixed:** every 401 answered `{"error":"unauthorized"}` (a string where the ADR specifies an object) as `text/plain` | ✅ |
@@ -434,10 +556,24 @@ establish a behaviour, so the decision is made once rather than annually.
 
 Not a schedule — the order that buys the most per unit of work.
 
+Rows 1-6 below are the original ordering, all now done. What remains is listed
+after them, in the order agreed 2026-08-10.
+
 1. ~~**TC-001** goroutine leaks~~ — **done 2026-08-09**; found a production leak on the first run, as expected
-2. **TC-009** batch-lifetime poisoning harness — highest doctrine risk, and it downgrades a false ✅
-3. **TC-003** fuzz the format readers — cheap, and `edi`/`fixedw` are externally-fed
-4. **TC-002** metric-name conformance — mechanical, mirrors an existing suite
-5. **TC-011** + **TC-010** — the two doctrine claims currently unfalsifiable
-6. **TC-008** fault injection — unblocks TC-012 and the deferred hub/api floor
-7. Remainder
+2. ~~**TC-009** batch-lifetime poisoning harness~~ — **done 2026-08-09**
+3. ~~**TC-003** fuzz the format readers~~ — **done 2026-08-09**; found the `edi` memory bomb
+4. ~~**TC-011** + **TC-010**~~ — **done 2026-08-09**; both claims now falsifiable
+5. ~~**TC-008** fault injection~~ — **done 2026-08-09**; unblocked TC-012 and restored the hub/api floor
+6. ~~**TC-005** generative topologies~~ — **done 2026-08-09**; found 5 DAG defects, one of them silent
+
+Remaining, in agreed order:
+
+7. **TC-029** — the join build side spills; the last thing between ADR-0029's central claim and it being true
+8. **TC-017** — fuzz gateway ingress (the DMZ component) and starlark script text
+9. **TC-022** — bound structural width; SOAP amplifies 24 KB to 885 MiB
+10. **TC-018** — memoise `$ref` compilation; a 1 KB schema expands to 2^n nodes
+11. **TC-031**, **TC-019** residual, **TC-021** — small and contained
+12. **TC-002** metric-name conformance, **TC-024** encoding hostility, **TC-035** e2e load sensitivity
+13. ~~**TC-030**, **TC-032**~~ — **decided and done 2026-08-10**
+14. **TC-025**/**TC-026** — build ADR-0053, whose three open questions are now
+    resolved (see the ADR's "Resolved" section)

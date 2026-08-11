@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/aaron-au/shift/connectors/internal/decompress"
 	"github.com/aaron-au/shift/engine/format/ndjson"
 	"github.com/aaron-au/shift/engine/record"
 )
@@ -27,7 +28,7 @@ type getSource struct {
 	reader recordReader
 	// limiter is non-nil when the response was gzipped; it is consulted on
 	// every reader failure so a compression bomb is reported as one.
-	limiter *ratioLimitedReader
+	limiter *decompress.Reader
 }
 
 func (s *getSource) Open(_ context.Context, config []byte) error {
@@ -62,19 +63,19 @@ func (s *getSource) Next(ctx context.Context) (*record.Batch, error) {
 			// keep the 4 KiB cap on the DECODED bytes — the excerpt must stay
 			// small whatever the encoding.
 			var body []byte
-			if dec, derr := s.cfg.decodeBody(resp); derr == nil {
+			if dec, _, derr := s.cfg.decodeBody(resp); derr == nil {
 				body, _ = io.ReadAll(io.LimitReader(dec, 4<<10))
 			}
 			_ = resp.Body.Close()
 			return nil, fmt.Errorf("http: get %s: status %d: %.200s", s.cfg.URL, resp.StatusCode, body)
 		}
-		body, err := s.cfg.decodeBody(resp)
+		body, bounded, err := s.cfg.decodeBody(resp)
 		if err != nil {
 			_ = resp.Body.Close()
 			return nil, err
 		}
 		s.resp = resp
-		s.limiter, _ = body.(*ratioLimitedReader)
+		s.limiter = bounded
 		// Pick the parser by Content-Type: an NDJSON stream keeps the strict
 		// line reader (tight per-line memory bound); anything else (typical REST
 		// application/json — an array or a single object) uses the streaming JSON
@@ -89,7 +90,7 @@ func (s *getSource) Next(ctx context.Context) (*record.Batch, error) {
 	if err != nil && s.limiter != nil {
 		// Checked on io.EOF too, not just on failure: a stream cut short by the
 		// ratio bound must never be mistaken for a stream that ended.
-		if lerr := s.limiter.tripped(); lerr != nil {
+		if lerr := s.limiter.Tripped(); lerr != nil {
 			return nil, lerr
 		}
 	}

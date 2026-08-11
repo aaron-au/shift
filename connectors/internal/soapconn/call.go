@@ -72,7 +72,7 @@ func (s *callSource) Next(ctx context.Context) (*record.Batch, error) {
 		return nil, fmt.Errorf("soap: response from %s exceeds max_response_bytes (%d)", s.cfg.Endpoint, limit)
 	}
 
-	root, perr := parseTree(body)
+	root, perr := parseTree(body, s.cfg.MaxResponseElements)
 	if perr != nil {
 		// Unparseable body: surface the HTTP status if it was an error, else
 		// the parse failure.

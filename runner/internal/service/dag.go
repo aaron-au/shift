@@ -9,6 +9,7 @@ import (
 
 	"github.com/aaron-au/shift/engine/mem"
 	"github.com/aaron-au/shift/engine/record"
+	"github.com/aaron-au/shift/engine/spill"
 	"github.com/aaron-au/shift/engine/stream"
 	"github.com/aaron-au/shift/pkg/flowdoc"
 	"github.com/aaron-au/shift/runner/internal/flow"
@@ -83,6 +84,56 @@ type dagRun struct {
 	// consumed marks sinks driven by a fan-out branch, so they are not also
 	// given their own stage.
 	consumed map[string]bool
+
+	// store is the scratch file shared by every branch buffer in this run,
+	// created on first use. One store serves them all because a segment is now
+	// a list of extents (TC-029), so concurrent buffers interleave inside one
+	// file instead of each opening their own.
+	store *spill.Store
+}
+
+// scratch returns the run's spill store, creating it on first use. A run with
+// no buffered branch — every run before TC-029, and every one without the
+// enrichment shape — never creates a file at all.
+func (r *dagRun) scratch() (*spill.Store, error) {
+	if r.store != nil {
+		return r.store, nil
+	}
+	s, err := spill.NewStore(r.opts.SpillDir)
+	if err != nil {
+		return nil, err
+	}
+	r.store = s
+	r.cleanups = append(r.cleanups, func() { _ = s.Close() })
+	return s, nil
+}
+
+// needsBuffering reports whether a fan-out branch ending at end must be
+// buffered rather than piped.
+//
+// The condition is narrow on purpose. A bounded pipe is the right thing
+// everywhere else — it is how stages stay in step without buffering a stream —
+// and widening this would trade that for disk on topologies that never had a
+// problem. It is true only when ALL of:
+//
+//   - the branch ends at a join, the one merge mode that blocks on one input
+//     while refusing to read the other, and
+//   - this branch is NOT the build input (the build side is consumed eagerly;
+//     it is the side that is starved, not the side that backs up), and
+//   - a sibling branch of the SAME fan-out also feeds that join, which is what
+//     makes one bounded producer responsible for both inputs.
+//
+// A join fed by two independent sources fails the last test and keeps its
+// unbuffered path, because nothing upstream is shared and neither side can
+// starve the other.
+func (r *dagRun) needsBuffering(end *flowdoc.Step, endID, last string, reconverge map[string]int) bool {
+	if end == nil || end.Type != "merge" || end.Mode != flowdoc.MergeJoin {
+		return false
+	}
+	if reconverge[endID] < 2 {
+		return false
+	}
+	return end.Build != last
 }
 
 // executeDAG compiles and runs any validated v3 topology.
@@ -221,6 +272,19 @@ func (r *dagRun) buildFanOut(id string) error {
 	succ := r.plan.Data[id]
 	isRouter := fo.Type == "router"
 
+	// Which merge nodes does more than one of THIS fan-out's branches feed?
+	// That is the deadlock condition for a blocking merge (TC-029): the join
+	// will not read one branch until the other has ended, and one bounded tee
+	// cannot hold both open. Counting it here keeps the answer local and exact
+	// — a join fed from two independent sources has no such problem and must
+	// keep its unbuffered fast path.
+	reconverge := map[string]int{}
+	for _, sid := range succ {
+		if _, endID, err := segmentFrom(r.plan, sid); err == nil {
+			reconverge[endID]++
+		}
+	}
+
 	branches := make([]stream.Branch, 0, len(succ))
 	for _, sid := range succ {
 		ops, endID, err := segmentFrom(r.plan, sid)
@@ -247,8 +311,31 @@ func (r *dagRun) buildFanOut(id string) error {
 		} else {
 			// The branch feeds a merge or another fan-out: it ends at a pipe,
 			// and the node downstream reads the other half.
-			pipe := stream.NewPipe(0)
-			sink = pipe.Sink()
+			last := id
+			if len(ops) > 0 {
+				last = ops[len(ops)-1].ID
+			}
+
+			var src stream.Source
+			if r.needsBuffering(end, endID, last, reconverge) {
+				// A bounded pipe here deadlocks: the join consumes its whole
+				// build input before touching this one, and the tee cannot feed
+				// the build side while blocked handing this side a batch
+				// (TC-029). The writer must not block, so the branch lands in a
+				// governed buffer that spills instead of waiting.
+				store, err := r.scratch()
+				if err != nil {
+					return err
+				}
+				buf, err := stream.NewSpillBuffer(store, r.opts.Gov)
+				if err != nil {
+					return err
+				}
+				sink, src = buf.Sink(), buf.Source()
+			} else {
+				pipe := stream.NewPipe(0)
+				sink, src = pipe.Sink(), pipe.Source()
+			}
 			// edgeIn is keyed by the PLAN EDGE the pipe crosses:
 			// (immediate predecessor of the consumer, the consumer). That is the
 			// only name the consumer has for its input — a merge names the step
@@ -260,11 +347,7 @@ func (r *dagRun) buildFanOut(id string) error {
 			// With NONE the fan-out itself is the predecessor: segmentFrom
 			// returns endID == sid for an empty branch, so keying by sid would
 			// register endID→endID, which nothing ever looks up (TC-027).
-			last := id
-			if len(ops) > 0 {
-				last = ops[len(ops)-1].ID
-			}
-			r.edgeIn[edgeKey(last, endID)] = pipe.Source()
+			r.edgeIn[edgeKey(last, endID)] = src
 		}
 
 		name := endID

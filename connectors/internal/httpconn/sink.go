@@ -68,7 +68,7 @@ func (s *postSink) Write(ctx context.Context, b *record.Batch) error {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var body []byte
-		if dec, derr := s.cfg.decodeBody(resp); derr == nil {
+		if dec, _, derr := s.cfg.decodeBody(resp); derr == nil {
 			body, _ = io.ReadAll(io.LimitReader(dec, 4<<10))
 		}
 		return fmt.Errorf("http: post %s: status %d: %.200s", s.cfg.URL, resp.StatusCode, body)

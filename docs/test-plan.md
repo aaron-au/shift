@@ -37,7 +37,7 @@ Legend: **A** = has an automated (Level-1) test · **V** = has a verification
 | **XML streaming reader** (`xmlf`) | `engine/format/xmlf` tests (PR #23) | test pass | 🟡 (PR open) |
 | Operators: project/filter/coerce/flatten/aggregate | `engine/stream` tests | test pass | ✅ |
 | No map[string]interface{} on the hot path | lint (depguard) + review | gate green | ✅ |
-| Batch-lifetime contract (valid only until the next `Next`) | ⬜ **prose comments only** — no harness proves it | ⬜ | 🟡 TC-009 |
+| Batch-lifetime contract (valid only until the next `Next`) | `engine/batchtest` over `Batch.Poison`, wired as `lifetime_test.go` in `engine/stream` + all five format readers | gate green | ✅ TC-009 |
 | No goroutine leaks (tasks, branches, pipes, pools) | `engine/leaktest` wired as `TestMain` in 10 packages | gate green | ✅ TC-001 |
 
 ## 2. Connectors (each verb exercised)

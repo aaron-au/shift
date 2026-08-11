@@ -17,6 +17,10 @@ import (
 const (
 	DefaultBatchRecords = 1024
 	DefaultBatchBytes   = 1 << 20
+	// DefaultMaxLineBytes bounds one line. 16 MiB matches csvf's record bound
+	// and is orders of magnitude past any real fixed-width record, whose width
+	// is stated by the layout.
+	DefaultMaxLineBytes = 16 << 20
 )
 
 // ReaderOptions configure a Reader.
@@ -29,6 +33,18 @@ type ReaderOptions struct {
 	// SkipLines discards leading lines before the first record — a header or
 	// banner some extracts carry. Ignored when Unseparated.
 	SkipLines int
+	// MaxLineBytes bounds ONE line (DefaultMaxLineBytes when zero).
+	//
+	// readLine falls back to unbounded accumulation whenever a line exceeds the
+	// bufio buffer, and that path serves both the SkipLines preamble and every
+	// record read — so a source that never emits a newline grew without limit.
+	// Measured before this bound: `go test` reached its 180-second timeout still
+	// buffering (TC-019).
+	//
+	// A fixed-width layout states how wide a record is, which is what makes an
+	// endless line a contradiction rather than a judgement call: bytes past the
+	// layout's width can never become fields.
+	MaxLineBytes int64
 
 	BatchRecords int
 	BatchBytes   int64
@@ -54,6 +70,9 @@ type Reader struct {
 func NewReader(r io.Reader, opts ReaderOptions) *Reader {
 	if opts.BatchRecords <= 0 {
 		opts.BatchRecords = DefaultBatchRecords
+	}
+	if opts.MaxLineBytes <= 0 {
+		opts.MaxLineBytes = DefaultMaxLineBytes
 	}
 	if opts.BatchBytes <= 0 {
 		opts.BatchBytes = DefaultBatchBytes
@@ -113,6 +132,10 @@ func (r *Reader) readLine() ([]byte, error) {
 			// sign the layout and the file disagree, but not our call to make.
 			full := append([]byte(nil), line...)
 			for errors.Is(err, bufio.ErrBufferFull) {
+				if int64(len(full)) > r.opts.MaxLineBytes {
+					return nil, fmt.Errorf("fixedw: line %d exceeds max_line_bytes (%d) with no terminator; "+
+						"a record cannot be wider than the layout", r.row+1, r.opts.MaxLineBytes)
+				}
 				line, err = r.br.ReadSlice('\n')
 				full = append(full, line...)
 			}

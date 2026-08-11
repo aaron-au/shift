@@ -42,8 +42,26 @@ func (s *getSource) Open(ctx context.Context, cfg []byte) error {
 	return nil
 }
 
+// trippable is implemented by a bounded decompressing body. It is an interface
+// rather than a concrete type so the test fakes, which hand over a plain
+// ReadCloser, are unaffected.
+type trippable interface{ Tripped() error }
+
 func (s *getSource) Next(ctx context.Context) (*record.Batch, error) {
-	return s.reader.Next(ctx)
+	b, err := s.reader.Next(ctx)
+	if err == nil {
+		return b, nil
+	}
+	// Consult the bound on EVERY failure AND on EOF. A tripped ratio truncates
+	// the stream mid-record, so the format reader reports its own parse error
+	// first — or, worse, a clean EOF — and the operator is sent hunting a data
+	// bug that does not exist. The size problem is the true one.
+	if t, ok := s.body.(trippable); ok {
+		if tripped := t.Tripped(); tripped != nil {
+			return nil, tripped
+		}
+	}
+	return b, err
 }
 
 func (s *getSource) Close() error {

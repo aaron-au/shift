@@ -1,11 +1,11 @@
 {
   "_note": "Recorded connector action surface — the LAST RELEASED shape. The compatibility gate (ADR-0047 §8) diffs the current build against this and refuses a declared compat class the diff cannot support. Regenerate deliberately with SHIFT_UPDATE_SURFACE=1 and review the diff; it is the only record of what was shipped.",
   "name": "s3",
-  "version": "0.4.0",
-  "compat": "compatible",
+  "version": "0.6.0",
+  "compat": "behaviour-change",
   "descriptor": {
     "name": "s3",
-    "version": "0.4.0",
+    "version": "0.6.0",
     "actions": [
       {
         "action": "put",
@@ -163,6 +163,12 @@
                   }
                 }
               }
+            },
+            "max_decompression_ratio": {
+              "type": "integer",
+              "title": "Max decompression ratio",
+              "description": "For an object stored with Content-Encoding: gzip, refuse it if it inflates to more than this many bytes per wire byte",
+              "default": 100
             }
           }
         }
@@ -384,6 +390,12 @@
                   }
                 }
               }
+            },
+            "max_decompression_ratio": {
+              "type": "integer",
+              "title": "Max decompression ratio",
+              "description": "For an object stored with Content-Encoding: gzip, refuse it if it inflates to more than this many bytes per wire byte",
+              "default": 100
             }
           }
         }
